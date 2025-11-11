@@ -1,32 +1,57 @@
+
 import os
 import pandas as pd
 from pm4py.objects.log.importer.xes import importer as xes_importer
+from pm4py.objects.log.util import dataframe_utils
+from pm4py.objects.conversion.log import converter as log_converter
+
 
 def load_event_log(xes_path: str):
     return xes_importer.apply(xes_path)
 
-def log_to_dataframe(event_log):
+
+def log_to_dataframe_preserve_all(event_log):
+    # Use PM4Py's built-in converter to preserve all attributes
+    df = log_converter.apply(event_log, variant=log_converter.Variants.TO_DATA_FRAME)
+    return df
+
+
+def log_to_dataframe_manual(event_log):
     data = []
     for trace in event_log:
-        cid = trace.attributes.get("concept:name", "")
+        trace_attrs = dict(trace.attributes)
+        
         for event in trace:
-            data.append({
-                "case_id": cid,
-                "activity": event.get("concept:name", ""),
-                "timestamp": event.get("time:timestamp", ""),
-                "resource": event.get("org:resource", ""),
-                "lifecycle": event.get("lifecycle:transition", "")
-            })
+            row = trace_attrs.copy()
+            row.update(dict(event))
+            
+            data.append(row)
+    
     return pd.DataFrame(data)
 
+
 def main():
-    xes_path = "BPI_Challenge_2017/BPI_Challenge_2017.xes"
-    output_folder = "BPI_Models/BPI_logs"
+    xes_path = r"BPI_Models\BPI_logs_xes\BPI_2020_Log_DomesticDeclarations.xes"
+    output_folder = "BPI_Models/BPI_logs_csv"
     os.makedirs(output_folder, exist_ok=True)
-    df = log_to_dataframe(load_event_log(xes_path))
-    csv_path = os.path.join(output_folder, "bpi2017_log.csv")
+    
+    # Load the event log
+    print(f"Loading XES file: {xes_path}")
+    event_log = load_event_log(xes_path)
+    df = log_to_dataframe_preserve_all(event_log)
+    
+    if df.empty or len(df.columns) < 3:
+        df = log_to_dataframe_manual(event_log)
+    
+    # Generate output CSV filename based on input XES filename
+    base_name = os.path.splitext(os.path.basename(xes_path))[0]
+    csv_path = os.path.join(output_folder, f"{base_name}.csv")
     df.to_csv(csv_path, index=False)
-    print("Log saved as CSV at:", csv_path)
+    
+    print(f"\n✓ Log saved as CSV at: {csv_path}")
+    for col in df.columns:
+        print(f"  - {col}")
+
 
 if __name__ == "__main__":
     main()
