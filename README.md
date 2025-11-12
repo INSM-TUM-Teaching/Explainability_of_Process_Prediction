@@ -7,8 +7,8 @@
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/<your-username>/BPM_RESEARCH_APP.git
-cd BPM_RESEARCH_APP
+git clone https://github.com/INSM-TUM-Teaching/Explainability_of_Process_Prediction.git
+cd Explainability_of_Process_Prediction
 
 # 2. Create and activate a virtual environment
 python -m venv venv_bpm
@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 Directory Structure
 
-BPM_RESEARCH_APP/
+Explainability_of_Process_Prediction/
 ├── BPI_Models/ # Folder containing all event log data and models
 │ ├── BPI_logs_csv/ # Original BPI event logs in CSV format
 │ ├── BPI_logs_preprocessed_csv/ # Cleaned/preprocessed CSV logs
