@@ -31,8 +31,8 @@ def log_to_dataframe_manual(event_log):
 
 
 def main():
-    xes_path = r"BPI_Models\BPI_logs_xes\BPI_2020_Log_DomesticDeclarations.xes"
-    output_folder = "BPI_Models/BPI_logs_csv"
+    xes_path = r"BPI_Models\BPI_logs_csv\BPI_2017_Log_O_Offer.csv"
+    output_folder = "BPI_Models\BPI_logs_preprocessed_csv"
     os.makedirs(output_folder, exist_ok=True)
     
     # Load the event log
