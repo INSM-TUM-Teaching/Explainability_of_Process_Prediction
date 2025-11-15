@@ -1,0 +1,44 @@
+# Explainability_of_Process_Prediction
+
+
+---
+
+## ⚙️ Setup Instructions
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/INSM-TUM-Teaching/Explainability_of_Process_Prediction.git
+cd Explainability_of_Process_Prediction
+
+# 2. Create and activate a virtual environment
+python -m venv venv_bpm
+source venv_bpm/bin/activate    # On Windows: venv_bpm\Scripts\activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+
+
+Directory Structure
+
+Explainability_of_Process_Prediction/
+├── BPI_Models/ # Folder containing all event log data and models [download here - https://drive.google.com/file/d/16C8UgpmWlMOqtUYNMG3T63Vr8YhV5pSq/view?usp=sharing]
+│ ├── BPI_logs_csv/ # Original BPI event logs in CSV format
+│ ├── BPI_logs_preprocessed_csv/ # Cleaned/preprocessed CSV logs
+│ ├── BPI_logs_preprocessed_xes/ # Cleaned/preprocessed XES format
+│ ├── BPI_logs_xes/ # Original logs in XES format
+│ ├── prediction_models/ # Trained prediction models (Transformers, GNNs)
+│ ├── process_models/ # Process models discovered from event logs
+│ 
+├── venv_bpm/ # Python virtual environment (dependencies)
+│
+├── .gitignore # Git ignore configuration
+├── csv_to_xes.py # Script to convert CSV event logs to XES format [NA]
+├── xes_to_csv.py # Script to convert XES logs to CSV format 
+├── preprocessor.py # Main preprocessing module for event logs [In Testing phase]
+├── preprocessor_csv.py # Extended CSV-specific preprocessing module [NA]
+├── process_model.py # Script for process model discovery and visualization
+├── main.py # Entry point script for the BPM Research App
+├── README.md # Project documentation
+├── requirements.txt # Python package dependencies
+
