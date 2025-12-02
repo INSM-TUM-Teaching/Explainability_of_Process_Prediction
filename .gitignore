@@ -1,3 +1,9 @@
 venv_bpm/
-requirements.txt
+# requirements.txt
 BPI_Models/
+venv_bpm2/
+__pycache__/
+*.pyc
+.DS_Store
+gnn/data/processed/
+gnn/data/graphs/
