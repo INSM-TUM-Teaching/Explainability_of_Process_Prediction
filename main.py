@@ -1,4 +1,3 @@
-
 import os
 import sys
 import pandas as pd
@@ -12,27 +11,43 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 np.random.seed(42)
-import tensorflow as tf
-tf.random.set_seed(42)
 
-from transformers.prediction.next_activity import NextActivityPredictor
-from transformers.prediction.event_time import EventTimePredictor
-from transformers.prediction.remaining_time import RemainingTimePredictor
-DATASET_DIRECTORY = "BPI_Models/BPI_logs_preprocessed_csv"  # Directory containing CSV files
-BASE_OUTPUT_DIR = "results"  # Base directory for all results
+try:
+    import tensorflow as tf
+    tf.random.set_seed(42)
+    TENSORFLOW_AVAILABLE = True
+except ImportError:
+    TENSORFLOW_AVAILABLE = False
+    print("⚠ Warning: TensorFlow not available. Transformer models will not work.")
+
+try:
+    import torch
+    torch.manual_seed(42)
+    PYTORCH_AVAILABLE = True
+except ImportError:
+    PYTORCH_AVAILABLE = False
+    print("⚠ Warning: PyTorch not available. GNN models will not work.")
+
+if TENSORFLOW_AVAILABLE:
+    from transformers.prediction.next_activity import NextActivityPredictor
+    from transformers.prediction.event_time import EventTimePredictor
+    from transformers.prediction.remaining_time import RemainingTimePredictor
+
+if PYTORCH_AVAILABLE:
+    from gnns.prediction.gnn_predictor import GNNPredictor
+    from gnns import prefix_generation, dataset_builder
+DATASET_DIRECTORY = "BPI_Models/BPI_logs_preprocessed_csv"
+BASE_OUTPUT_DIR = "results"
 
 def print_banner():
     print("\n" + "="*70)
     print(" "*15 + "PREDICTIVE PROCESS MONITORING")
-    print(" "*20 + "Transformer Network")
     print("="*70 + "\n")
-
 
 def get_user_choice(prompt, options):
     print(f"\n{prompt}")
     for num, desc in options.items():
         print(f"  {num}. {desc}")
-    
     while True:
         try:
             choice = int(input("\nEnter your choice: "))
@@ -42,7 +57,6 @@ def get_user_choice(prompt, options):
                 print(f"Invalid choice. Please select from {list(options.keys())}")
         except ValueError:
             print("Please enter a valid number.")
-
 
 def get_yes_no(prompt):
     while True:
@@ -54,47 +68,40 @@ def get_yes_no(prompt):
         else:
             print("Please enter 'y' or 'n'.")
 
-
 def get_file_initials(filename):
     name = os.path.splitext(os.path.basename(filename))[0]
     parts = name.split('_')
     if len(parts) >= 2:
         initials = ''.join([p[0].upper() for p in parts[:3] if p and len(p) > 0])
-        return initials[:5]  # Max 5 characters
+        return initials[:5]
     else:
         return name[:5].upper()
 
-
 def get_dataset_files():
-    """Get list of CSV files and let user select one or more"""
     print("\n" + "-"*70)
     print("DATASET SELECTION")
     print("-"*70)
-    
     if not os.path.exists(DATASET_DIRECTORY):
         print(f"✗ Directory not found: {DATASET_DIRECTORY}")
-        print("Please update DATASET_DIRECTORY in main.py")
+        print("Please update DATASET_DIRECTORY")
         sys.exit(1)
-    
     csv_pattern = os.path.join(DATASET_DIRECTORY, "*.csv")
     csv_files = glob.glob(csv_pattern)
-    
     if not csv_files:
         print(f"✗ No CSV files found in: {DATASET_DIRECTORY}")
         sys.exit(1)
-    
     print(f"\nFound {len(csv_files)} CSV file(s) in {DATASET_DIRECTORY}:\n")
     for idx, filepath in enumerate(csv_files, 1):
         filename = os.path.basename(filepath)
-        filesize = os.path.getsize(filepath) / (1024 * 1024) 
+        filesize = os.path.getsize(filepath) / (1024 * 1024)
         print(f"  {idx}. {filename} ({filesize:.2f} MB)")
-    
+
     print("\n" + "-"*70)
     while True:
         try:
             choice = input("\nEnter the number of the dataset to use (e.g., 1, 2, 3): ").strip()
             choice_num = int(choice)
-            
+
             if 1 <= choice_num <= len(csv_files):
                 selected_file = csv_files[choice_num - 1]
                 print(f"\n✓ Selected: {os.path.basename(selected_file)}")
@@ -104,7 +111,6 @@ def get_dataset_files():
         except ValueError:
             print("Please enter a valid number")
 
-
 def create_output_directory(dataset_path, task_name):
     initials = get_file_initials(dataset_path)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -112,46 +118,39 @@ def create_output_directory(dataset_path, task_name):
     folder_name = f"{initials}_{task_short}_{timestamp}"
     output_dir = os.path.join(BASE_OUTPUT_DIR, folder_name)
     os.makedirs(output_dir, exist_ok=True)
-    
     print(f"\n✓ Output directory created: {output_dir}")
-    
     info_file = os.path.join(output_dir, "dataset_info.txt")
     with open(info_file, 'w') as f:
         f.write(f"Dataset: {os.path.basename(dataset_path)}\n")
         f.write(f"Full Path: {os.path.abspath(dataset_path)}\n")
         f.write(f"Task: {task_name}\n")
         f.write(f"Timestamp: {timestamp}\n")
-    
     return output_dir
-
 
 def get_data_split():
     print("\n" + "-"*70)
     print("DATA SPLIT CONFIGURATION")
     print("-"*70)
-    
     split_options = {
         1: "70-15-15 (Train-Val-Test)",
         2: "80-10-10 (Train-Val-Test)",
         3: "60-20-20 (Train-Val-Test)",
         4: "Custom split"
     }
-    
     choice = get_user_choice("Select data split:", split_options)
-    
     if choice == 1:
-        return 0.3, 0.5  # 70-15-15
+        return 0.3, 0.5
     elif choice == 2:
-        return 0.2, 0.5  # 80-10-10
+        return 0.2, 0.5
     elif choice == 3:
-        return 0.4, 0.5  # 60-20-20
+        return 0.4, 0.5
     else:
         while True:
             try:
                 train = float(input("Enter training set percentage (e.g., 70 for 70%): "))
                 val = float(input("Enter validation set percentage (e.g., 15 for 15%): "))
                 test = float(input("Enter test set percentage (e.g., 15 for 15%): "))
-                
+
                 if train + val + test == 100 and all([train > 0, val > 0, test > 0]):
                     test_size = (val + test) / 100
                     val_split = val / (val + test)
@@ -161,15 +160,44 @@ def get_data_split():
             except ValueError:
                 print("Please enter valid numbers.")
 
+def get_gnn_config():
+    print("\n" + "-"*70)
+    print("GNN MODEL CONFIGURATION")
+    print("-"*70)
+    use_default = get_yes_no("Use default configuration?")
+    if use_default:
+        print("\nUsing default configuration:")
+        config = {
+            'hidden': 64,
+            'dropout_rate': 0.1,
+            'lr': 4e-4,
+            'epochs': 50,
+            'batch_size': 64,
+            'patience': 10
+        }
+    else:
+        print("\nEnter custom configuration:")
+        config = {}
+        try:
+            config['hidden'] = int(input("  Hidden channels [64]: ") or 64)
+            config['dropout_rate'] = float(input("  Dropout rate [0.1]: ") or 0.1)
+            config['lr'] = float(input("  Learning rate [4e-4]: ") or 4e-4)
+            config['epochs'] = int(input("  Number of epochs [50]: ") or 50)
+            config['batch_size'] = int(input("  Batch size [64]: ") or 64)
+            config['patience'] = int(input("  Early stopping patience [10]: ") or 10)
+        except ValueError:
+            print("Invalid input. Using default configuration.")
+            return get_gnn_config()
+    print("\nConfiguration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    return config
 
 def get_model_config():
-    """Get model configuration from user"""
     print("\n" + "-"*70)
     print("MODEL CONFIGURATION")
     print("-"*70)
-    
     use_default = get_yes_no("Use default configuration?")
-    
     if use_default:
         print("\nUsing default configuration:")
         config = {
@@ -185,7 +213,6 @@ def get_model_config():
     else:
         print("\nEnter custom configuration:")
         config = {}
-        
         try:
             config['max_len'] = int(input("  Max sequence length [16]: ") or 16)
             config['d_model'] = int(input("  Model dimension [64]: ") or 64)
@@ -198,13 +225,12 @@ def get_model_config():
         except ValueError:
             print("Invalid input. Using default configuration.")
             return get_model_config()
-    
+
     print("\nConfiguration:")
     for key, value in config.items():
         print(f"  {key}: {value}")
-    
-    return config
 
+    return config
 
 def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config):
     print("\n" + "="*70)
@@ -213,7 +239,7 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     print(f"Dataset loaded: {len(df):,} events")
-    
+
     predictor = NextActivityPredictor(
         max_len=config['max_len'],
         d_model=config['d_model'],
@@ -221,26 +247,19 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
         num_blocks=config['num_blocks'],
         dropout_rate=config['dropout_rate']
     )
-    
     data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-    
     predictor.build_model()
-    
     predictor.train(
-        data, 
-        epochs=config['epochs'], 
+        data,
+        epochs=config['epochs'],
         batch_size=config['batch_size'],
         patience=config['patience']
     )
-    
     metrics = predictor.evaluate(data)
-    
     y_pred, y_pred_probs = predictor.predict(data)
-    
     predictor.save_results(data, y_pred, y_pred_probs, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
-    
     print("\n" + "="*70)
     print("NEXT ACTIVITY PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -253,17 +272,13 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
-
 def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config):
-    """Run event time prediction"""
     print("\n" + "="*70)
     print("EVENT TIME PREDICTION")
     print("="*70)
-    
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     print(f"Dataset loaded: {len(df):,} events")
-    
     predictor = EventTimePredictor(
         max_len=config['max_len'],
         d_model=config['d_model'],
@@ -271,24 +286,20 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
         num_blocks=config['num_blocks'],
         dropout_rate=config['dropout_rate']
     )
-
     data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
     predictor.build_model()
     predictor.train(
-        data, 
-        epochs=config['epochs'], 
+        data,
+        epochs=config['epochs'],
         batch_size=config['batch_size'],
         patience=config['patience']
     )
-    
     metrics = predictor.evaluate(data)
     y_pred = predictor.predict(data)
-
     predictor.save_results(data, y_pred, output_dir)
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
-
     print("\n" + "="*70)
     print("EVENT TIME PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -301,17 +312,13 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
-
 def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config):
-    """Run remaining time prediction"""
     print("\n" + "="*70)
     print("REMAINING TIME PREDICTION")
     print("="*70)
-    
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     print(f"Dataset loaded: {len(df):,} events")
-    
     predictor = RemainingTimePredictor(
         max_len=config['max_len'],
         d_model=config['d_model'],
@@ -319,27 +326,20 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
         num_blocks=config['num_blocks'],
         dropout_rate=config['dropout_rate']
     )
-    
     data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-    
     predictor.build_model()
-    
     predictor.train(
-        data, 
-        epochs=config['epochs'], 
+        data,
+        epochs=config['epochs'],
         batch_size=config['batch_size'],
         patience=config['patience']
     )
-    
     metrics = predictor.evaluate(data)
-    
     y_pred = predictor.predict(data)
-    
     predictor.save_results(data, y_pred, output_dir)
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
-    
     print("\n" + "="*70)
     print("REMAINING TIME PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -352,44 +352,131 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
+def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config):
+    print("\n" + "="*70)
+    print("GNN UNIFIED PREDICTION")
+    print("All three tasks: Activity + Event Time + Remaining Time")
+    print("="*70)
+    if not PYTORCH_AVAILABLE:
+        print("\n✗ PyTorch not available. Please install PyTorch and PyTorch Geometric.")
+        return
+    print("\nLoading dataset...")
+    df = pd.read_csv(dataset_path)
+    column_mapping = {}
+    if 'time:timestamp' in df.columns:
+        column_mapping['time:timestamp'] = 'Timestamp'
+    if 'case:id' in df.columns:
+        column_mapping['case:id'] = 'CaseID'
+    if 'concept:name' in df.columns:
+        column_mapping['concept:name'] = 'Activity'
+    if 'org:resource' in df.columns:
+        column_mapping['org:resource'] = 'Resource'
+    
+    if column_mapping:
+        df = df.rename(columns=column_mapping)
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    df = df.sort_values(['CaseID', 'Timestamp']).reset_index(drop=True)
+    print(f"Dataset loaded: {len(df):,} events")
+
+    predictor = GNNPredictor(
+        hidden_channels=config.get('hidden', 64),
+        dropout=config.get('dropout_rate', 0.1),
+        lr=config.get('lr', 4e-4),
+        loss_weights=(1.0, 0.1, 0.1)
+    )
+
+    data = predictor.prepare_data(
+        df, 
+        test_size=test_size, 
+        val_split=val_split
+    )
+
+    predictor.build_model(
+        data['sample_graph'], 
+        batch_size=config.get('batch_size', 64),
+        num_activity_classes=data.get('num_activity_classes')
+    )
+
+    predictor.train(
+        data,
+        epochs=config.get('epochs', 50),
+        batch_size=config.get('batch_size', 64),
+        patience=config.get('patience', 10)
+    )
+    metrics = predictor.evaluate_test(data, batch_size=config.get('batch_size', 64))
+    predictor.save_model(output_dir)
+    predictor.plot_training_history(output_dir)
+    predictor.save_results(metrics, output_dir)
+    print("\n" + "="*70)
+    print("GNN UNIFIED PREDICTION - FINAL RESULTS")
+    print("="*70)
+    print(f"\n{'Metric':<35} {'Value':>20}")
+    print("-"*70)
+    print(f"{'Next Activity Accuracy':<35} {metrics['accuracy']*100:>19.2f}%")
+    print(f"{'Event Time MAE':<35} {metrics['mae_time']:>20.4f}")
+    print(f"{'Remaining Time MAE':<35} {metrics['mae_rem']:>20.4f}")
+    print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
+    print("-"*70)
+    print(f"\n✓ All results saved to: {output_dir}")
+    print("="*70)
 
 def main():
-    """Main function"""
     print_banner()
-    
+
     model_type_options = {
         1: "Transformer",
         2: "GNN (Graph Neural Network)"
     }
-    
     model_type = get_user_choice("Select model type:", model_type_options)
-    
-    if model_type == 2:
+    if model_type == 1 and not TENSORFLOW_AVAILABLE:
         print("\n" + "="*70)
-        print(" "*25 + "COMING SOON")
+        print("✗ TensorFlow not available")
         print("="*70)
-        print("\nGNN (Graph Neural Network) implementation is under development.")
-        print("Please check back later or select Transformer model.")
-        sys.exit(0)
-    
-    task_options = {
-        1: "Next Activity Prediction",
-        2: "Event Time Prediction",
-        3: "Remaining Time Prediction"
-    }
-    
-    task = get_user_choice("Select prediction task:", task_options)
-    task_name = task_options[task]
+        print("\nPlease install TensorFlow to use Transformer models:")
+        print("  pip install tensorflow")
+        sys.exit(1)
+    if model_type == 2 and not PYTORCH_AVAILABLE:
+        print("\n" + "="*70)
+        print("✗ PyTorch not available")
+        print("="*70)
+        print("\nPlease install PyTorch and PyTorch Geometric to use GNN models:")
+        print("  pip install torch torch-geometric")
+        sys.exit(1)
+
+    if model_type == 2:
+        print("\n" + "-"*70)
+        print("GNN Model: Unified Prediction")
+        print("-"*70)
+        print("GNN predicts all three tasks simultaneously:")
+        print("  • Next Activity Prediction")
+        print("  • Event Time Prediction")
+        print("  • Remaining Time Prediction")
+        print("-"*70)
+        task_name = "GNN Unified Prediction"
+        run_gnn = True
+    else:
+        task_options = {
+            1: "Next Activity Prediction",
+            2: "Event Time Prediction",
+            3: "Remaining Time Prediction"
+        }
+        task = get_user_choice("Select prediction task:", task_options)
+        task_name = task_options[task]
+        run_gnn = False
+
     dataset_path = get_dataset_files()
     output_dir = create_output_directory(dataset_path, task_name)
     test_size, val_split = get_data_split()
-    config = get_model_config()
-    
+    if run_gnn:
+        config = get_gnn_config()
+    else:
+        config = get_model_config()
     config_file = os.path.join(output_dir, "configuration.txt")
     with open(config_file, 'w') as f:
         f.write("="*50 + "\n")
         f.write("EXPERIMENT CONFIGURATION\n")
         f.write("="*50 + "\n\n")
+        f.write(f"Model Type: {'GNN' if run_gnn else 'Transformer'}\n")
         f.write(f"Dataset: {os.path.basename(dataset_path)}\n")
         f.write(f"Task: {task_name}\n")
         f.write(f"Test Size: {test_size*100:.1f}%\n")
@@ -398,15 +485,18 @@ def main():
         for key, value in config.items():
             f.write(f"  {key}: {value}\n")
         f.write("\n" + "="*50 + "\n")
-    
     print(f"\n✓ Configuration saved to: {config_file}")
+
     try:
-        if task == 1:
-            run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config)
-        elif task == 2:
-            run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config)
-        elif task == 3:
-            run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config)
+        if run_gnn:
+            run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config)
+        else:
+            if task == 1:
+                run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config)
+            elif task == 2:
+                run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config)
+            elif task == 3:
+                run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config)
     except Exception as e:
         print(f"\n✗ Error occurred: {str(e)}")
         import traceback
@@ -418,12 +508,15 @@ def main():
             f.write(f"Error: {str(e)}\n\n")
             f.write("Traceback:\n")
             traceback.print_exc(file=f)
-        
         print(f"\n✗ Error log saved to: {error_file}")
         sys.exit(1)
     print("\n" + "="*70)
     print("Thank you for using Predictive Process Monitoring!")
     print("="*70 + "\n")
+
+
+
+
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 
 ---
 
-## ⚙️ Setup Instructions
+##  Setup Instructions
 
 ```bash
 # 1. Clone the repository
@@ -22,23 +22,64 @@ pip install -r requirements.txt
 Directory Structure
 
 Explainability_of_Process_Prediction/
-├── BPI_Models/ # Folder containing all event log data and models [download here - https://drive.google.com/file/d/16C8UgpmWlMOqtUYNMG3T63Vr8YhV5pSq/view?usp=sharing]
-│ ├── BPI_logs_csv/ # Original BPI event logs in CSV format
-│ ├── BPI_logs_preprocessed_csv/ # Cleaned/preprocessed CSV logs
-│ ├── BPI_logs_preprocessed_xes/ # Cleaned/preprocessed XES format
-│ ├── BPI_logs_xes/ # Original logs in XES format
-│ ├── prediction_models/ # Trained prediction models (Transformers, GNNs)
-│ ├── process_models/ # Process models discovered from event logs
-│ 
-├── venv_bpm/ # Python virtual environment (dependencies)
+BPM_RESEARCH_APP/
 │
-├── .gitignore # Git ignore configuration
-├── csv_to_xes.py # Script to convert CSV event logs to XES format [NA]
-├── xes_to_csv.py # Script to convert XES logs to CSV format 
-├── preprocessor.py # Main preprocessing module for event logs [In Testing phase]
-├── preprocessor_csv.py # Extended CSV-specific preprocessing module [NA]
-├── process_model.py # Script for process model discovery and visualization
-├── main.py # Entry point script for the BPM Research App
-├── README.md # Project documentation
-├── requirements.txt # Python package dependencies
+├── BPI_Models/
+│   ├── BPI_logs_csv/                          # Raw BPI event logs
+│   ├── BPI_logs_preprocessed_csv/             # Preprocessed CSV files (input datasets)
+│   └── BPI_logs_xes/                          # XES format logs
+│
+├── conv_and_viz/
+│   ├── preprocessor_csv.py                    # CSV preprocessing utilities
+│   ├── visualize.py                           # Data visualization tools
+│   └── xes_to_csv.py                          # XES to CSV conversion
+│
+├── gnns/                                       # GNN Package
+│   ├── __init__.py                            # Package initialization
+│   ├── model.py                               # HeteroGNN architecture
+│   ├── dataset_builder.py                     # Graph dataset builder
+│   ├── prefix_generation.py                   # Prefix generation (standalone)
+│   └── prediction/
+│       ├── __init__.py
+│       └── gnn_predictor.py                   # Unified GNN predictor
+│
+├── transformers/                               # Transformer Package
+│   ├── __init__.py                            # Package initialization
+│   ├── model.py                               # Transformer architecture
+│   └── prediction/
+│       ├── __init__.py
+│       ├── next_activity.py                   # Next activity predictor
+│       ├── event_time.py                      # Event time predictor
+│       └── remaining_time.py                  # Remaining time predictor
+│
+├── results/                                    # Output directory (auto-created)
+│
+├── main.py                                     # Main entry point to the pipeline(Currently works for training and testing Transformers and GNNs- Explainability still pending)
+├── process_model.py                           # Process model utilities
+├── requirements.txt                           # Transformer dependencies
+├── requirements_gnn.txt                       # GNN dependencies
+├── README.md                                  # Main documentation
+├── QUICKSTART.md                              # Quick start guide
+└── GNN_INTEGRATION.md                         # GNN integration details
+
+
+
+Usage Steps (After executing main.py)
+1. Select Model Type
+   Option 1: Transformer (choose task: Next Activity / Event Time / Remaining Time)
+   Option 2: GNN (predicts all 3 tasks simultaneously)
+
+2. Select Dataset
+   Choose from available CSV files in BPI_Models/BPI_logs_preprocessed_csv/
+
+3. Configure Data Split
+   Choose preset (70-15-15, 80-10-10, 60-20-20) or custom split
+
+4. Configure Model
+   Use default hyperparameters or customize
+
+5. Training Starts Automatically
+   Progress displayed in real-time
+
+6. Results saved to results/
 
