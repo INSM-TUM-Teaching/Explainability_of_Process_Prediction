@@ -7,10 +7,6 @@ from torch_geometric.data import HeteroData
 from tqdm import tqdm
 
 
-DATA_DIR = "gnn/data/processed/"
-SAVE_DIR = "gnn/data/datasets/"
-os.makedirs(SAVE_DIR, exist_ok=True)
-
 CASE_COL = "CaseID"
 PREFIX_ID_COL = "prefix_id"
 PREFIX_POS_COL = "prefix_pos"
@@ -168,50 +164,10 @@ def build_graph(prefix: pd.DataFrame, vocabs, trace_attributes):
     return data
 
 
-def build_full_dataset(df: pd.DataFrame, vocabs, trace_attributes, save_prefix):
-    print("\nBuilding dataset (streaming mode)...")
-
-    groups = df.groupby([CASE_COL, PREFIX_ID_COL])
-    out_dir = os.path.join(SAVE_DIR, save_prefix)
-    os.makedirs(out_dir, exist_ok=True)
-
-    i = 0
-
-    for (_, _), p in tqdm(groups, total=groups.ngroups, desc="Graphs", ncols=100):
-        p = p.sort_values(PREFIX_POS_COL)
-
-        graph = build_graph(p, vocabs, trace_attributes)
-
-        torch.save(graph, os.path.join(out_dir, f"{i}.pt"))
-        i += 1
-
-    print(f"\n✓ Saved {i} graphs at: {out_dir}")
-    return out_dir
-
-
 def main():
-    csv_files = [
-        os.path.join(DATA_DIR, f)
-        for f in os.listdir(DATA_DIR)
-        if f.endswith("_prefixes.csv")
-    ]
-
-    for path in csv_files:
-        print("\n==============================")
-        print(f"Processing {path}")
-        print("==============================")
-
-        df = load_prefix_table(path)
-        
-        trace_attributes = detect_trace_attributes(df)
-        print(f"\nDetected trace attributes: {trace_attributes}")
-        
-        vocabs = build_global_vocabs(df, trace_attributes)
-
-        save_prefix = os.path.basename(path).replace("_prefixes.csv", "")
-        out_dir = build_full_dataset(df, vocabs, trace_attributes, save_prefix)
-
-        print(f"\n✓ Dataset completed: {out_dir}\n")
+    print("This is a standalone utility script.")
+    print("Graph building is now handled in-memory by gnn_predictor.py")
+    print("No files are created automatically.")
 
 
 if __name__ == "__main__":
