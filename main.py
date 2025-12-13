@@ -12,6 +12,14 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 np.random.seed(42)
 
+EXPLAINABILITY_AVAILABLE = True
+try:
+    from explainability.transformers import run_transformer_explainability
+    from explainability.gnns import run_gnn_explainability
+except ImportError:
+    EXPLAINABILITY_AVAILABLE = False
+    print("⚠ Warning: Explainability modules not available.")
+
 try:
     import tensorflow as tf
     tf.random.set_seed(42)
@@ -36,8 +44,65 @@ if TENSORFLOW_AVAILABLE:
 if PYTORCH_AVAILABLE:
     from gnns.prediction.gnn_predictor import GNNPredictor
     from gnns import prefix_generation, dataset_builder
+
 DATASET_DIRECTORY = "BPI_Models/BPI_logs_preprocessed_csv"
 BASE_OUTPUT_DIR = "results"
+
+
+def detect_and_standardize_columns(df, verbose=True):
+    column_mapping = {}
+    columns_to_drop = []
+    
+    case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
+    activity_patterns = ['concept:name', 'Action', 'activity', 'event', 'Event', 'task', 'Task']
+    timestamp_patterns = ['time:timestamp', 'Timestamp', 'timestamp', 'time', 'Time', 'start_time', 'StartTime', 'complete_time', 'CompleteTime']
+    resource_patterns = ['org:resource', 'Resource', 'resource', 'user', 'User', 'org:role', 'role', 'Role', 'actor', 'Actor']
+    
+    for col in df.columns:
+        if col in case_patterns and col != 'CaseID':
+            column_mapping[col] = 'CaseID'
+            break
+    
+    for col in df.columns:
+        if col in activity_patterns and col != 'Activity':
+            if 'Activity' in df.columns and col != 'Activity':
+                columns_to_drop.append('Activity')
+            column_mapping[col] = 'Activity'
+            break
+    
+    for col in df.columns:
+        if col in timestamp_patterns and col != 'Timestamp':
+            column_mapping[col] = 'Timestamp'
+            break
+    
+    for col in df.columns:
+        if col in resource_patterns and col != 'Resource':
+            column_mapping[col] = 'Resource'
+            break
+    
+    if columns_to_drop:
+        if verbose:
+            print(f"Dropping conflicting columns: {columns_to_drop}")
+        df = df.drop(columns=columns_to_drop)
+    
+    if verbose and column_mapping:
+        print("="*70)
+        print("COLUMN DETECTION REPORT")
+        print("="*70)
+        for old, new in column_mapping.items():
+            print(f"{new.upper()}: '{old}' → '{new}'")
+        print("="*70)
+    
+    if column_mapping:
+        df = df.rename(columns=column_mapping)
+    
+    required = ['CaseID', 'Activity', 'Timestamp']
+    missing = [col for col in required if col not in df.columns]
+    
+    if missing:
+        raise ValueError(f"Missing required columns after detection: {missing}")
+    
+    return df, column_mapping, column_mapping.keys()
 
 def print_banner():
     print("\n" + "="*70)
@@ -111,11 +176,21 @@ def get_dataset_files():
         except ValueError:
             print("Please enter a valid number")
 
-def create_output_directory(dataset_path, task_name):
+def create_output_directory(dataset_path, task_name, model_type, explainability_method):
     initials = get_file_initials(dataset_path)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%d_%m_%Y_%H_%M")
     task_short = task_name.replace(" ", "_").lower()
-    folder_name = f"{initials}_{task_short}_{timestamp}"
+    
+    model_name = "GNN" if model_type == "gnn" else "Transformer"
+    
+    if explainability_method is None:
+        explainability_part = "without_explainability"
+    elif explainability_method == "all":
+        explainability_part = "shap_lime"
+    else:
+        explainability_part = explainability_method
+    
+    folder_name = f"{model_name}_{task_short}_{explainability_part}_{timestamp}"
     output_dir = os.path.join(BASE_OUTPUT_DIR, folder_name)
     os.makedirs(output_dir, exist_ok=True)
     print(f"\n✓ Output directory created: {output_dir}")
@@ -124,6 +199,8 @@ def create_output_directory(dataset_path, task_name):
         f.write(f"Dataset: {os.path.basename(dataset_path)}\n")
         f.write(f"Full Path: {os.path.abspath(dataset_path)}\n")
         f.write(f"Task: {task_name}\n")
+        f.write(f"Model Type: {model_name}\n")
+        f.write(f"Explainability: {explainability_part if explainability_method else 'None'}\n")
         f.write(f"Timestamp: {timestamp}\n")
     return output_dir
 
@@ -160,6 +237,37 @@ def get_data_split():
             except ValueError:
                 print("Please enter valid numbers.")
 
+def get_explainability_choice():
+    if not EXPLAINABILITY_AVAILABLE:
+        return None
+    
+    print("\n" + "-"*70)
+    print("EXPLAINABILITY CONFIGURATION")
+    print("-"*70)
+    print("\nExplainability helps understand model predictions by:")
+    print("  • Identifying important features")
+    print("  • Visualizing decision-making process")
+    print("  • Providing interpretable insights")
+    print("\nNote: Explainability analysis may take additional time")
+    
+    explainability_options = {
+        1: "SHAP",
+        2: "LIME",
+        3: "All methods (SHAP + LIME)",
+        4: "Skip Explainability"
+    }
+    
+    choice = get_user_choice("Select explainability method:", explainability_options)
+    
+    if choice == 1:
+        return "shap"
+    elif choice == 2:
+        return "lime"
+    elif choice == 3:
+        return "all"
+    else:
+        return None
+
 def get_gnn_config():
     print("\n" + "-"*70)
     print("GNN MODEL CONFIGURATION")
@@ -171,7 +279,7 @@ def get_gnn_config():
             'hidden': 64,
             'dropout_rate': 0.1,
             'lr': 4e-4,
-            'epochs': 50,
+            'epochs': 5,
             'batch_size': 64,
             'patience': 10
         }
@@ -182,7 +290,7 @@ def get_gnn_config():
             config['hidden'] = int(input("  Hidden channels [64]: ") or 64)
             config['dropout_rate'] = float(input("  Dropout rate [0.1]: ") or 0.1)
             config['lr'] = float(input("  Learning rate [4e-4]: ") or 4e-4)
-            config['epochs'] = int(input("  Number of epochs [50]: ") or 50)
+            config['epochs'] = int(input("  Number of epochs [5]: ") or 5)
             config['batch_size'] = int(input("  Batch size [64]: ") or 64)
             config['patience'] = int(input("  Early stopping patience [10]: ") or 10)
         except ValueError:
@@ -206,7 +314,7 @@ def get_model_config():
             'num_heads': 4,
             'num_blocks': 2,
             'dropout_rate': 0.1,
-            'epochs': 50,
+            'epochs': 5,
             'batch_size': 128,
             'patience': 10
         }
@@ -219,7 +327,7 @@ def get_model_config():
             config['num_heads'] = int(input("  Number of attention heads [4]: ") or 4)
             config['num_blocks'] = int(input("  Number of transformer blocks [2]: ") or 2)
             config['dropout_rate'] = float(input("  Dropout rate [0.1]: ") or 0.1)
-            config['epochs'] = int(input("  Number of epochs [50]: ") or 50)
+            config['epochs'] = int(input("  Number of epochs [5]: ") or 5)
             config['batch_size'] = int(input("  Batch size [128]: ") or 128)
             config['patience'] = int(input("  Early stopping patience [10]: ") or 10)
         except ValueError:
@@ -232,12 +340,27 @@ def get_model_config():
 
     return config
 
-def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config):
+def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
     print("\n" + "="*70)
     print("NEXT ACTIVITY PREDICTION")
     print("="*70)
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
+    
+    print("\nDetecting and standardizing columns...")
+    df, mapping, detected = detect_and_standardize_columns(df, verbose=True)
+    
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+    
+    df = df.rename(columns={
+        'CaseID': 'case:id',
+        'Activity': 'concept:name',
+        'Timestamp': 'time:timestamp'
+    })
+    
     print(f"Dataset loaded: {len(df):,} events")
 
     predictor = NextActivityPredictor(
@@ -260,6 +383,19 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     predictor.save_results(data, y_pred, y_pred_probs, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
+    
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        run_transformer_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            task='activity',
+            num_samples=20,
+            methods=explainability_method
+        )
+    
     print("\n" + "="*70)
     print("NEXT ACTIVITY PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -272,12 +408,27 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
-def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config):
+def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
     print("\n" + "="*70)
     print("EVENT TIME PREDICTION")
     print("="*70)
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
+    
+    print("\nDetecting and standardizing columns...")
+    df, mapping, detected = detect_and_standardize_columns(df, verbose=True)
+    
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+    
+    df = df.rename(columns={
+        'CaseID': 'case:concept:name',
+        'Activity': 'concept:name',
+        'Timestamp': 'time:timestamp'
+    })
+    
     print(f"Dataset loaded: {len(df):,} events")
     predictor = EventTimePredictor(
         max_len=config['max_len'],
@@ -300,6 +451,19 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
+    
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        run_transformer_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            task='time',
+            num_samples=20,
+            methods=explainability_method
+        )
+    
     print("\n" + "="*70)
     print("EVENT TIME PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -312,12 +476,27 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
-def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config):
+def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
     print("\n" + "="*70)
     print("REMAINING TIME PREDICTION")
     print("="*70)
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
+    
+    print("\nDetecting and standardizing columns...")
+    df, mapping, detected = detect_and_standardize_columns(df, verbose=True)
+    
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+    
+    df = df.rename(columns={
+        'CaseID': 'case:concept:name',
+        'Activity': 'concept:name',
+        'Timestamp': 'time:timestamp'
+    })
+    
     print(f"Dataset loaded: {len(df):,} events")
     predictor = RemainingTimePredictor(
         max_len=config['max_len'],
@@ -340,6 +519,19 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
+    
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        run_transformer_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            task='time',
+            num_samples=20,
+            methods=explainability_method
+        )
+    
     print("\n" + "="*70)
     print("REMAINING TIME PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -352,7 +544,7 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
-def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config):
+def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
     print("\n" + "="*70)
     print("GNN UNIFIED PREDICTION")
     print("All three tasks: Activity + Event Time + Remaining Time")
@@ -362,18 +554,15 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         return
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
-    column_mapping = {}
-    if 'time:timestamp' in df.columns:
-        column_mapping['time:timestamp'] = 'Timestamp'
-    if 'case:id' in df.columns:
-        column_mapping['case:id'] = 'CaseID'
-    if 'concept:name' in df.columns:
-        column_mapping['concept:name'] = 'Activity'
-    if 'org:resource' in df.columns:
-        column_mapping['org:resource'] = 'Resource'
     
-    if column_mapping:
-        df = df.rename(columns=column_mapping)
+    print("\nDetecting and standardizing columns...")
+    df, mapping, detected = detect_and_standardize_columns(df, verbose=True)
+    
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+    
     df['Timestamp'] = pd.to_datetime(df['Timestamp'])
     df = df.sort_values(['CaseID', 'Timestamp']).reset_index(drop=True)
     print(f"Dataset loaded: {len(df):,} events")
@@ -407,6 +596,19 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
     predictor.save_model(output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_results(metrics, output_dir)
+    
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        run_gnn_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            predictor.device,
+            num_samples=10,
+            methods=explainability_method
+        )
+    
     print("\n" + "="*70)
     print("GNN UNIFIED PREDICTION - FINAL RESULTS")
     print("="*70)
@@ -465,8 +667,14 @@ def main():
         run_gnn = False
 
     dataset_path = get_dataset_files()
-    output_dir = create_output_directory(dataset_path, task_name)
+    
+    explainability_method = get_explainability_choice()
+    
+    model_type_name = "gnn" if run_gnn else "transformer"
+    output_dir = create_output_directory(dataset_path, task_name, model_type_name, explainability_method)
+    
     test_size, val_split = get_data_split()
+    
     if run_gnn:
         config = get_gnn_config()
     else:
@@ -480,7 +688,17 @@ def main():
         f.write(f"Dataset: {os.path.basename(dataset_path)}\n")
         f.write(f"Task: {task_name}\n")
         f.write(f"Test Size: {test_size*100:.1f}%\n")
-        f.write(f"Val Split: {val_split*100:.1f}%\n\n")
+        f.write(f"Val Split: {val_split*100:.1f}%\n")
+        
+        if explainability_method:
+            if explainability_method == 'all':
+                exp_text = "All methods (SHAP + LIME)"
+            else:
+                exp_text = explainability_method.upper()
+        else:
+            exp_text = "Disabled"
+        f.write(f"Explainability: {exp_text}\n\n")
+        
         f.write("Model Configuration:\n")
         for key, value in config.items():
             f.write(f"  {key}: {value}\n")
@@ -489,14 +707,14 @@ def main():
 
     try:
         if run_gnn:
-            run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config)
+            run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
         else:
             if task == 1:
-                run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config)
+                run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
             elif task == 2:
-                run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config)
+                run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
             elif task == 3:
-                run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config)
+                run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
     except Exception as e:
         print(f"\n✗ Error occurred: {str(e)}")
         import traceback
@@ -513,11 +731,6 @@ def main():
     print("\n" + "="*70)
     print("Thank you for using Predictive Process Monitoring!")
     print("="*70 + "\n")
-
-
-
-
-
 
 if __name__ == "__main__":
     main()
