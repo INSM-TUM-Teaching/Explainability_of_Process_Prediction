@@ -237,7 +237,7 @@ def get_data_split():
             except ValueError:
                 print("Please enter valid numbers.")
 
-def get_explainability_choice():
+def get_explainability_choice(model_type='transformer'):
     if not EXPLAINABILITY_AVAILABLE:
         return None
     
@@ -250,23 +250,41 @@ def get_explainability_choice():
     print("  • Providing interpretable insights")
     print("\nNote: Explainability analysis may take additional time")
     
-    explainability_options = {
-        1: "SHAP",
-        2: "LIME",
-        3: "All methods (SHAP + LIME)",
-        4: "Skip Explainability"
-    }
+    if model_type == 'gnn':
+        explainability_options = {
+            1: "Gradient-Based Attribution",
+            2: "GraphLIME",
+            3: "All methods (Gradient + GraphLIME)",
+            4: "Skip Explainability"
+        }
+    else:
+        explainability_options = {
+            1: "SHAP",
+            2: "LIME",
+            3: "All methods (SHAP + LIME)",
+            4: "Skip Explainability"
+        }
     
     choice = get_user_choice("Select explainability method:", explainability_options)
     
-    if choice == 1:
-        return "shap"
-    elif choice == 2:
-        return "lime"
-    elif choice == 3:
-        return "all"
+    if model_type == 'gnn':
+        if choice == 1:
+            return "gradient"
+        elif choice == 2:
+            return "lime"
+        elif choice == 3:
+            return "all"
+        else:
+            return None
     else:
-        return None
+        if choice == 1:
+            return "shap"
+        elif choice == 2:
+            return "lime"
+        elif choice == 3:
+            return "all"
+        else:
+            return None
 
 def get_gnn_config():
     print("\n" + "-"*70)
@@ -544,10 +562,18 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
 
-def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
+def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method, task='unified'):
     print("\n" + "="*70)
-    print("GNN UNIFIED PREDICTION")
-    print("All three tasks: Activity + Event Time + Remaining Time")
+    if task == 'unified':
+        print("GNN UNIFIED PREDICTION")
+        print("All three tasks: Activity + Event Time + Remaining Time")
+    else:
+        task_names = {
+            'next_activity': 'NEXT ACTIVITY PREDICTION',
+            'event_time': 'EVENT TIME PREDICTION',
+            'remaining_time': 'REMAINING TIME PREDICTION'
+        }
+        print(f"GNN {task_names.get(task, 'PREDICTION')}")
     print("="*70)
     if not PYTORCH_AVAILABLE:
         print("\n✗ PyTorch not available. Please install PyTorch and PyTorch Geometric.")
@@ -567,11 +593,22 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
     df = df.sort_values(['CaseID', 'Timestamp']).reset_index(drop=True)
     print(f"Dataset loaded: {len(df):,} events")
 
+    if task == 'unified':
+        loss_weights = (1.0, 0.1, 0.1)
+    elif task == 'next_activity':
+        loss_weights = (1.0, 0.0, 0.0)
+    elif task == 'event_time':
+        loss_weights = (0.0, 1.0, 0.0)
+    elif task == 'remaining_time':
+        loss_weights = (0.0, 0.0, 1.0)
+    else:
+        loss_weights = (1.0, 0.1, 0.1)
+
     predictor = GNNPredictor(
         hidden_channels=config.get('hidden', 64),
         dropout=config.get('dropout_rate', 0.1),
         lr=config.get('lr', 4e-4),
-        loss_weights=(1.0, 0.1, 0.1)
+        loss_weights=loss_weights
     )
 
     data = predictor.prepare_data(
@@ -605,19 +642,43 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
             data,
             explainability_dir,
             predictor.device,
+            output_dir,
+            dataset_path,
             num_samples=10,
             methods=explainability_method
         )
     
     print("\n" + "="*70)
-    print("GNN UNIFIED PREDICTION - FINAL RESULTS")
-    print("="*70)
-    print(f"\n{'Metric':<35} {'Value':>20}")
-    print("-"*70)
-    print(f"{'Next Activity Accuracy':<35} {metrics['accuracy']*100:>19.2f}%")
-    print(f"{'Event Time MAE':<35} {metrics['mae_time']:>20.4f}")
-    print(f"{'Remaining Time MAE':<35} {metrics['mae_rem']:>20.4f}")
-    print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
+    if task == 'unified':
+        print("GNN UNIFIED PREDICTION - FINAL RESULTS")
+        print("="*70)
+        print(f"\n{'Metric':<35} {'Value':>20}")
+        print("-"*70)
+        print(f"{'Next Activity Accuracy':<35} {metrics['accuracy']*100:>19.2f}%")
+        print(f"{'Event Time MAE':<35} {metrics['mae_time']:>20.4f}")
+        print(f"{'Remaining Time MAE':<35} {metrics['mae_rem']:>20.4f}")
+        print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
+    elif task == 'next_activity':
+        print("GNN NEXT ACTIVITY PREDICTION - FINAL RESULTS")
+        print("="*70)
+        print(f"\n{'Metric':<35} {'Value':>20}")
+        print("-"*70)
+        print(f"{'Test Accuracy':<35} {metrics['accuracy']*100:>19.2f}%")
+        print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
+    elif task == 'event_time':
+        print("GNN EVENT TIME PREDICTION - FINAL RESULTS")
+        print("="*70)
+        print(f"\n{'Metric':<35} {'Value':>20}")
+        print("-"*70)
+        print(f"{'Event Time MAE':<35} {metrics['mae_time']:>20.4f}")
+        print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
+    elif task == 'remaining_time':
+        print("GNN REMAINING TIME PREDICTION - FINAL RESULTS")
+        print("="*70)
+        print(f"\n{'Metric':<35} {'Value':>20}")
+        print("-"*70)
+        print(f"{'Remaining Time MAE':<35} {metrics['mae_rem']:>20.4f}")
+        print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
     print("-"*70)
     print(f"\n✓ All results saved to: {output_dir}")
     print("="*70)
@@ -647,14 +708,26 @@ def main():
 
     if model_type == 2:
         print("\n" + "-"*70)
-        print("GNN Model: Unified Prediction")
+        print("GNN Model: Task Selection")
         print("-"*70)
-        print("GNN predicts all three tasks simultaneously:")
-        print("  • Next Activity Prediction")
-        print("  • Event Time Prediction")
-        print("  • Remaining Time Prediction")
-        print("-"*70)
-        task_name = "GNN Unified Prediction"
+        task_options = {
+            1: "Next Activity Prediction",
+            2: "Event Time Prediction",
+            3: "Remaining Time Prediction",
+            4: "All Tasks (Unified Prediction)"
+        }
+        task = get_user_choice("Select prediction task:", task_options)
+        if task == 4:
+            task_name = "GNN Unified Prediction"
+            gnn_task = "unified"
+        else:
+            task_name = task_options[task]
+            task_mapping = {
+                1: "next_activity",
+                2: "event_time",
+                3: "remaining_time"
+            }
+            gnn_task = task_mapping[task]
         run_gnn = True
     else:
         task_options = {
@@ -668,9 +741,9 @@ def main():
 
     dataset_path = get_dataset_files()
     
-    explainability_method = get_explainability_choice()
-    
     model_type_name = "gnn" if run_gnn else "transformer"
+    explainability_method = get_explainability_choice(model_type=model_type_name)
+    
     output_dir = create_output_directory(dataset_path, task_name, model_type_name, explainability_method)
     
     test_size, val_split = get_data_split()
@@ -707,7 +780,7 @@ def main():
 
     try:
         if run_gnn:
-            run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
+            run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method, gnn_task)
         else:
             if task == 1:
                 run_next_activity_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
