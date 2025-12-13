@@ -33,6 +33,7 @@ BPM_RESEARCH_APP/
 │   ├── preprocessor_csv.py                    # CSV preprocessing utilities
 │   ├── visualize.py                           # Data visualization tools
 │   └── xes_to_csv.py                          # XES to CSV conversion
+│   └── process_model.py                       # Process model utilities
 │
 ├── gnns/                                       # GNN Package
 │   ├── __init__.py                            # Package initialization
@@ -41,7 +42,7 @@ BPM_RESEARCH_APP/
 │   ├── prefix_generation.py                   # Prefix generation (standalone)
 │   └── prediction/
 │       ├── __init__.py
-│       └── gnn_predictor.py                   # Unified GNN predictor
+│       └── gnn_predictor.py                   # Unified GNN predictor - For all 3 tasks
 │
 ├── transformers/                               # Transformer Package
 │   ├── __init__.py                            # Package initialization
@@ -52,15 +53,21 @@ BPM_RESEARCH_APP/
 │       ├── event_time.py                      # Event time predictor
 │       └── remaining_time.py                  # Remaining time predictor
 │
-├── results/                                    # Output directory (auto-created)
+├── explainability/                            # Explainability Package
+│   ├── __init__.py                            
+│   ├── gnns/
+│       └── gnn_explainer.py                   # Unified GNN predictor
+│       └── __init__.py                                                   
+│   └── transformers/
+│       └── transformer_explainer.py            # Unified Transformer Explainer
+│       └── __init__.py
 │
-├── main.py                                     # Main entry point to the pipeline(Currently works for training and testing Transformers and GNNs- Explainability still pending)
-├── process_model.py                           # Process model utilities
+├── results/                                    # Output directory (auto-created)
+├── comprehensive_test_results/                 # Output directory for test results (auto-created)
+│
+├── main.py                                     # Main entry point to the pipeline
 ├── requirements.txt                           # Transformer dependencies
-├── requirements_gnn.txt                       # GNN dependencies
 ├── README.md                                  # Main documentation
-├── QUICKSTART.md                              # Quick start guide
-└── GNN_INTEGRATION.md                         # GNN integration details
 
 
 
