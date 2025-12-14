@@ -66,6 +66,7 @@ BPM_RESEARCH_APP/
 ├── comprehensive_test_results/                 # Output directory for test results (auto-created)
 │
 ├── main.py                                     # Main entry point to the pipeline
+├── automated_test.py                          # Automated testing Script to the main pipeline.(INDEPENDENT Sript)
 ├── requirements.txt                           # Transformer dependencies
 ├── README.md                                  # Main documentation
 
