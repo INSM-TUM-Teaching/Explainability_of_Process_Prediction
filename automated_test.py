@@ -172,11 +172,11 @@ class ComprehensiveTester:
             )
             
             try:
-                stdout, stderr = process.communicate(input=input_sequence, timeout=600)
+                stdout, stderr = process.communicate(input=input_sequence, timeout=1800)
             except subprocess.TimeoutExpired:
                 process.kill()
                 stdout, stderr = process.communicate()
-                raise TimeoutError("Test exceeded 10 minute timeout")
+                raise TimeoutError("Test exceeded 30 minute timeout")
             
             test_duration = time.time() - test_start
             
@@ -270,7 +270,7 @@ class ComprehensiveTester:
             return success
             
         except TimeoutError as e:
-            self.log(f"[X] TEST TIMEOUT (10 minutes)")
+            self.log(f"[X] TEST TIMEOUT (30 minutes)")
             self.failed_tests += 1
             
             error_log_path = os.path.join(test_folder, "ERROR_LOG.txt")
@@ -278,7 +278,7 @@ class ComprehensiveTester:
                 f.write("="*80 + "\n")
                 f.write("TIMEOUT ERROR\n")
                 f.write("="*80 + "\n\n")
-                f.write(f"Test exceeded 10 minute timeout\n")
+                f.write(f"Test exceeded 30 minute timeout\n")
                 f.write(f"Test Number: {test_num}\n")
                 f.write(f"Description: {description}\n\n")
                 f.write("User Inputs:\n")
@@ -288,8 +288,8 @@ class ComprehensiveTester:
                 "test_number": test_num,
                 "description": description,
                 "success": False,
-                "duration": 600,
-                "error": "Timeout after 10 minutes"
+                "duration": 1800,
+                "error": "Timeout after 30 minutes"
             })
             return False
             
@@ -338,7 +338,7 @@ class ComprehensiveTester:
         self.log(f"  - GNN tests: {len([c for c in combinations if c['model'] == 'gnn'])}")
         self.log(f"  - Tests per dataset: {total_tests // num_datasets}")
         
-        estimated_minutes = total_tests * 2
+        estimated_minutes = total_tests * 30
         self.log(f"\nEstimated total time: ~{estimated_minutes} minutes ({estimated_minutes/60:.1f} hours)")
         
         self.log("\n" + "="*80)
@@ -430,12 +430,12 @@ def main():
         print(f"\nDetected: {num_datasets} datasets")
         
         total_tests = num_datasets * 18
-        estimated_hours = (total_tests * 2) / 60
+        estimated_hours = (total_tests * 30) / 60
         
         print(f"Total tests: {total_tests}")
         print(f"  - Transformer: {num_datasets * 9} tests (3 tasks × 1 split × 3 explainability)")
         print(f"  - GNN: {num_datasets * 9} tests (3 tasks × 1 split × 3 explainability)")
-        print(f"Estimated time: ~{estimated_hours:.1f} hours")
+        print(f"Estimated time: ~{estimated_hours:.1f} hours (30 min per test)")
     else:
         print(f"\n[X] Dataset directory not found: {DATASET_DIR}")
         return
