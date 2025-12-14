@@ -18,7 +18,7 @@ try:
     from explainability.gnns import run_gnn_explainability
 except ImportError:
     EXPLAINABILITY_AVAILABLE = False
-    print("⚠ Warning: Explainability modules not available.")
+    print("[WARNING] Warning: Explainability modules not available.")
 
 try:
     import tensorflow as tf
@@ -26,7 +26,7 @@ try:
     TENSORFLOW_AVAILABLE = True
 except ImportError:
     TENSORFLOW_AVAILABLE = False
-    print("⚠ Warning: TensorFlow not available. Transformer models will not work.")
+    print("[WARNING] Warning: TensorFlow not available. Transformer models will not work.")
 
 try:
     import torch
@@ -34,7 +34,7 @@ try:
     PYTORCH_AVAILABLE = True
 except ImportError:
     PYTORCH_AVAILABLE = False
-    print("⚠ Warning: PyTorch not available. GNN models will not work.")
+    print("[WARNING] Warning: PyTorch not available. GNN models will not work.")
 
 if TENSORFLOW_AVAILABLE:
     from transformers.prediction.next_activity import NextActivityPredictor
@@ -90,7 +90,7 @@ def detect_and_standardize_columns(df, verbose=True):
         print("COLUMN DETECTION REPORT")
         print("="*70)
         for old, new in column_mapping.items():
-            print(f"{new.upper()}: '{old}' → '{new}'")
+            print(f"{new.upper()}: '{old}' -> '{new}'")
         print("="*70)
     
     if column_mapping:
@@ -147,13 +147,13 @@ def get_dataset_files():
     print("DATASET SELECTION")
     print("-"*70)
     if not os.path.exists(DATASET_DIRECTORY):
-        print(f"✗ Directory not found: {DATASET_DIRECTORY}")
+        print(f"[X] Directory not found: {DATASET_DIRECTORY}")
         print("Please update DATASET_DIRECTORY")
         sys.exit(1)
     csv_pattern = os.path.join(DATASET_DIRECTORY, "*.csv")
     csv_files = glob.glob(csv_pattern)
     if not csv_files:
-        print(f"✗ No CSV files found in: {DATASET_DIRECTORY}")
+        print(f"[X] No CSV files found in: {DATASET_DIRECTORY}")
         sys.exit(1)
     print(f"\nFound {len(csv_files)} CSV file(s) in {DATASET_DIRECTORY}:\n")
     for idx, filepath in enumerate(csv_files, 1):
@@ -162,19 +162,13 @@ def get_dataset_files():
         print(f"  {idx}. {filename} ({filesize:.2f} MB)")
 
     print("\n" + "-"*70)
-    while True:
-        try:
-            choice = input("\nEnter the number of the dataset to use (e.g., 1, 2, 3): ").strip()
-            choice_num = int(choice)
-
-            if 1 <= choice_num <= len(csv_files):
-                selected_file = csv_files[choice_num - 1]
-                print(f"\n✓ Selected: {os.path.basename(selected_file)}")
-                return selected_file
-            else:
-                print(f"Please enter a number between 1 and {len(csv_files)}")
-        except ValueError:
-            print("Please enter a valid number")
+    
+    dataset_options = {idx: os.path.basename(csv_files[idx-1]) for idx in range(1, len(csv_files)+1)}
+    choice = get_user_choice("Select dataset:", dataset_options)
+    
+    selected_file = csv_files[choice - 1]
+    print(f"\n[OK] Selected: {os.path.basename(selected_file)}")
+    return selected_file
 
 def create_output_directory(dataset_path, task_name, model_type, explainability_method):
     initials = get_file_initials(dataset_path)
@@ -193,7 +187,7 @@ def create_output_directory(dataset_path, task_name, model_type, explainability_
     folder_name = f"{model_name}_{task_short}_{explainability_part}_{timestamp}"
     output_dir = os.path.join(BASE_OUTPUT_DIR, folder_name)
     os.makedirs(output_dir, exist_ok=True)
-    print(f"\n✓ Output directory created: {output_dir}")
+    print(f"\n[OK] Output directory created: {output_dir}")
     info_file = os.path.join(output_dir, "dataset_info.txt")
     with open(info_file, 'w') as f:
         f.write(f"Dataset: {os.path.basename(dataset_path)}\n")
@@ -245,9 +239,9 @@ def get_explainability_choice(model_type='transformer'):
     print("EXPLAINABILITY CONFIGURATION")
     print("-"*70)
     print("\nExplainability helps understand model predictions by:")
-    print("  • Identifying important features")
-    print("  • Visualizing decision-making process")
-    print("  • Providing interpretable insights")
+    print("  - Identifying important features")
+    print("  - Visualizing decision-making process")
+    print("  - Providing interpretable insights")
     print("\nNote: Explainability analysis may take additional time")
     
     if model_type == 'gnn':
@@ -423,7 +417,7 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     print(f"{'Test Loss':<30} {metrics['test_loss']:>20.4f}")
     print(f"{'Number of Test Samples':<30} {len(data['X_test']):>20,}")
     print("-"*70)
-    print(f"\n✓ All results saved to: {output_dir}")
+    print(f"\n[OK] All results saved to: {output_dir}")
     print("="*70)
 
 def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
@@ -491,7 +485,7 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
     print(f"{'Test Loss':<30} {metrics['test_loss']:>20.4f}")
     print(f"{'Number of Test Samples':<30} {len(data['X_seq_test']):>20,}")
     print("-"*70)
-    print(f"\n✓ All results saved to: {output_dir}")
+    print(f"\n[OK] All results saved to: {output_dir}")
     print("="*70)
 
 def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
@@ -559,7 +553,7 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print(f"{'Test Loss':<30} {metrics['test_loss']:>20.4f}")
     print(f"{'Number of Test Samples':<30} {len(data['X_seq_test']):>20,}")
     print("-"*70)
-    print(f"\n✓ All results saved to: {output_dir}")
+    print(f"\n[OK] All results saved to: {output_dir}")
     print("="*70)
 
 def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method, task='unified'):
@@ -576,7 +570,7 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         print(f"GNN {task_names.get(task, 'PREDICTION')}")
     print("="*70)
     if not PYTORCH_AVAILABLE:
-        print("\n✗ PyTorch not available. Please install PyTorch and PyTorch Geometric.")
+        print("\n[X] PyTorch not available. Please install PyTorch and PyTorch Geometric.")
         return
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
@@ -680,7 +674,7 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         print(f"{'Remaining Time MAE':<35} {metrics['mae_rem']:>20.4f}")
         print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
     print("-"*70)
-    print(f"\n✓ All results saved to: {output_dir}")
+    print(f"\n[OK] All results saved to: {output_dir}")
     print("="*70)
 
 def main():
@@ -693,14 +687,14 @@ def main():
     model_type = get_user_choice("Select model type:", model_type_options)
     if model_type == 1 and not TENSORFLOW_AVAILABLE:
         print("\n" + "="*70)
-        print("✗ TensorFlow not available")
+        print("[X] TensorFlow not available")
         print("="*70)
         print("\nPlease install TensorFlow to use Transformer models:")
         print("  pip install tensorflow")
         sys.exit(1)
     if model_type == 2 and not PYTORCH_AVAILABLE:
         print("\n" + "="*70)
-        print("✗ PyTorch not available")
+        print("[X] PyTorch not available")
         print("="*70)
         print("\nPlease install PyTorch and PyTorch Geometric to use GNN models:")
         print("  pip install torch torch-geometric")
@@ -776,7 +770,7 @@ def main():
         for key, value in config.items():
             f.write(f"  {key}: {value}\n")
         f.write("\n" + "="*50 + "\n")
-    print(f"\n✓ Configuration saved to: {config_file}")
+    print(f"\n[OK] Configuration saved to: {config_file}")
 
     try:
         if run_gnn:
@@ -789,17 +783,17 @@ def main():
             elif task == 3:
                 run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method)
     except Exception as e:
-        print(f"\n✗ Error occurred: {str(e)}")
+        print(f"\n[X] Error occurred: {str(e)}")
         import traceback
         traceback.print_exc()
         error_file = os.path.join(output_dir, "error_log.txt")
-        with open(error_file, 'w') as f:
+        with open(error_file, 'w', encoding='utf-8') as f:
             f.write("ERROR LOG\n")
             f.write("="*50 + "\n\n")
             f.write(f"Error: {str(e)}\n\n")
             f.write("Traceback:\n")
             traceback.print_exc(file=f)
-        print(f"\n✗ Error log saved to: {error_file}")
+        print(f"\n[X] Error log saved to: {error_file}")
         sys.exit(1)
     print("\n" + "="*70)
     print("Thank you for using Predictive Process Monitoring!")
