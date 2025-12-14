@@ -24,7 +24,7 @@ class ComprehensiveTester:
         
         os.makedirs(TEST_RESULTS_DIR, exist_ok=True)
         
-        with open(TEST_LOG_FILE, 'w') as f:
+        with open(TEST_LOG_FILE, 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
             f.write("COMPREHENSIVE AUTOMATED TEST LOG\n")
             f.write(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -32,12 +32,12 @@ class ComprehensiveTester:
     
     def log(self, message):
         print(message)
-        with open(TEST_LOG_FILE, 'a') as f:
+        with open(TEST_LOG_FILE, 'a', encoding='utf-8') as f:
             f.write(message + "\n")
     
     def get_datasets(self):
         if not os.path.exists(DATASET_DIR):
-            self.log(f"✗ Dataset directory not found: {DATASET_DIR}")
+            self.log(f"[X] Dataset directory not found: {DATASET_DIR}")
             return []
         
         csv_files = [f for f in os.listdir(DATASET_DIR) if f.endswith('.csv')]
@@ -180,7 +180,7 @@ class ComprehensiveTester:
             
             test_duration = time.time() - test_start
             
-            success = process.returncode == 0 and ("✓" in stdout or "All results saved" in stdout)
+            success = process.returncode == 0 and ("[OK]" in stdout or "All results saved" in stdout)
             
             with open(os.path.join(test_folder, "stdout.txt"), 'w', encoding='utf-8') as f:
                 f.write(stdout)
@@ -198,16 +198,16 @@ class ComprehensiveTester:
             }
             
             if success:
-                self.log(f"✓ TEST PASSED ({test_duration:.1f}s)")
+                self.log(f"[OK] TEST PASSED ({test_duration:.1f}s)")
                 self.passed_tests += 1
                 
-                with open(os.path.join(test_folder, "SUCCESS.txt"), 'w') as f:
+                with open(os.path.join(test_folder, "SUCCESS.txt"), 'w', encoding='utf-8') as f:
                     f.write(f"Test passed successfully\n")
                     f.write(f"Duration: {test_duration:.1f}s\n")
                     f.write(f"Return code: {process.returncode}\n")
             
             else:
-                self.log(f"✗ TEST FAILED ({test_duration:.1f}s)")
+                self.log(f"[X] TEST FAILED ({test_duration:.1f}s)")
                 self.failed_tests += 1
                 
                 error_log_path = os.path.join(test_folder, "ERROR_LOG.txt")
@@ -270,11 +270,11 @@ class ComprehensiveTester:
             return success
             
         except TimeoutError as e:
-            self.log(f"✗ TEST TIMEOUT (10 minutes)")
+            self.log(f"[X] TEST TIMEOUT (10 minutes)")
             self.failed_tests += 1
             
             error_log_path = os.path.join(test_folder, "ERROR_LOG.txt")
-            with open(error_log_path, 'w') as f:
+            with open(error_log_path, 'w', encoding='utf-8') as f:
                 f.write("="*80 + "\n")
                 f.write("TIMEOUT ERROR\n")
                 f.write("="*80 + "\n\n")
@@ -294,11 +294,11 @@ class ComprehensiveTester:
             return False
             
         except Exception as e:
-            self.log(f"✗ TEST EXCEPTION: {str(e)}")
+            self.log(f"[X] TEST EXCEPTION: {str(e)}")
             self.failed_tests += 1
             
             error_log_path = os.path.join(test_folder, "ERROR_LOG.txt")
-            with open(error_log_path, 'w') as f:
+            with open(error_log_path, 'w', encoding='utf-8') as f:
                 f.write("="*80 + "\n")
                 f.write("EXCEPTION ERROR\n")
                 f.write("="*80 + "\n\n")
@@ -324,7 +324,7 @@ class ComprehensiveTester:
         
         datasets = self.get_datasets()
         if not datasets:
-            self.log("✗ No datasets found. Exiting.")
+            self.log("[X] No datasets found. Exiting.")
             return
         
         num_datasets = len(datasets)
@@ -333,7 +333,7 @@ class ComprehensiveTester:
         combinations = self.generate_all_combinations(num_datasets)
         total_tests = len(combinations)
         
-        self.log(f"✓ Generated {total_tests} test combinations")
+        self.log(f"[OK] Generated {total_tests} test combinations")
         self.log(f"  - Transformer tests: {len([c for c in combinations if c['model'] == 'transformer'])}")
         self.log(f"  - GNN tests: {len([c for c in combinations if c['model'] == 'gnn'])}")
         self.log(f"  - Tests per dataset: {total_tests // num_datasets}")
@@ -367,14 +367,14 @@ class ComprehensiveTester:
         self.log("COMPREHENSIVE TEST SUMMARY")
         self.log("="*80)
         self.log(f"\nTotal Tests Run: {total_tests}")
-        self.log(f"Passed: {self.passed_tests} ✓")
-        self.log(f"Failed: {self.failed_tests} ✗")
+        self.log(f"Passed: {self.passed_tests} [OK]")
+        self.log(f"Failed: {self.failed_tests} [X]")
         self.log(f"Success Rate: {(self.passed_tests/total_tests*100):.1f}%")
         self.log(f"\nTotal Duration: {total_duration:.1f}s ({total_duration/60:.1f} minutes / {total_duration/3600:.2f} hours)")
         self.log(f"Average per test: {total_duration/total_tests:.1f}s")
         
         summary_file = os.path.join(TEST_RESULTS_DIR, "comprehensive_summary.json")
-        with open(summary_file, 'w') as f:
+        with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "total_tests": total_tests,
                 "passed": self.passed_tests,
@@ -391,7 +391,7 @@ class ComprehensiveTester:
         failures = [r for r in self.results if not r['success']]
         if failures:
             failures_file = os.path.join(TEST_RESULTS_DIR, "failures_summary.txt")
-            with open(failures_file, 'w') as f:
+            with open(failures_file, 'w', encoding='utf-8') as f:
                 f.write("="*80 + "\n")
                 f.write(f"FAILED TESTS SUMMARY ({len(failures)} failures)\n")
                 f.write("="*80 + "\n\n")
@@ -402,17 +402,17 @@ class ComprehensiveTester:
                         f.write(f"  Error: {fail.get('error', 'Unknown error')}\n")
                     f.write("\n")
             
-            self.log(f"\n✓ Failures summary saved: {failures_file}")
+            self.log(f"\n[OK] Failures summary saved: {failures_file}")
         
-        self.log(f"\n✓ Comprehensive summary saved: {summary_file}")
-        self.log(f"✓ Master log saved: {TEST_LOG_FILE}")
-        self.log(f"✓ All test results saved in: {TEST_RESULTS_DIR}/")
+        self.log(f"\n[OK] Comprehensive summary saved: {summary_file}")
+        self.log(f"[OK] Master log saved: {TEST_LOG_FILE}")
+        self.log(f"[OK] All test results saved in: {TEST_RESULTS_DIR}/")
         self.log("\n" + "="*80)
 
 
 def main():
     print("\n" + "="*80)
-    print(" "*20 + "AUTOMATED TESTING")
+    print(" "*20 + "COMPREHENSIVE AUTOMATED TESTING")
     print("="*80)
     print("\nThis will test selected combinations for EACH dataset:")
     print("  • Transformer:")
@@ -437,7 +437,7 @@ def main():
         print(f"  - GNN: {num_datasets * 9} tests (3 tasks × 1 split × 3 explainability)")
         print(f"Estimated time: ~{estimated_hours:.1f} hours")
     else:
-        print(f"\n✗ Dataset directory not found: {DATASET_DIR}")
+        print(f"\n[X] Dataset directory not found: {DATASET_DIR}")
         return
     
     print(f"\nResults will be saved to: {TEST_RESULTS_DIR}/")
