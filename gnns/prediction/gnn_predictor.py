@@ -43,7 +43,6 @@ class GraphFolderDataset(Dataset):
 
 
 class GNNPredictor:
-
     def __init__(self, hidden_channels=64, dropout=0.1, lr=4e-4,
                  loss_weights=(1.0, 0.1, 0.1)):
         self.hidden_channels = hidden_channels

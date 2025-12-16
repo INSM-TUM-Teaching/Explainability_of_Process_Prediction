@@ -27,7 +27,11 @@ class NextActivityPredictor:
     def prepare_data(self, df, test_size=0.3, val_split=0.5):
         print("Preparing data for Next Activity Prediction...")
         process_data = df[['case:id', 'concept:name', 'time:timestamp']].copy()
-        process_data.columns = ['case_id', 'activity', 'timestamp']
+        process_data = process_data.rename(columns={
+            'case:id': 'case_id',
+            'concept:name': 'activity',
+            'time:timestamp': 'timestamp'
+        })
         process_data['timestamp'] = pd.to_datetime(process_data['timestamp'])
         process_data = process_data.sort_values(['case_id', 'timestamp']).reset_index(drop=True)
         sequences, next_activities, metadata = self._create_sequences_with_prefixes(process_data)
