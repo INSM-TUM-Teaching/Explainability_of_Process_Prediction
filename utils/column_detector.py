@@ -3,7 +3,6 @@ import numpy as np
 
 
 class UniversalColumnDetector:
-    
     KNOWN_PATTERNS = {
         'case_id': [
             'case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid',
