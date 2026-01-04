@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Make the React app fill the viewport */
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+}
+
+/* Remove Vite template centering that causes shrink-to-content layouts */
+body {
+  margin: 0;
+  background: #f9fafb; /* matches your wizard bg-gray-50 */
+  color: #111827;
+}
+
+/* Optional: predictable sizing */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
