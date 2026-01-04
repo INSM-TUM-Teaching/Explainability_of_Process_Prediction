@@ -637,7 +637,9 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
             explainability_dir,
             task='activity',
             num_samples=20,
-            methods=explainability_method
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=predictor.scaler
         )
     
     print("\n" + "="*70)
@@ -706,7 +708,9 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
             explainability_dir,
             task='time',
             num_samples=20,
-            methods=explainability_method
+            methods=explainability_method,
+            scaler=predictor.scaler,
+            label_encoder=predictor.label_encoder
         )
     
     print("\n" + "="*70)
@@ -775,7 +779,9 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
             explainability_dir,
             task='time',
             num_samples=20,
-            methods=explainability_method
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=predictor.scaler
         )
     
     print("\n" + "="*70)
