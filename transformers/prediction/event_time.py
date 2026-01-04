@@ -27,7 +27,14 @@ class EventTimePredictor:
     def prepare_data(self, df, test_size=0.3, val_split=0.5):
         print("Preparing data for Event Time Prediction...")
         
-        df = df.copy()
+        required_cols = ['case:concept:name', 'concept:name', 'time:timestamp']
+        available_cols = [col for col in required_cols if col in df.columns]
+        
+        if len(available_cols) != len(required_cols):
+            raise ValueError(f"Missing required columns. Expected: {required_cols}, Found: {available_cols}")
+        
+        df = df[required_cols].copy()
+        
         df['time:timestamp'] = pd.to_datetime(df['time:timestamp'])
         
         df = self._calculate_temporal_features(df)
@@ -70,7 +77,7 @@ class EventTimePredictor:
         
         X_temp_scaled = self.scaler.fit_transform(X_temp)
         
-        self.vocab_size = len(self.label_encoder.classes_) + 2  
+        self.vocab_size = len(self.label_encoder.classes_) + 2
         
         print(f"\nSequence shape: {X_seq.shape}")
         print(f"Temporal features shape: {X_temp_scaled.shape}")
@@ -97,19 +104,15 @@ class EventTimePredictor:
         }
     
     def _calculate_temporal_features(self, df):
-        """Calculate temporal features for each case"""
         def calculate_features(group):
             group = group.sort_values('time:timestamp').reset_index(drop=True)
             
-            # fvt1: Time since previous event (in days)
             group['fvt1'] = group['time:timestamp'].diff().dt.total_seconds() / 86400
             group['fvt1'].fillna(0, inplace=True)
             
-            # fvt2: Time since event before previous (in days)
             group['fvt2'] = (group['time:timestamp'] - group['time:timestamp'].shift(2)).dt.total_seconds() / 86400
             group['fvt2'].fillna(0, inplace=True)
             
-            # fvt3: Time since case start (in days)
             group['fvt3'] = (group['time:timestamp'] - group['time:timestamp'].iloc[0]).dt.total_seconds() / 86400
             
             return group
@@ -119,7 +122,6 @@ class EventTimePredictor:
         return df
     
     def build_model(self):
-        """Build the transformer model for event time prediction"""
         print("\nBuilding Event Time Prediction Model...")
         
         self.model = build_time_prediction_model(
@@ -143,7 +145,6 @@ class EventTimePredictor:
     def train(self, data, epochs=50, batch_size=128, patience=10):
         print(f"\nTraining model for {epochs} epochs...")
         
-        # Early stopping callback
         early_stopping = keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=patience,
@@ -151,7 +152,6 @@ class EventTimePredictor:
             verbose=1
         )
         
-        # Train model
         self.history = self.model.fit(
             [data['X_seq_train'], data['X_temp_train']], 
             data['y_train'],
@@ -199,7 +199,6 @@ class EventTimePredictor:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        #predictions to CSV
         results = pd.DataFrame({
             'actual_event_time_days': data['y_test'],
             'predicted_event_time_days': y_pred,
@@ -259,7 +258,6 @@ class EventTimePredictor:
         
         print(f"Training history plot saved to: {output_path}")
         
-        # training metrics
         print("\nTraining metrics:")
         print(f"Final training loss: {self.history.history['loss'][-1]:.4f}")
         print(f"Final validation loss: {self.history.history['val_loss'][-1]:.4f}")
