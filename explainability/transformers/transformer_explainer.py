@@ -8,7 +8,6 @@ import shap
 from lime import lime_tabular
 import tensorflow as tf
 
-# Standard Research plotting style
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams.update({'font.size': 11, 'font.family': 'sans-serif'})
 
@@ -17,11 +16,18 @@ class SHAPExplainer:
         self.model = model
         self.task = task
         self.label_encoder = label_encoder
-        self.scaler = scaler # Store scaler for future use if needed
+        self.scaler = scaler
         self.explainer = None
         self.shap_values = None
         self.test_data = None
         self.background_temp = None
+        
+        # DEBUG: Print whether label_encoder is available
+        if self.label_encoder is None:
+            print("[WARNING] label_encoder is None - will show generic Activity labels!")
+            print("[FIX] Pass label_encoder to run_transformer_explainability()")
+        else:
+            print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
     def _get_activity_names_for_sample(self, sequence):
         """Maps token indices to real Activity names."""
@@ -32,8 +38,10 @@ class SHAPExplainer:
         for token in sequence:
             if token > 0:
                 try:
-                    names.append(self.label_encoder.inverse_transform([int(token)-1])[0])
-                except:
+                    # Token indices are offset by +1 (0 is padding)
+                    actual_activity = self.label_encoder.inverse_transform([int(token)-1])[0]
+                    names.append(actual_activity)
+                except Exception as e:
                     names.append(f'Token_{int(token)}')
             else:
                 names.append('[PAD]')
@@ -78,13 +86,15 @@ class SHAPExplainer:
         return self.shap_values
 
     def _aggregate_by_activity(self):
-        if self.shap_values is None: return None, None, None
+        if self.shap_values is None: 
+            return None, None, None
 
         values = self.shap_values.values
         
         if self.task == 'activity' and values.ndim == 3:
             values = np.abs(values).mean(axis=2)
         
+        # Collect all unique activity names across all samples
         unique_names = set()
         for seq in self.test_data:
             unique_names.update([n for n in self._get_activity_names_for_sample(seq) if n != '[PAD]'])
@@ -96,6 +106,7 @@ class SHAPExplainer:
         agg_shap_matrix = np.zeros((num_samples, len(sorted_names)))
         agg_feat_matrix = np.zeros((num_samples, len(sorted_names))) 
         
+        # Aggregate SHAP values by activity name
         for i in range(num_samples):
             seq_names = self._get_activity_names_for_sample(self.test_data[i])
             for j, name in enumerate(seq_names):
@@ -143,12 +154,50 @@ class LIMEExplainer:
         self.model = model
         self.task = task
         self.label_encoder = label_encoder
-        self.scaler = scaler # NEW: Store scaler for inverse transform
+        self.scaler = scaler
         self.explainer = None
         self.explanations = []
         self.test_data_seq = None
         self.test_data_temp = None
         self.is_multi_input = False
+        
+        # DEBUG: Print whether label_encoder is available
+        if self.label_encoder is None:
+            print("[WARNING] label_encoder is None - LIME will show generic Activity labels!")
+            print("[FIX] Pass label_encoder to run_transformer_explainability()")
+        else:
+            print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
+        
+    def _aggregate_feature_names(self, data):
+        """
+        Aggregate position-based features into activity-based features.
+        For each position, find the most common activity across all samples.
+        """
+        if self.label_encoder is None:
+            return [f'Position_{i+1}' for i in range(data.shape[1])]
+        
+        feature_names = []
+        for pos in range(data.shape[1]):
+            activities_at_pos = []
+            for sample in data:
+                token = sample[pos]
+                if token > 0:
+                    try:
+                        # Token indices are offset by +1 (0 is padding)
+                        activity = self.label_encoder.inverse_transform([int(token) - 1])[0]
+                        activities_at_pos.append(activity)
+                    except:
+                        pass
+            
+            if activities_at_pos:
+                # Find most common activity at this position
+                most_common = max(set(activities_at_pos), key=activities_at_pos.count)
+                feature_names.append(most_common)
+            else:
+                # Fallback for padding-only positions
+                feature_names.append(f'Position_{pos+1}')
+        
+        return feature_names
         
     def initialize_explainer(self, training_data, num_classes=None):
         print("Initializing LIME Explainer...")
@@ -157,8 +206,9 @@ class LIMEExplainer:
             init_data = training_data[0]
         else:
             init_data = training_data
-            
-        feature_names = [f'Position_{i+1}' for i in range(init_data.shape[1])]
+        
+        # Aggregate feature names based on actual activities
+        feature_names = self._aggregate_feature_names(init_data)
         
         class_names = None
         mode = 'regression'
@@ -181,7 +231,6 @@ class LIMEExplainer:
     
     def explain_samples(self, test_data, num_samples=10, num_features=15):
         print(f"Generating LIME explanations for {num_samples} samples...")
-        self.explanations = []
         
         if isinstance(test_data, (list, tuple)):
             self.test_data_seq = test_data[0][:num_samples]
@@ -225,10 +274,14 @@ class LIMEExplainer:
         return self.explanations
 
     def _get_activity_name(self, token_idx):
-        if token_idx == 0: return "[PAD]"
+        """Map single token to activity name."""
+        if token_idx == 0: 
+            return "[PAD]"
         if self.label_encoder:
-            try: return self.label_encoder.inverse_transform([int(token_idx)-1])[0]
-            except: pass
+            try: 
+                return self.label_encoder.inverse_transform([int(token_idx)-1])[0]
+            except: 
+                pass
         return f"Activity_{int(token_idx)}"
 
     def plot_explanation(self, output_dir, sample_idx=0):
@@ -252,17 +305,11 @@ class LIMEExplainer:
                 title = f"LIME Explanation (Sample {sample_idx})\nPredicted Class: {label_to_explain} | Confidence: {confidence:.2f}"
                 lime_list = exp.as_list(label=label_to_explain)
             else:
-                # --- REGRESSION FIX ---
                 raw_pred = exp.predicted_value
                 display_val = raw_pred
                 
-                # If scaler is provided, Inverse Transform to show Real Values (Days/Time)
                 if self.scaler is not None:
-                    # Inverse Z-Score
                     unscaled = self.scaler.inverse_transform([[raw_pred]])[0][0]
-                    # Note: Since your training used np.log1p(), we should ideally use np.expm1()
-                    # to get back to exact seconds, but getting back to positive scale is usually enough for the plot.
-                    # We will use the unscaled value directly as it represents 'Log Seconds' or 'Normalized Days' better than 0.00
                     display_val = unscaled
                     
                 title = f"LIME Explanation (Sample {sample_idx})\nPredicted Value: {display_val:.2f}"
@@ -275,15 +322,28 @@ class LIMEExplainer:
 
         activity_stats = {} 
         for rule, weight in lime_list:
-            match = re.search(r'Position_(\d+)', rule)
-            if match:
-                pos = int(match.group(1)) - 1
-                if 0 <= pos < len(current_seq):
-                    name = self._get_activity_name(current_seq[pos])
-                    if name not in activity_stats:
-                        activity_stats[name] = {'weight': 0.0, 'count': 0}
-                    activity_stats[name]['weight'] += weight
-                    activity_stats[name]['count'] += 1
+            # Try to extract activity name from rule
+            # Rules can be: "Create Order <= 3.00" or just "Create Order"
+            if rule.startswith('Position_'):
+                # Old-style Position_N label - extract position and map to activity
+                match = re.search(r'Position_(\d+)', rule)
+                if match:
+                    pos = int(match.group(1)) - 1
+                    if 0 <= pos < len(current_seq):
+                        name = self._get_activity_name(current_seq[pos])
+                    else:
+                        name = rule
+                else:
+                    name = rule
+            else:
+                # Activity name from aggregated feature_names
+                # Extract base name (remove conditions like "<= 3.00")
+                name = rule.split('<=')[0].split('>')[0].strip()
+            
+            if name not in activity_stats:
+                activity_stats[name] = {'weight': 0.0, 'count': 0}
+            activity_stats[name]['weight'] += weight
+            activity_stats[name]['count'] += 1
         
         data = []
         for name, stats in activity_stats.items():
@@ -331,11 +391,36 @@ class LIMEExplainer:
     def save_explanations(self, output_dir):
         print("✓ LIME computations complete.")
 
+
 def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=20, methods='all', label_encoder=None, scaler=None):
+    """
+    Run explainability analysis on Transformer model.
+    
+    CRITICAL: Must pass label_encoder to get actual activity names!
+    
+    Args:
+        model: Trained Transformer model
+        data: Dictionary with train/test data
+        output_dir: Where to save results
+        task: 'activity', 'time', or 'remaining_time'
+        num_samples: Number of test samples to explain
+        methods: 'shap', 'lime', or 'all'
+        label_encoder: LabelEncoder from predictor (REQUIRED for activity names!)
+        scaler: StandardScaler from predictor (optional)
+    """
     os.makedirs(output_dir, exist_ok=True)
+    
     print("="*60)
     print(f"EXPLAINABILITY MODULE: {task.upper()} PREDICTION")
     print("="*60)
+    
+    # Check if label_encoder was provided
+    if label_encoder is None:
+        print("\n" + "!"*60)
+        print("WARNING: label_encoder is None!")
+        print("Plots will show generic labels like 'Activity_4'")
+        print("To fix: Pass predictor.label_encoder to this function")
+        print("!"*60 + "\n")
     
     if task == 'activity':
         train_data = data['X_train']
@@ -350,7 +435,6 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         print("\n--- Running SHAP ---")
         shap_dir = os.path.join(output_dir, 'shap')
         os.makedirs(shap_dir, exist_ok=True)
-        # Pass scaler here if you want to use it for SHAP too (optional)
         se = SHAPExplainer(model, task, label_encoder, scaler)
         se.initialize_explainer(train_data)
         se.explain_samples(test_data, num_samples)
@@ -363,7 +447,6 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         lime_dir = os.path.join(output_dir, 'lime')
         os.makedirs(lime_dir, exist_ok=True)
         
-        # Pass Scaler to LIME for Inverse Transforming Title
         le = LIMEExplainer(model, task, label_encoder, scaler)
         le.initialize_explainer(train_data, num_classes)
         le.explain_samples(test_data, num_samples)
