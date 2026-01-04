@@ -43,6 +43,7 @@ class GraphFolderDataset(Dataset):
 
 
 class GNNPredictor:
+
     def __init__(self, hidden_channels=64, dropout=0.1, lr=4e-4,
                  loss_weights=(1.0, 0.1, 0.1)):
         self.hidden_channels = hidden_channels
@@ -104,7 +105,7 @@ class GNNPredictor:
                         "prefix_pos": pos,
                         "prefix_length": k,
                         "Activity": ev["Activity"],
-                        "Resource": ev["Resource"],
+                        "Resource": ev["Resource"] if "Resource" in ev else "Unknown",
                         "Timestamp": ev["Timestamp"],
                         "next_activity": label_next_activity,
                     }
@@ -131,7 +132,7 @@ class GNNPredictor:
                 continue
             vals = sorted(prefix_df[col].fillna("NaN").unique().tolist())
             vocabs[col] = {v: i for i, v in enumerate(vals)}
-        
+        self.vocabs = vocabs
         print(f"Vocabularies: Activities={len(vocabs['Activity'])}, Resources={len(vocabs['Resource'])}")
         
         groups = prefix_df.groupby(["CaseID", "prefix_id"])
@@ -215,7 +216,7 @@ class GNNPredictor:
             
             graphs.append(data)
         
-        print(f"✓ Built {len(graphs):,} graphs")
+        print(f"[OK] Built {len(graphs):,} graphs")
         
         n_total = len(graphs)
         n_test = int(n_total * test_size)
@@ -234,7 +235,8 @@ class GNNPredictor:
             'val': val_graphs,
             'test': test_graphs,
             'sample_graph': graphs[0],
-            'num_activity_classes': len(vocabs['Activity'])
+            'num_activity_classes': len(vocabs['Activity']),
+            'vocabs': vocabs
         }
 
     def prepare_data_from_graphs(self, graph_folder, test_size=0.3, val_split=0.5):

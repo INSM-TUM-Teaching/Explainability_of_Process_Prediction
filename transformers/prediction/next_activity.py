@@ -26,12 +26,14 @@ class NextActivityPredictor:
     
     def prepare_data(self, df, test_size=0.3, val_split=0.5):
         print("Preparing data for Next Activity Prediction...")
-        process_data = df[['case:id', 'concept:name', 'time:timestamp']].copy()
-        process_data = process_data.rename(columns={
-            'case:id': 'case_id',
-            'concept:name': 'activity',
-            'time:timestamp': 'timestamp'
-        })
+        
+        # Required columns
+        required_cols = ['case:id', 'concept:name', 'time:timestamp']
+        available_cols = [col for col in required_cols if col in df.columns]
+        if len(available_cols) != len(required_cols):
+            raise ValueError(f"Missing required columns. Expected: {required_cols}, Found: {available_cols}")
+        process_data = df[required_cols].copy()
+        process_data.columns = ['case_id', 'activity', 'timestamp']
         process_data['timestamp'] = pd.to_datetime(process_data['timestamp'])
         process_data = process_data.sort_values(['case_id', 'timestamp']).reset_index(drop=True)
         sequences, next_activities, metadata = self._create_sequences_with_prefixes(process_data)
@@ -54,10 +56,9 @@ class NextActivityPredictor:
         
         X = X + 1
         y = y_encoded + 1
-        self.vocab_size = len(self.label_encoder.classes_) + 2  # +1 for encoding, +1 for padding
+        self.vocab_size = len(self.label_encoder.classes_) + 2
         print(f"Vocabulary size: {self.vocab_size}")
         print(f"Number of unique activities: {len(self.label_encoder.classes_)}")
-        # Split data: train, validation, test
         X_train, X_temp, y_train, y_temp = train_test_split(
             X, y, test_size=test_size, random_state=42
         )
@@ -113,7 +114,6 @@ class NextActivityPredictor:
             num_blocks=self.num_blocks,
             dropout_rate=self.dropout_rate
         )
-        # Compile model
         self.model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=0.001),
             loss='sparse_categorical_crossentropy',
@@ -125,7 +125,6 @@ class NextActivityPredictor:
     
     def train(self, data, epochs=50, batch_size=128, patience=10):
         print(f"\nTraining model for {epochs} epochs...")
-        # Early stopping callback
         early_stopping = keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=patience,
@@ -133,7 +132,6 @@ class NextActivityPredictor:
             verbose=1
         )
         
-        # Train model
         self.history = self.model.fit(
             data['X_train'], data['y_train'],
             validation_data=(data['X_val'], data['y_val']),
@@ -170,12 +168,11 @@ class NextActivityPredictor:
         print("\nSaving results...")
         os.makedirs(output_dir, exist_ok=True)
         
-        # Prepare results
         results = []
         for i in range(len(data['X_test'])):
             seq = data['X_test'][i]
-            seq = seq[seq > 0]  # Remove padding
-            seq = seq - 1  # Undo encoding offset
+            seq = seq[seq > 0]
+            seq = seq - 1
             decoded_seq = self.label_encoder.inverse_transform(seq)
             
             true_decoded = self.label_encoder.inverse_transform([data['y_test'][i] - 1])[0]
@@ -206,7 +203,6 @@ class NextActivityPredictor:
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
         
-        # Accuracy
         ax1.plot(self.history.history["accuracy"], label="Training Accuracy", linewidth=2)
         ax1.plot(self.history.history["val_accuracy"], label="Validation Accuracy", linewidth=2)
         ax1.set_title("Model Accuracy Over Time", fontsize=14)
@@ -215,7 +211,6 @@ class NextActivityPredictor:
         ax1.legend(fontsize=11)
         ax1.grid(True, alpha=0.3)
         
-        # Loss
         ax2.plot(self.history.history["loss"], label="Training Loss", linewidth=2)
         ax2.plot(self.history.history["val_loss"], label="Validation Loss", linewidth=2)
         ax2.set_title("Model Loss Over Time", fontsize=14)
@@ -231,7 +226,6 @@ class NextActivityPredictor:
         
         print(f"Training history plot saved to: {output_path}")
         
-        # training metrics
         print("\nTraining metrics:")
         print(f"Final training accuracy: {self.history.history['accuracy'][-1] * 100:.2f}%")
         print(f"Final validation accuracy: {self.history.history['val_accuracy'][-1] * 100:.2f}%")
