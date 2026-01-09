@@ -28,12 +28,24 @@ class RemainingTimePredictor:
     
     def prepare_data(self, df, test_size=0.3, val_split=0.5):
         print("Preparing data for Remaining Time Prediction...")
-        df = df.copy()
+        
+        required_cols = ['case:concept:name', 'concept:name', 'time:timestamp']
+        available_cols = [col for col in required_cols if col in df.columns]
+        
+        if len(available_cols) != len(required_cols):
+            raise ValueError(f"Missing required columns. Expected: {required_cols}, Found: {available_cols}")
+        
+        df = df[required_cols].copy()
+        
         df['time:timestamp'] = pd.to_datetime(df['time:timestamp'])
+        
         df = self._calculate_temporal_features(df)
+        
         self.label_encoder.fit(df['concept:name'])
         df['activity_encoded'] = self.label_encoder.transform(df['concept:name'])
+        
         grouped = df.groupby('case:concept:name')
+        
         sequences = []
         temporal_features = []
         remaining_times = []
@@ -53,8 +65,10 @@ class RemainingTimePredictor:
                 sequences.append(seq)
                 temporal_features.append(temp_feat)
                 remaining_times.append(time_remaining)
+        
         print(f"Total training samples: {len(sequences):,}")
         print(f"Example sequence length range: {min(map(len, sequences))} to {max(map(len, sequences))}")
+        
         X_seq = keras.preprocessing.sequence.pad_sequences(
             sequences, maxlen=self.max_len, padding='pre', value=0
         )
@@ -63,14 +77,14 @@ class RemainingTimePredictor:
         X_temp = np.array(temporal_features)
         y_remaining = np.array(remaining_times)
         X_temp_scaled = self.scaler.fit_transform(X_temp)
-        self.vocab_size = len(self.label_encoder.classes_) + 2  # +1 for encoding, +1 for padding
+        
+        self.vocab_size = len(self.label_encoder.classes_) + 2
         
         print(f"\nSequence shape: {X_seq.shape}")
         print(f"Temporal features shape: {X_temp_scaled.shape}")
         print(f"Remaining time targets shape: {y_remaining.shape}")
         print(f"Vocabulary size: {self.vocab_size}")
         
-        # Split data: train, validation, test
         X_seq_train, X_seq_temp, X_temp_train, X_temp_temp, y_train, y_temp = train_test_split(
             X_seq, X_temp_scaled, y_remaining, test_size=test_size, random_state=42
         )
@@ -94,15 +108,12 @@ class RemainingTimePredictor:
         def calculate_features(group):
             group = group.sort_values('time:timestamp').reset_index(drop=True)
             
-            # fvt1: Time since previous event (in days)
             group['fvt1'] = group['time:timestamp'].diff().dt.total_seconds() / 86400
             group['fvt1'].fillna(0, inplace=True)
             
-            # fvt2: Time since event before previous (in days)
             group['fvt2'] = (group['time:timestamp'] - group['time:timestamp'].shift(2)).dt.total_seconds() / 86400
             group['fvt2'].fillna(0, inplace=True)
             
-            # fvt3: Time since case start (in days)
             group['fvt3'] = (group['time:timestamp'] - group['time:timestamp'].iloc[0]).dt.total_seconds() / 86400
             return group
         
@@ -130,14 +141,12 @@ class RemainingTimePredictor:
     
     def train(self, data, epochs=50, batch_size=128, patience=10):
         print(f"\nTraining model for {epochs} epochs...")
-        # Early stopping callback
         early_stopping = keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=patience,
             restore_best_weights=True,
             verbose=1
         )
-        # Train model
         self.history = self.model.fit(
             [data['X_seq_train'], data['X_temp_train']], 
             data['y_train'],
@@ -178,7 +187,6 @@ class RemainingTimePredictor:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # Save predictions to CSV
         results = pd.DataFrame({
             'actual_remaining_time_days': data['y_test'],
             'predicted_remaining_time_days': y_pred,
