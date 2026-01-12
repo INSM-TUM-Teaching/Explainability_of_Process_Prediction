@@ -7,7 +7,11 @@ import Step1Upload from "../steps/Step1Upload";
 import Step2Model from "../steps/Step2Model";
 import Step3Prediction from "../steps/Step3Prediction";
 import Step4Explainability, { type ExplainValue } from "../steps/Step4Explainability";
-import Step5Config, { ConfigMode } from "../steps/Step5Config";
+import Step5Config, {
+  type ConfigMode,
+  type GnnConfig,
+  type TransformerConfig,
+} from "../steps/Step5Config";
 import Step6Review from "../steps/Step6Review";
 import ResultsView from "../results/ResultsView";
 
@@ -42,7 +46,7 @@ function normalizeTask(
   const s = v.toLowerCase().trim();
 
   if (s === "next_activity" || s.includes("next activity")) return "next_activity";
-  if (s === "event_time" || s.includes("event time")) return "event_time";
+  if (s === "event_time" || s.includes("event time") || s === "timestamp") return "event_time";
   if (s === "remaining_time" || s.includes("remaining time")) return "remaining_time";
   if (s === "unified") return "unified";
 
@@ -57,7 +61,37 @@ function isExplainAllowed(
   if (!model) return true;
 
   if (model === "transformer") return explain === "lime" || explain === "shap";
-  return explain === "gradient_based" || explain === "graphlime";
+  return explain === "gradient" || explain === "lime";
+}
+
+function validateTransformerConfig(cfg: TransformerConfig): boolean {
+  const positiveInts = [
+    cfg.max_len,
+    cfg.d_model,
+    cfg.num_heads,
+    cfg.num_blocks,
+    cfg.epochs,
+    cfg.batch_size,
+    cfg.patience,
+  ].every((v) => Number.isInteger(v) && v > 0);
+
+  const dropoutOk =
+    typeof cfg.dropout_rate === "number" && cfg.dropout_rate > 0 && cfg.dropout_rate < 1;
+
+  return positiveInts && dropoutOk;
+}
+
+function validateGnnConfig(cfg: GnnConfig): boolean {
+  const positiveInts = [cfg.hidden, cfg.epochs, cfg.batch_size, cfg.patience].every(
+    (v) => Number.isInteger(v) && v > 0
+  );
+
+  const dropoutOk =
+    typeof cfg.dropout_rate === "number" && cfg.dropout_rate > 0 && cfg.dropout_rate < 1;
+
+  const lrOk = typeof cfg.lr === "number" && cfg.lr > 0;
+
+  return positiveInts && dropoutOk && lrOk;
 }
 
 export default function WizardLayout() {
@@ -71,6 +105,37 @@ export default function WizardLayout() {
   const [predictionTask, setPredictionTask] = useState<string | null>(null);
   const [explainMethod, setExplainMethod] = useState<ExplainValue | null>(null);
   const [configMode, setConfigMode] = useState<ConfigMode | null>(null);
+
+  /* -------------------- CONFIG STATE -------------------- */
+  const defaultTransformerConfig = useMemo<TransformerConfig>(
+    () => ({
+      max_len: 16,
+      d_model: 64,
+      num_heads: 4,
+      num_blocks: 2,
+      dropout_rate: 0.1,
+      epochs: 5,
+      batch_size: 128,
+      patience: 10,
+    }),
+    []
+  );
+
+  const defaultGnnConfig = useMemo<GnnConfig>(
+    () => ({
+      hidden: 64,
+      dropout_rate: 0.1,
+      lr: 4e-4,
+      epochs: 5,
+      batch_size: 64,
+      patience: 10,
+    }),
+    []
+  );
+
+  const [transformerConfig, setTransformerConfig] =
+    useState<TransformerConfig>(defaultTransformerConfig);
+  const [gnnConfig, setGnnConfig] = useState<GnnConfig>(defaultGnnConfig);
 
   /* -------------------- RUN STATE -------------------- */
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>("idle");
@@ -109,8 +174,18 @@ export default function WizardLayout() {
         return taskNormalized !== null;
       case 3:
         return explainMethod !== null;
-      case 4:
-        return configMode !== null;
+      case 4: {
+        if (!modelTypeNormalized) return false;
+        if (configMode === null) return false;
+
+        if (modelTypeNormalized === "transformer") {
+          return configMode === "default" || validateTransformerConfig(transformerConfig);
+        }
+        if (modelTypeNormalized === "gnn") {
+          return configMode === "default" || validateGnnConfig(gnnConfig);
+        }
+        return false;
+      }
       default:
         return true;
     }
@@ -156,6 +231,11 @@ export default function WizardLayout() {
     const nextModel = normalizeModelType(v);
     setModelType(v);
 
+    // Reset Step 5 config when model changes
+    setConfigMode(null);
+    setTransformerConfig(defaultTransformerConfig);
+    setGnnConfig(defaultGnnConfig);
+
     if (!isExplainAllowed(explainMethod, nextModel)) {
       setExplainMethod(null);
     }
@@ -171,6 +251,8 @@ export default function WizardLayout() {
     setPredictionTask(null);
     setExplainMethod(null);
     setConfigMode(null);
+    setTransformerConfig(defaultTransformerConfig);
+    setGnnConfig(defaultGnnConfig);
 
     setPipelineStatus("idle");
     setProgress(0);
@@ -208,6 +290,14 @@ export default function WizardLayout() {
     }
 
     const explainToSend = isExplainAllowed(explainMethod, mt) ? explainMethod : null;
+    const configToSend =
+      mt === "transformer"
+        ? configMode === "custom"
+          ? transformerConfig
+          : defaultTransformerConfig
+        : configMode === "custom"
+        ? gnnConfig
+        : defaultGnnConfig;
 
     setPipelineStatus("running");
     setProgress(5);
@@ -217,7 +307,7 @@ export default function WizardLayout() {
         dataset_id: dataset.dataset_id,
         model_type: mt,
         task,
-        config: {},
+        config: configToSend,
         split: { test_size: 0.2, val_split: 0.5 },
         explainability: explainToSend,
       });
@@ -330,7 +420,19 @@ export default function WizardLayout() {
                 />
               )}
 
-              {step === 4 && <Step5Config mode={configMode} onSelect={setConfigMode} />}
+              {step === 4 && (
+                <Step5Config
+                  modelType={modelTypeNormalized}
+                  mode={configMode}
+                  onSelect={setConfigMode}
+                  transformerConfig={transformerConfig}
+                  onTransformerChange={setTransformerConfig}
+                  defaultTransformerConfig={defaultTransformerConfig}
+                  gnnConfig={gnnConfig}
+                  onGnnChange={setGnnConfig}
+                  defaultGnnConfig={defaultGnnConfig}
+                />
+              )}
 
               {step === 5 && (
                 <Step6Review

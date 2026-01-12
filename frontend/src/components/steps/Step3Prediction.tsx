@@ -30,7 +30,7 @@ export default function Step3Prediction({ task, onSelect }: Step3PredictionProps
         }`}
       >
         <div className="pr-6 min-w-0">
-          <div className="font-medium text-gray-900">Next Activity Predictor</div>
+          <div className="font-medium text-gray-900">Next Activity Prediction</div>
           <div className="text-sm text-gray-600 mt-1 break-words">
             Predict the next activity in a running process instance.
           </div>
@@ -43,21 +43,21 @@ export default function Step3Prediction({ task, onSelect }: Step3PredictionProps
         />
       </div>
 
-      {/* Timestamp */}
+      {/* Event Time */}
       <div
-        onClick={() => onSelect("timestamp")}
-        className={`${baseCard} ${isSelected("timestamp") ? selectedCard : unselectedCard}`}
+        onClick={() => onSelect("event_time")}
+        className={`${baseCard} ${isSelected("event_time") ? selectedCard : unselectedCard}`}
       >
         <div className="pr-6 min-w-0">
-          <div className="font-medium text-gray-900">Timestamp Predictor</div>
+          <div className="font-medium text-gray-900">Event Time Prediction</div>
           <div className="text-sm text-gray-600 mt-1 break-words">
-            Predict the timestamp for the next activity occurrence.
+            Predict the time until the next event occurs.
           </div>
         </div>
 
         <div
           className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-            isSelected("timestamp") ? "border-blue-600 bg-blue-600" : "border-gray-300"
+            isSelected("event_time") ? "border-blue-600 bg-blue-600" : "border-gray-300"
           }`}
         />
       </div>
@@ -70,7 +70,7 @@ export default function Step3Prediction({ task, onSelect }: Step3PredictionProps
         }`}
       >
         <div className="pr-6 min-w-0">
-          <div className="font-medium text-gray-900">Remaining Time Predictor</div>
+          <div className="font-medium text-gray-900">Remaining Time Prediction</div>
           <div className="text-sm text-gray-600 mt-1 break-words">
             Estimate the time required to complete the process.
           </div>

@@ -57,12 +57,6 @@ export default function Step1Upload({
       return;
     }
 
-    // NOTE: backend currently supports CSV only unless you add XES parsing server-side.
-    if (ext === "xes") {
-      setError("XES upload is not supported by the backend yet. Please upload CSV for now.");
-      return;
-    }
-
     setIsUploading(true);
     try {
       const resp = await uploadDataset(file);
@@ -166,7 +160,7 @@ export default function Step1Upload({
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <ul className="text-sm text-gray-700 list-disc ml-5 space-y-1">
             <li>File size: Maximum 100 MB (checked in frontend + backend)</li>
-            <li>Formats: CSV or XES (XES requires backend support; currently CSV only)</li>
+            <li>Formats: CSV or XES</li>
             <li>Required columns: Case ID, Activity, Timestamp (validated in backend via auto-detection)</li>
           </ul>
         </div>

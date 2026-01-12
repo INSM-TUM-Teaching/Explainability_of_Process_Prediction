@@ -22,7 +22,8 @@ app = FastAPI(title="PPM Backend", version="0.1.0")
 # Allow the Vite frontend to call the API during development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    # Allow localhost dev servers on any port (Vite commonly uses 5173/5174, etc.)
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,6 +34,8 @@ app.add_middleware(
 # -----------------------------------------------------------------------------
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))            # .../repo/backend
 REPO_ROOT = os.path.dirname(BACKEND_DIR)                            # .../repo
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)  # allow importing project-level modules
 
 STORAGE_DIR = os.path.join(BACKEND_DIR, "storage")
 UPLOAD_DIR = os.path.join(STORAGE_DIR, "uploads")
@@ -255,23 +258,25 @@ def health():
 @app.post("/datasets/upload", response_model=DatasetUploadResponse)
 async def upload_dataset(file: UploadFile = File(...)):
     """
-    Upload a CSV dataset. Stores it on disk, parses it, detects column mapping,
-    and writes metadata to backend/storage/datasets/<dataset_id>/meta.json
+    Upload a CSV or XES dataset. Stores it on disk, converts XES→CSV when needed,
+    parses it, detects column mapping, and writes metadata to backend/storage/datasets/<dataset_id>/meta.json
     """
     filename = file.filename or "dataset.csv"
-    if not filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only CSV files are supported right now.")
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in {"csv", "xes"}:
+        raise HTTPException(status_code=400, detail="Only CSV or XES files are supported.")
 
     dataset_id = str(uuid.uuid4())
     ds_dir = _dataset_dir(dataset_id)
     os.makedirs(ds_dir, exist_ok=True)
 
-    stored_path = _dataset_file_path(dataset_id)
+    stored_path = _dataset_file_path(dataset_id)  # final normalized CSV path
+    raw_path = stored_path if ext == "csv" else os.path.join(ds_dir, "dataset.xes")
 
     # Save stream to disk with size enforcement
     size = 0
     try:
-        with open(stored_path, "wb") as out:
+        with open(raw_path, "wb") as out:
             while True:
                 chunk = await file.read(1024 * 1024)  # 1MB
                 if not chunk:
@@ -286,13 +291,34 @@ async def upload_dataset(file: UploadFile = File(...)):
     finally:
         await file.close()
 
-    # Parse with pandas
+    # Parse / convert
     try:
-        df = pd.read_csv(stored_path)
+        if ext == "csv":
+            df = pd.read_csv(stored_path)
+        else:
+            try:
+                from conv_and_viz.xes_to_csv import convert_xes_to_csv
+            except ImportError:
+                shutil.rmtree(ds_dir, ignore_errors=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail="XES support requires pm4py; install backend dependencies.",
+                )
+
+            try:
+                csv_path, df, _ = convert_xes_to_csv(raw_path, ds_dir)
+            except Exception as e:
+                shutil.rmtree(ds_dir, ignore_errors=True)
+                raise HTTPException(status_code=400, detail=f"Failed to convert XES: {str(e)}")
+
+            # Normalize to dataset.csv for downstream code
+            if os.path.abspath(csv_path) != os.path.abspath(stored_path):
+                shutil.copyfile(csv_path, stored_path)
+    except HTTPException:
+        raise
     except Exception as e:
-        # cleanup on failure
         shutil.rmtree(ds_dir, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to parse dataset: {str(e)}")
 
     # Detect & standardize
     try:

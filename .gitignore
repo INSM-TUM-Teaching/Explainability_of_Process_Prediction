@@ -60,3 +60,9 @@ transformers.ipynb
 # --- Do NOT commit local GNN extras (your request) ---
 gnn/
 gnns/graph_lime.py
+node_modules/
+frontend/tsconfig.tsbuildinfo
+
+__pycache__/
+*.pyc
+.venv/

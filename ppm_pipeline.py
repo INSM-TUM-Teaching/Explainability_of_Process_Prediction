@@ -317,15 +317,26 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
 
     if explainability_method and EXPLAINABILITY_AVAILABLE:
         explainability_dir = os.path.join(output_dir, 'explainability')
+        if task == 'unified':
+            tasks_to_explain = ['activity', 'event_time', 'remaining_time']
+        elif task == 'next_activity':
+            tasks_to_explain = ['activity']
+        elif task == 'event_time':
+            tasks_to_explain = ['event_time']
+        elif task == 'remaining_time':
+            tasks_to_explain = ['remaining_time']
+        else:
+            tasks_to_explain = ['activity']
+
         run_gnn_explainability(
             predictor.model,
             data,
             explainability_dir,
             predictor.device,
-            output_dir,
-            dataset_path,
+            vocabularies=data.get('vocabs'),
             num_samples=10,
-            methods=explainability_method
+            methods=explainability_method,
+            tasks=tasks_to_explain,
         )
 
     return metrics

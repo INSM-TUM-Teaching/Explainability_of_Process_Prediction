@@ -1,7 +1,10 @@
 // frontend/src/components/steps/Step4Explainability.tsx
 import Card from "../ui/card";
 
-export type ExplainValue = "lime" | "shap" | "gradient_based" | "graphlime";
+// NOTE: Values must match backend expectations.
+// - transformer: "lime" | "shap"
+// - gnn: "gradient" | "lime" (GraphLIME)
+export type ExplainValue = "lime" | "shap" | "gradient";
 
 type Step4ExplainabilityProps = {
   modelType: "gnn" | "transformer" | null;
@@ -39,13 +42,13 @@ export default function Step4Explainability({
       ]
     : [
         {
-          value: "gradient_based",
+          value: "gradient",
           title: "Gradient-Based",
           description:
             "Uses gradients to estimate which input features influence predictions most strongly.",
         },
         {
-          value: "graphlime",
+          value: "lime",
           title: "GraphLIME",
           description:
             "Graph-specific local explanations. Identifies important substructures/features for a prediction.",

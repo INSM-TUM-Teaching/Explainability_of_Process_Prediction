@@ -2,6 +2,16 @@
 import type { DatasetUploadResponse, RunStatus } from "../../lib/api";
 import { artifactUrl } from "../../lib/api";
 
+function formatPredictionTask(task: string | null): string {
+  if (!task) return "-";
+  const s = task.toLowerCase().trim();
+  if (s === "next_activity" || s.includes("next activity")) return "Next Activity Prediction";
+  if (s === "event_time" || s.includes("event time") || s === "timestamp") return "Event Time Prediction";
+  if (s === "remaining_time" || s.includes("remaining time")) return "Remaining Time Prediction";
+  if (s === "unified") return "Unified Prediction";
+  return task;
+}
+
 type Step6ReviewProps = {
   uploadedFile: File | null;
   dataset: DatasetUploadResponse | null;
@@ -72,7 +82,7 @@ export default function Step6Review({
             }
           />
           <SummaryItem label="Model Type" value={modelType ?? "-"} />
-          <SummaryItem label="Prediction Task" value={predictionTask ?? "-"} />
+          <SummaryItem label="Prediction Task" value={formatPredictionTask(predictionTask)} />
           <SummaryItem label="Explainability" value={explainMethod ?? "-"} />
           <SummaryItem label="Configuration" value={configLabel} />
           <SummaryItem label="Run ID" value={runId ?? "-"} />
