@@ -91,3 +91,69 @@ Usage Steps (After executing main.py)
 
 6. Results saved to results/
 
+
+Frontend
+Prerequisites
+
+Node.js 18+ (recommended) and npm
+
+Setup & Run (Development)
+# From repo root:
+cd frontend
+
+# Install dependencies
+npm install
+
+# Create local env file (frontend uses Vite env vars)
+# macOS/Linux:
+cp .env.example .env.local 2>/dev/null || true
+# Windows (PowerShell):
+# Copy-Item .env.example .env.local -ErrorAction SilentlyContinue
+
+# Put this line into frontend/.env.local
+# (Adjust if your backend runs on a different host/port)
+VITE_API_BASE_URL=http://localhost:8000
+
+# Start the frontend dev server
+npm run dev
+
+
+Frontend will be available at:
+
+http://localhost:5173
+
+Backend (FastAPI)
+Setup & Run
+# From repo root:
+cd backend
+
+# Activate venv (example)
+source .venv/bin/activate    # Windows: .venv\Scripts\activate
+
+# Install backend dependencies (if not installed yet)
+pip install -r requirements.txt
+
+# Run the API
+uvicorn main:app --reload --port 8000
+
+
+Backend will be available at:
+
+API: http://localhost:8000
+
+Swagger: http://localhost:8000/docs
+
+Run Both (Two Terminals)
+
+Terminal 1 (Backend):
+
+cd backend
+source .venv/bin/activate
+uvicorn main:app --reload --port 8000
+
+
+Terminal 2 (Frontend):
+
+cd frontend
+npm install
+npm run dev

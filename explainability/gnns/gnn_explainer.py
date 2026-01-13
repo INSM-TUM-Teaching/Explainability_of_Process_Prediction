@@ -46,11 +46,15 @@ class GradientExplainer:
             vocab = self.vocabs['Resource']
             inv_vocab = {v: k for k, v in vocab.items()}
             return inv_vocab.get(int(feature_idx), f"Resource_{feature_idx}")
+        elif node_type == 'time':
+            return "time"
+        elif node_type == 'trace':
+            return f"trace_feat_{feature_idx}"
         return f"{node_type}_{feature_idx}"
 
     def explain_global(self, graphs, task='activity', num_samples=50):
         self.model.eval()
-        importances = {'activity': [], 'resource': []}
+        importances: dict[str, list[np.ndarray]] = {}
         
         sample_indices = np.random.choice(len(graphs), min(num_samples, len(graphs)), replace=False)
         selected_graphs = [graphs[i] for i in sample_indices]
@@ -59,30 +63,34 @@ class GradientExplainer:
         
         for graph in tqdm(selected_graphs):
             graph = graph.to(self.device)
-            for key in graph.x_dict:
-                graph.x_dict[key].requires_grad = True
+            for key, x in graph.x_dict.items():
+                if torch.is_tensor(x) and x.dtype.is_floating_point:
+                    graph.x_dict[key].requires_grad = True
                 
             out = self.model(graph)
             
             if task == 'activity':
                 logits = out[0]
-                pred_idx = logits.argmax(dim=1)
+                pred_idx = logits[0].argmax()
                 score = logits[0, pred_idx]
             elif task == 'event_time':
-                score = out[1]
+                score = out[1].view(-1)[0]
             elif task == 'remaining_time':
-                score = out[2]
+                score = out[2].view(-1)[0]
                 
             self.model.zero_grad()
             score.backward()
             
             with torch.no_grad():
-                for node_type in ['activity', 'resource']:
-                    if node_type in graph.x_dict and graph.x_dict[node_type].grad is not None:
-                        grad = graph.x_dict[node_type].grad
-                        inp = graph.x_dict[node_type]
-                        imp = (grad * inp).abs().sum(dim=0).cpu().numpy()
-                        importances[node_type].append(imp)
+                for node_type, x in graph.x_dict.items():
+                    grad = getattr(x, "grad", None)
+                    if grad is None:
+                        continue
+
+                    imp = (grad * x).abs().sum(dim=0).cpu().numpy()
+                    if node_type not in importances:
+                        importances[node_type] = []
+                    importances[node_type].append(imp)
                         
         global_imp = {}
         for n_type in importances:
@@ -96,7 +104,8 @@ class GradientExplainer:
         
         data = []
         for n_type, scores in importances.items():
-            top_k_idx = np.argsort(scores)[-10:] 
+            top_k = 10 if scores.shape[0] >= 10 else scores.shape[0]
+            top_k_idx = np.argsort(scores)[-top_k:]
             for idx in top_k_idx:
                 if scores[idx] > 0:
                     name = self._get_feature_name(n_type, idx)
@@ -107,12 +116,17 @@ class GradientExplainer:
                     })
                     
         df = pd.DataFrame(data).sort_values('Importance', ascending=True)
-        df.to_csv(os.path.join(output_dir, f'gradient_global_{task}.csv'), index=False)
+        df.to_csv(os.path.join(output_dir, 'gradient_global.csv'), index=False)
         
         if df.empty: return
 
         plt.figure(figsize=(10, 6))
-        colors = {'Activity': '#1f77b4', 'Resource': '#ff7f0e'}
+        colors = {
+            'Activity': '#1f77b4',
+            'Resource': '#ff7f0e',
+            'Time': '#2ca02c',
+            'Trace': '#9467bd',
+        }
         
         plt.barh(df['Feature'], df['Importance'], 
                  color=[colors.get(t, 'grey') for t in df['Type']])
@@ -126,7 +140,7 @@ class GradientExplainer:
         plt.legend(handles=legend_elements, loc='lower right')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'gradient_global_{task}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, 'gradient_global.png'), dpi=300)
         plt.close()
 
 
@@ -254,11 +268,11 @@ class GraphLIMEExplainer:
         plt.close()
 
 
-def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, num_samples=10, methods='all'):
+def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, num_samples=10, methods='all', tasks=None):
     os.makedirs(output_dir, exist_ok=True)
     
     print("\n" + "="*70)
-    print("GNN EXPLAINABILITY ANALYSIS (Focused: Next Activity Only)")
+    print("GNN EXPLAINABILITY ANALYSIS")
     print("="*70)
     
     if 'test_graphs' in data:
@@ -269,25 +283,39 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
         print("Error: Could not find test graphs in data object.")
         return
 
-    tasks = ['activity']
+    if tasks is None:
+        tasks = ['activity']
+    elif isinstance(tasks, str):
+        tasks = [tasks]
+    else:
+        tasks = list(tasks)
     
+    # Normalize common aliases from UI/other callers
+    if isinstance(methods, str):
+        m = methods.strip().lower()
+        if m == "gradient_based":
+            methods = "gradient"
+        elif m == "graphlime":
+            methods = "lime"
+
     if methods in ['gradient', 'all']:
         print("\n[Gradient-Based Saliency]")
         g_explainer = GradientExplainer(model, device, vocabularies)
-        grad_dir = os.path.join(output_dir, 'gradient')
+        grad_root = os.path.join(output_dir, 'gradient')
         
-        for task in tasks:
+        for task_name in tasks:
             try:
-                global_imp = g_explainer.explain_global(graphs, task, num_samples)
-                g_explainer.plot_global_importance(global_imp, grad_dir, task)
-                print(f"✓ {task.capitalize()} Global Importance saved.")
+                task_dir = os.path.join(grad_root, task_name)
+                global_imp = g_explainer.explain_global(graphs, task_name, num_samples)
+                g_explainer.plot_global_importance(global_imp, task_dir, task_name)
+                print(f"✓ {task_name.capitalize()} Global Importance saved.")
             except Exception as e:
-                print(f"✗ Failed {task}: {e}")
+                print(f"✗ Failed {task_name}: {e}")
 
     if methods in ['lime', 'all']:
         print("\n[GraphLIME Local Analysis]")
         lime_explainer = GraphLIMEExplainer(model, device, vocabularies)
-        lime_dir = os.path.join(output_dir, 'graphlime')
+        lime_root = os.path.join(output_dir, 'graphlime')
         
         sample_ids = [0]
         for idx in sample_ids:
@@ -295,12 +323,13 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
             graph = graphs[idx]
             print(f"Analyzing Sample {idx}...")
             
-            for task in tasks:
+            for task_name in tasks:
                 try:
-                    exp_list, score = lime_explainer.explain_local(graph, task)
-                    lime_explainer.plot_local(exp_list, score, lime_dir, task, idx)
+                    task_dir = os.path.join(lime_root, task_name)
+                    exp_list, score = lime_explainer.explain_local(graph, task_name)
+                    lime_explainer.plot_local(exp_list, score, task_dir, task_name, idx)
                 except Exception as e:
-                    print(f"✗ Failed Sample {idx} {task}: {e}")
+                    print(f"✗ Failed Sample {idx} {task_name}: {e}")
 
     print("\n" + "="*70)
     print(f"DONE. Results saved to: {output_dir}")
