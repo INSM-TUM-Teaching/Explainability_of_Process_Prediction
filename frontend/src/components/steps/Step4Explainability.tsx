@@ -4,7 +4,9 @@ import Card from "../ui/card";
 // NOTE: Values must match backend expectations.
 // - transformer: "lime" | "shap"
 // - gnn: "gradient" | "lime" (GraphLIME)
-export type ExplainValue = "lime" | "shap" | "gradient";
+// - both: "all"
+// - none: "none" (runner normalizes to null)
+export type ExplainValue = "lime" | "shap" | "gradient" | "all" | "none";
 
 type Step4ExplainabilityProps = {
   modelType: "gnn" | "transformer" | null;
@@ -28,6 +30,11 @@ export default function Step4Explainability({
     : modelType === "transformer"
     ? [
         {
+          value: "none",
+          title: "None",
+          description: "Skip explainability to run faster.",
+        },
+        {
           value: "lime",
           title: "LIME",
           description:
@@ -39,8 +46,18 @@ export default function Step4Explainability({
           description:
             "Shapley-value based feature attributions. Provides consistent local explanations across features.",
         },
+        {
+          value: "all",
+          title: "Both (LIME + SHAP)",
+          description: "Run both methods (takes longer).",
+        },
       ]
     : [
+        {
+          value: "none",
+          title: "None",
+          description: "Skip explainability to run faster.",
+        },
         {
           value: "gradient",
           title: "Gradient-Based",
@@ -52,6 +69,11 @@ export default function Step4Explainability({
           title: "GraphLIME",
           description:
             "Graph-specific local explanations. Identifies important substructures/features for a prediction.",
+        },
+        {
+          value: "all",
+          title: "Both (Gradient + GraphLIME)",
+          description: "Run both methods (takes longer).",
         },
       ];
 
@@ -116,8 +138,8 @@ export default function Step4Explainability({
       <Card title="Note">
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-gray-700">
           <ul className="list-disc ml-5 space-y-1">
-            <li>Transformer models: LIME, SHAP</li>
-            <li>GNN models: Gradient-Based, GraphLIME</li>
+            <li>Transformer models: LIME, SHAP, both, or none</li>
+            <li>GNN models: Gradient-Based, GraphLIME, both, or none</li>
           </ul>
         </div>
       </Card>

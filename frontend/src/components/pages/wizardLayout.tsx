@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Sidebar from "../layout/Sidebar";
 
 import Step1Upload from "../steps/Step1Upload";
+import Step2Mapping, { type ManualMapping, type MappingMode } from "../steps/Step2Mapping";
 import Step2Model from "../steps/Step2Model";
 import Step3Prediction from "../steps/Step3Prediction";
 import Step4Explainability, { type ExplainValue } from "../steps/Step4Explainability";
@@ -26,7 +27,7 @@ import {
   type RunStatus,
 } from "../../lib/api";
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 7;
 
 export type PipelineStatus = "idle" | "running" | "completed";
 export type ViewMode = "wizard" | "results";
@@ -60,8 +61,21 @@ function isExplainAllowed(
   if (!explain) return true;
   if (!model) return true;
 
-  if (model === "transformer") return explain === "lime" || explain === "shap";
-  return explain === "gradient" || explain === "lime";
+  if (model === "transformer") {
+    return explain === "none" || explain === "lime" || explain === "shap" || explain === "all";
+  }
+  return explain === "none" || explain === "gradient" || explain === "lime" || explain === "all";
+}
+
+function validateManualMapping(m: ManualMapping): boolean {
+  const requiredOk =
+    m.case_id.trim().length > 0 && m.activity.trim().length > 0 && m.timestamp.trim().length > 0;
+  if (!requiredOk) return false;
+
+  const selected = [m.case_id, m.activity, m.timestamp, m.resource].filter(
+    (v): v is string => !!v && v.trim().length > 0
+  );
+  return new Set(selected).size === selected.length;
 }
 
 function validateTransformerConfig(cfg: TransformerConfig): boolean {
@@ -100,6 +114,14 @@ export default function WizardLayout() {
   /* -------------------- STEP DATA -------------------- */
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [dataset, setDataset] = useState<DatasetUploadResponse | null>(null);
+
+  const [mappingMode, setMappingMode] = useState<MappingMode | null>(null);
+  const [manualMapping, setManualMapping] = useState<ManualMapping>({
+    case_id: "",
+    activity: "",
+    timestamp: "",
+    resource: null,
+  });
 
   const [modelType, setModelType] = useState<string | null>(null);
   const [predictionTask, setPredictionTask] = useState<string | null>(null);
@@ -169,12 +191,17 @@ export default function WizardLayout() {
       case 0:
         return dataset !== null;
       case 1:
-        return modelTypeNormalized !== null;
+        if (!dataset) return false;
+        if (mappingMode === null) return false;
+        if (mappingMode === "auto") return true;
+        return validateManualMapping(manualMapping);
       case 2:
-        return taskNormalized !== null;
+        return modelTypeNormalized !== null;
       case 3:
+        return taskNormalized !== null;
+      case 4:
         return explainMethod !== null;
-      case 4: {
+      case 5: {
         if (!modelTypeNormalized) return false;
         if (configMode === null) return false;
 
@@ -193,6 +220,7 @@ export default function WizardLayout() {
 
   const completedSteps = [
     dataset !== null,
+    mappingMode !== null,
     modelTypeNormalized !== null,
     taskNormalized !== null,
     explainMethod !== null,
@@ -204,6 +232,13 @@ export default function WizardLayout() {
   const handleUploaded = (file: File, resp: DatasetUploadResponse) => {
     setUploadedFile(file);
     setDataset(resp);
+    setMappingMode(null);
+    setManualMapping({
+      case_id: resp.columns.includes("CaseID") ? "CaseID" : "",
+      activity: resp.columns.includes("Activity") ? "Activity" : "",
+      timestamp: resp.columns.includes("Timestamp") ? "Timestamp" : "",
+      resource: resp.columns.includes("Resource") ? "Resource" : null,
+    });
 
     // clear run state
     setPipelineStatus("idle");
@@ -217,6 +252,8 @@ export default function WizardLayout() {
   const clearUpload = () => {
     setUploadedFile(null);
     setDataset(null);
+    setMappingMode(null);
+    setManualMapping({ case_id: "", activity: "", timestamp: "", resource: null });
 
     setPipelineStatus("idle");
     setProgress(0);
@@ -246,6 +283,8 @@ export default function WizardLayout() {
 
     setUploadedFile(null);
     setDataset(null);
+    setMappingMode(null);
+    setManualMapping({ case_id: "", activity: "", timestamp: "", resource: null });
 
     setModelType(null);
     setPredictionTask(null);
@@ -274,6 +313,10 @@ export default function WizardLayout() {
 
     if (!dataset) {
       setRunError("No dataset available. Please upload a dataset first.");
+      return;
+    }
+    if (!mappingMode) {
+      setRunError("Please configure column mapping first.");
       return;
     }
 
@@ -310,6 +353,8 @@ export default function WizardLayout() {
         config: configToSend,
         split: { test_size: 0.2, val_split: 0.5 },
         explainability: explainToSend,
+        mapping_mode: mappingMode,
+        column_mapping: mappingMode === "manual" ? manualMapping : null,
       });
 
       setRunId(res.run_id);
@@ -384,7 +429,7 @@ export default function WizardLayout() {
           runId={runId}
           onBackToPipeline={() => {
             setViewMode("wizard");
-            setStep(5);
+            setStep(6);
           }}
         />
       ) : (
@@ -405,14 +450,26 @@ export default function WizardLayout() {
               )}
 
               {step === 1 && (
-                <Step2Model modelType={modelType} onSelect={handleSelectModelType} />
+                <Step2Mapping
+                  dataset={dataset}
+                  mode={mappingMode}
+                  manualMapping={manualMapping}
+                  onModeChange={setMappingMode}
+                  onManualMappingChange={(patch) =>
+                    setManualMapping((prev) => ({ ...prev, ...patch }))
+                  }
+                />
               )}
 
               {step === 2 && (
-                <Step3Prediction task={predictionTask} onSelect={setPredictionTask} />
+                <Step2Model modelType={modelType} onSelect={handleSelectModelType} />
               )}
 
               {step === 3 && (
+                <Step3Prediction task={predictionTask} onSelect={setPredictionTask} />
+              )}
+
+              {step === 4 && (
                 <Step4Explainability
                   modelType={modelTypeNormalized}
                   method={explainMethod}
@@ -420,7 +477,7 @@ export default function WizardLayout() {
                 />
               )}
 
-              {step === 4 && (
+              {step === 5 && (
                 <Step5Config
                   modelType={modelTypeNormalized}
                   mode={configMode}
@@ -434,13 +491,15 @@ export default function WizardLayout() {
                 />
               )}
 
-              {step === 5 && (
+              {step === 6 && (
                 <Step6Review
                   uploadedFile={uploadedFile}
                   dataset={dataset}
                   modelType={modelType}
                   predictionTask={predictionTask}
                   explainMethod={explainMethod} // OK: ExplainValue is a string union
+                  mappingMode={mappingMode}
+                  manualMapping={manualMapping}
                   configMode={configMode}
                   pipelineStatus={pipelineStatus}
                   progress={progress}

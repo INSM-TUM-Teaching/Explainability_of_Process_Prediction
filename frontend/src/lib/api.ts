@@ -53,6 +53,13 @@ export type CreateRunReq = {
   config?: Record<string, JsonValue>;
   split?: { test_size: number; val_split: number };
   explainability?: JsonValue; // e.g. "none" | null | {...}
+  mapping_mode?: "auto" | "manual";
+  column_mapping?: {
+    case_id: string;
+    activity: string;
+    timestamp: string;
+    resource?: string | null;
+  } | null;
 };
 
 export type CreateRunRes = {

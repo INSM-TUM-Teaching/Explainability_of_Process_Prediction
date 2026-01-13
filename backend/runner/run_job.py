@@ -55,6 +55,56 @@ def normalize_explainability(value: Any) -> Any:
     return value
 
 
+def _apply_manual_column_mapping(
+    dataset_path: str,
+    out_csv_path: str,
+    mapping: Dict[str, Any],
+) -> str:
+    """
+    Create a mapped CSV with canonical columns:
+      CaseID, Activity, Timestamp, (optional) Resource
+    """
+    try:
+        import pandas as pd
+    except Exception as e:
+        raise RuntimeError(f"Manual column mapping requires pandas. Import failed: {e}")
+
+    required_keys = {"case_id", "activity", "timestamp"}
+    missing = required_keys - set(mapping.keys())
+    if missing:
+        raise RuntimeError(f"Invalid column_mapping: missing keys {sorted(missing)}")
+
+    case_col = str(mapping.get("case_id") or "").strip()
+    act_col = str(mapping.get("activity") or "").strip()
+    ts_col = str(mapping.get("timestamp") or "").strip()
+    res_col = mapping.get("resource")
+    res_col = str(res_col).strip() if isinstance(res_col, str) else ""
+
+    if not case_col or not act_col or not ts_col:
+        raise RuntimeError("Invalid column_mapping: case_id, activity, timestamp must be non-empty")
+
+    selected = [case_col, act_col, ts_col] + ([res_col] if res_col else [])
+    if len(set(selected)) != len(selected):
+        raise RuntimeError("Invalid column_mapping: selected columns must be unique")
+
+    df = pd.read_csv(dataset_path)
+    for col in [case_col, act_col, ts_col] + ([res_col] if res_col else []):
+        if col and col not in df.columns:
+            raise RuntimeError(f"Invalid column_mapping: column not found: {col}")
+
+    rename = {case_col: "CaseID", act_col: "Activity", ts_col: "Timestamp"}
+    if res_col:
+        rename[res_col] = "Resource"
+
+    df = df.rename(columns=rename)
+    keep_cols = ["CaseID", "Activity", "Timestamp"] + (["Resource"] if res_col else [])
+    df = df[keep_cols]
+
+    os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
+    df.to_csv(out_csv_path, index=False)
+    return out_csv_path
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", required=True)
@@ -95,6 +145,30 @@ def main():
 
     config = req.get("config") or {}
     explainability = normalize_explainability(req.get("explainability", None))
+
+    mapping_mode = (req.get("mapping_mode") or "").strip().lower() or "auto"
+    column_mapping = req.get("column_mapping") or None
+
+    if mapping_mode not in {"auto", "manual"}:
+        patch_status(
+            status_path,
+            status="failed",
+            finished_at=utc_now(),
+            error=f"Invalid mapping_mode: {mapping_mode}",
+        )
+        raise RuntimeError(f"Invalid mapping_mode: {mapping_mode}")
+
+    try:
+        if mapping_mode == "manual":
+            if not isinstance(column_mapping, dict):
+                raise RuntimeError("mapping_mode=manual requires column_mapping")
+
+            mapped_path = os.path.join(run_dir, "input", "dataset_mapped.csv")
+            dataset_path = _apply_manual_column_mapping(dataset_path, mapped_path, column_mapping)
+    except Exception as e:
+        # If we fail before the normal "running" patch, ensure we don't leave the run stuck in queued.
+        patch_status(status_path, status="failed", finished_at=utc_now(), error=str(e))
+        raise
 
     # Mark running BEFORE any heavy imports
     patch_status(status_path, status="running", started_at=utc_now(), error=None)

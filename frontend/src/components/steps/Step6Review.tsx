@@ -2,6 +2,13 @@
 import type { DatasetUploadResponse, RunStatus } from "../../lib/api";
 import { artifactUrl } from "../../lib/api";
 
+type ManualMapping = {
+  case_id: string;
+  activity: string;
+  timestamp: string;
+  resource: string | null;
+};
+
 function formatPredictionTask(task: string | null): string {
   if (!task) return "-";
   const s = task.toLowerCase().trim();
@@ -12,6 +19,17 @@ function formatPredictionTask(task: string | null): string {
   return task;
 }
 
+function formatExplainability(v: string | null): string {
+  if (!v) return "-";
+  const s = v.toLowerCase().trim();
+  if (s === "none") return "None";
+  if (s === "all") return "Both";
+  if (s === "lime") return "LIME / GraphLIME";
+  if (s === "shap") return "SHAP";
+  if (s === "gradient") return "Gradient-Based";
+  return v;
+}
+
 type Step6ReviewProps = {
   uploadedFile: File | null;
   dataset: DatasetUploadResponse | null;
@@ -19,6 +37,8 @@ type Step6ReviewProps = {
   modelType: string | null;
   predictionTask: string | null;
   explainMethod: string | null;
+  mappingMode: "auto" | "manual" | null;
+  manualMapping: ManualMapping;
   configMode: "default" | "custom" | null;
 
   pipelineStatus: "idle" | "running" | "completed";
@@ -40,6 +60,8 @@ export default function Step6Review({
   modelType,
   predictionTask,
   explainMethod,
+  mappingMode,
+  manualMapping,
   configMode,
   pipelineStatus,
   progress,
@@ -63,6 +85,14 @@ export default function Step6Review({
       : "-";
 
   const backendStatus = runStatus?.status ?? (pipelineStatus === "idle" ? "-" : "queued");
+  const mappingLabel =
+    mappingMode === "auto"
+      ? "Automatic"
+      : mappingMode === "manual"
+      ? `Manual (case_id=${manualMapping.case_id}, activity=${manualMapping.activity}, timestamp=${manualMapping.timestamp}${
+          manualMapping.resource ? `, resource=${manualMapping.resource}` : ""
+        })`
+      : "-";
 
   return (
     <div className="space-y-6 w-full">
@@ -83,7 +113,8 @@ export default function Step6Review({
           />
           <SummaryItem label="Model Type" value={modelType ?? "-"} />
           <SummaryItem label="Prediction Task" value={formatPredictionTask(predictionTask)} />
-          <SummaryItem label="Explainability" value={explainMethod ?? "-"} />
+          <SummaryItem label="Explainability" value={formatExplainability(explainMethod)} />
+          <SummaryItem label="Column Mapping" value={mappingLabel} />
           <SummaryItem label="Configuration" value={configLabel} />
           <SummaryItem label="Run ID" value={runId ?? "-"} />
           <SummaryItem label="Run Status" value={backendStatus} />

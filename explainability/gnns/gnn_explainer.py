@@ -168,6 +168,11 @@ class GraphLIMEExplainer:
             vocab = self.vocabs['Resource']
             inv_vocab = {v: k for k, v in vocab.items()}
             return inv_vocab.get(int(feature_idx), f"Resource_{feature_idx}")
+        elif node_type == 'time':
+            # One scalar per time node
+            return f"time_pos_{int(feature_idx) + 1}"
+        elif node_type == 'trace':
+            return f"trace_feat_{int(feature_idx)}"
         return f"{node_type}_{feature_idx}"
 
     def explain_local(self, graph, task='activity', num_perturbations=200):
@@ -185,22 +190,84 @@ class GraphLIMEExplainer:
             elif task == 'remaining_time':
                 base_score = out[2].item()
         
-        num_features = graph['activity'].x.shape[1]
-        active_features = torch.where(graph['activity'].x.sum(dim=0) > 0)[0].cpu().numpy()
+        act_num_features = graph['activity'].x.shape[1]
+        act_active_features = torch.where(graph['activity'].x.sum(dim=0) > 0)[0].cpu().numpy()
+
+        time_num_nodes = int(graph['time'].x.shape[0]) if 'time' in graph and hasattr(graph['time'], 'x') else 0
+        trace_num_features = int(graph['trace'].x.shape[1]) if 'trace' in graph and hasattr(graph['trace'], 'x') else 0
+
+        # Keep local explanations fast and readable: only explain trace features that are "active" in this sample.
+        trace_active_features: np.ndarray
+        if trace_num_features > 0:
+            trace_x = graph['trace'].x
+            if trace_x.ndim == 2 and trace_x.shape[0] > 0:
+                trace_active_features = torch.where(trace_x[0].abs() > 0)[0].cpu().numpy()
+            else:
+                trace_active_features = np.array([], dtype=int)
+        else:
+            trace_active_features = np.array([], dtype=int)
+
+        # Feature vector layout for Ridge:
+        #   [ activity_feature_mask (A) | time_node_mask (Tn) | trace_feature_mask (Ta) ]
+        num_features_total = int(act_num_features + time_num_nodes + trace_active_features.shape[0])
         
         X_perturb = []
         y_perturb = []
         
         for _ in range(num_perturbations):
-            mask = np.ones(num_features)
-            if len(active_features) > 0:
-                subset = np.random.choice(active_features, size=int(max(1, len(active_features)*0.3)), replace=False)
-                mask[subset] = 0
-            X_perturb.append(mask)
+            # Activity feature mask (dim = act_num_features)
+            act_mask = np.ones(act_num_features, dtype=np.float32)
+            if len(act_active_features) > 0:
+                subset = np.random.choice(
+                    act_active_features,
+                    size=int(max(1, len(act_active_features) * 0.3)),
+                    replace=False,
+                )
+                act_mask[subset] = 0
+
+            # Time node mask (dim = time_num_nodes): for time tasks, also perturb time signals
+            time_mask = np.ones(time_num_nodes, dtype=np.float32)
+            if task in {'event_time', 'remaining_time'} and time_num_nodes > 0:
+                subset = np.random.choice(
+                    np.arange(time_num_nodes),
+                    size=int(max(1, time_num_nodes * 0.3)),
+                    replace=False,
+                )
+                time_mask[subset] = 0
+
+            # Trace feature mask (dim = trace_active_features)
+            trace_mask_small = np.ones(trace_active_features.shape[0], dtype=np.float32)
+            if task in {'event_time', 'remaining_time'} and trace_active_features.shape[0] > 0:
+                subset = np.random.choice(
+                    np.arange(trace_active_features.shape[0]),
+                    size=int(max(1, trace_active_features.shape[0] * 0.3)),
+                    replace=False,
+                )
+                trace_mask_small[subset] = 0
+
+            mask_vec = np.concatenate([act_mask, time_mask, trace_mask_small], axis=0)
+            if mask_vec.shape[0] != num_features_total:
+                # Should never happen, but keep it safe.
+                continue
+            X_perturb.append(mask_vec)
             
             masked_graph = graph.clone()
-            mask_tensor = torch.tensor(mask, device=self.device, dtype=torch.float32)
-            masked_graph['activity'].x = masked_graph['activity'].x * mask_tensor
+
+            # Apply activity mask (broadcast over nodes)
+            act_mask_tensor = torch.tensor(act_mask, device=self.device, dtype=torch.float32)
+            masked_graph['activity'].x = masked_graph['activity'].x * act_mask_tensor
+
+            # Apply time mask (broadcast over scalar feature dim)
+            if time_num_nodes > 0:
+                time_mask_tensor = torch.tensor(time_mask, device=self.device, dtype=torch.float32).view(-1, 1)
+                masked_graph['time'].x = masked_graph['time'].x * time_mask_tensor
+
+            # Apply trace mask (only on active dims)
+            if trace_num_features > 0 and trace_active_features.shape[0] > 0:
+                full = np.ones(trace_num_features, dtype=np.float32)
+                full[trace_active_features] = trace_mask_small
+                trace_mask_tensor = torch.tensor(full, device=self.device, dtype=torch.float32).view(1, -1)
+                masked_graph['trace'].x = masked_graph['trace'].x * trace_mask_tensor
             
             with torch.no_grad():
                 out_p = self.model(masked_graph)
@@ -214,6 +281,9 @@ class GraphLIMEExplainer:
                 
         X_perturb = np.array(X_perturb)
         y_perturb = np.array(y_perturb)
+
+        if X_perturb.size == 0 or y_perturb.size == 0:
+            return [], base_score
         
         if len(X_perturb) > 1:
             distances = pairwise_distances(X_perturb, X_perturb[0].reshape(1, -1), metric='cosine').ravel()
@@ -226,13 +296,28 @@ class GraphLIMEExplainer:
         
         coefs = simpler_model.coef_
         explanation = []
-        for idx in active_features:
-            if abs(coefs[idx]) > 0.0001:
-                explanation.append({
-                    'Feature': self._get_feature_name('activity', idx),
-                    'Weight': coefs[idx],
-                    'AbsWeight': abs(coefs[idx])
-                })
+
+        # Activity features
+        for idx in act_active_features:
+            w = float(coefs[int(idx)])
+            if abs(w) > 0.0001:
+                explanation.append({'Feature': self._get_feature_name('activity', idx), 'Weight': w, 'AbsWeight': abs(w)})
+
+        # Time nodes (only meaningful for time tasks)
+        time_offset = int(act_num_features)
+        if time_num_nodes > 0 and task in {'event_time', 'remaining_time'}:
+            for i in range(time_num_nodes):
+                w = float(coefs[time_offset + i])
+                if abs(w) > 0.0001:
+                    explanation.append({'Feature': self._get_feature_name('time', i), 'Weight': w, 'AbsWeight': abs(w)})
+
+        # Trace features (active only)
+        trace_offset = int(act_num_features + time_num_nodes)
+        if trace_active_features.shape[0] > 0 and task in {'event_time', 'remaining_time'}:
+            for local_i, original_idx in enumerate(trace_active_features.tolist()):
+                w = float(coefs[trace_offset + local_i])
+                if abs(w) > 0.0001:
+                    explanation.append({'Feature': self._get_feature_name('trace', original_idx), 'Weight': w, 'AbsWeight': abs(w)})
                 
         return sorted(explanation, key=lambda x: x['AbsWeight'], reverse=False), base_score
 
@@ -240,9 +325,27 @@ class GraphLIMEExplainer:
         os.makedirs(output_dir, exist_ok=True)
         
         df = pd.DataFrame(explanation)
-        if df.empty: return
-        
-        df.to_csv(os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}.csv'), index=False)
+        csv_path = os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}.csv')
+        png_path = os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}.png')
+
+        # Always write artifacts so the UI doesn't look broken when no signal is found.
+        if df.empty:
+            pd.DataFrame(columns=['Feature', 'Weight', 'AbsWeight']).to_csv(csv_path, index=False)
+            plt.figure(figsize=(10, 4))
+            plt.axis('off')
+            plt.title(f"Local Explanation (Sample {sample_id})", fontweight='bold')
+            msg = (
+                f"No stable explanation found for task '{task}'.\n"
+                f"Prediction: {base_score:.4f}\n"
+                "Try increasing perturbations or enabling Gradient-Based explanations."
+            )
+            plt.text(0.5, 0.5, msg, ha='center', va='center', fontsize=11)
+            plt.tight_layout()
+            plt.savefig(png_path, dpi=200)
+            plt.close()
+            return
+
+        df.to_csv(csv_path, index=False)
         
         plt.figure(figsize=(10, 6))
         colors = ['#2ca02c' if w > 0 else '#d62728' for w in df['Weight']]
@@ -264,7 +367,7 @@ class GraphLIMEExplainer:
             plt.text(w + padding, y, f'{w:.4f}', va='center', ha=ha, fontsize=9, fontweight='bold')
             
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}.png'), dpi=300)
+        plt.savefig(png_path, dpi=300)
         plt.close()
 
 

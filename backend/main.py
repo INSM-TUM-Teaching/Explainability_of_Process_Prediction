@@ -174,6 +174,14 @@ class DatasetMeta(BaseModel):
     created_at: str
 
 
+class ColumnMapping(BaseModel):
+    # Column names in the uploaded dataset
+    case_id: str
+    activity: str
+    timestamp: str
+    resource: Optional[str] = None
+
+
 class RunCreateRequest(BaseModel):
     dataset_id: str
     model_type: str = Field(..., description="transformer | gnn")
@@ -181,6 +189,10 @@ class RunCreateRequest(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
     split: Dict[str, float] = Field(default_factory=lambda: {"test_size": 0.2, "val_split": 0.5})
     explainability: Optional[Any] = None
+    mapping_mode: Optional[str] = Field(
+        default=None, description="auto | manual (optional; defaults to auto)"
+    )
+    column_mapping: Optional[ColumnMapping] = None
 
 
 class RunCreateResponse(BaseModel):
@@ -327,6 +339,14 @@ async def upload_dataset(file: UploadFile = File(...)):
         shutil.rmtree(ds_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Persist the standardized dataset so downstream code (and manual mapping) sees the same columns
+    # as returned to the frontend (CaseID/Activity/Timestamp[/Resource]).
+    try:
+        df_std.to_csv(stored_path, index=False)
+    except Exception as e:
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to write standardized dataset: {str(e)}")
+
     num_events = int(len(df_std))
     num_cases = int(df_std["CaseID"].nunique())
 
@@ -385,6 +405,8 @@ def create_run(req: RunCreateRequest):
         "config": req.config,
         "split": req.split,
         "explainability": req.explainability,
+        "mapping_mode": req.mapping_mode,
+        "column_mapping": req.column_mapping.model_dump() if req.column_mapping else None,
         "created_at": _utc_now(),
     }
     _write_json(_run_request_path(run_id), request_obj)

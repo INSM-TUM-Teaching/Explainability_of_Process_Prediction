@@ -4,7 +4,8 @@ type SidebarProps = {
 };
 
 const STEPS = [
-  "Upload Dataset",
+  "Dataset Setup",
+  "Column Mapping",
   "Select Model Type",
   "Select Prediction Task",
   "Select Explainability Method",

@@ -40,9 +40,21 @@ export default function Step1Upload({
 }: Step1UploadProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [format, setFormat] = useState<"csv" | "xes" | null>(null);
+
+  const handleClear = () => {
+    setError(null);
+    setFormat(null);
+    onClear?.();
+  };
 
   const handleUpload = async (file: File) => {
     setError(null);
+
+    if (!format) {
+      setError("Please select a file format (CSV or XES) first.");
+      return;
+    }
 
     // 1) size check
     if (file.size > MAX_UPLOAD_BYTES) {
@@ -54,6 +66,10 @@ export default function Step1Upload({
     const ext = getExt(file.name);
     if (ext !== "csv" && ext !== "xes") {
       setError("Unsupported format. Please upload a CSV or XES file.");
+      return;
+    }
+    if (ext !== format) {
+      setError(`Selected format is ${format.toUpperCase()}, but you uploaded a .${ext} file.`);
       return;
     }
 
@@ -72,9 +88,10 @@ export default function Step1Upload({
   return (
     <div className="space-y-8 w-full">
       <div>
-        <h2 className="text-2xl font-semibold">Upload Dataset</h2>
+        <h2 className="text-2xl font-semibold">Dataset Setup</h2>
         <p className="text-sm text-gray-500">
-          Upload your event log dataset. We will validate size, format, and required columns.
+          Select a file format and upload your event log dataset. We will validate size, format,
+          and required columns.
         </p>
       </div>
 
@@ -82,7 +99,55 @@ export default function Step1Upload({
         <div className="w-full">
           {!uploadedFile && (
             <div className="space-y-3">
-              <UploadDropzone onFileSelect={handleUpload} />
+              <div className="border rounded-lg bg-white p-4">
+                <div className="text-sm font-medium text-gray-900">1) Select file format</div>
+                <div className="mt-3 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    className={[
+                      "px-4 py-2 rounded-md border text-sm",
+                      format === "csv"
+                        ? "border-blue-500 bg-blue-50"
+                        : "border-gray-200 bg-white hover:bg-gray-50",
+                    ].join(" ")}
+                    onClick={() => {
+                      setError(null);
+                      setFormat("csv");
+                    }}
+                  >
+                    CSV
+                  </button>
+                  <button
+                    type="button"
+                    className={[
+                      "px-4 py-2 rounded-md border text-sm",
+                      format === "xes"
+                        ? "border-blue-500 bg-blue-50"
+                        : "border-gray-200 bg-white hover:bg-gray-50",
+                    ].join(" ")}
+                    onClick={() => {
+                      setError(null);
+                      setFormat("xes");
+                    }}
+                  >
+                    XES
+                  </button>
+                </div>
+                <div className="mt-2 text-xs text-gray-600">
+                  Choose CSV if you already exported a table, or XES if you have an event log file.
+                </div>
+              </div>
+
+              <div className="border rounded-lg bg-white p-4">
+                <div className="text-sm font-medium text-gray-900">2) Upload dataset</div>
+                <div className="mt-3">
+                  <UploadDropzone
+                    onFileSelect={handleUpload}
+                    accept={format === "csv" ? ".csv" : format === "xes" ? ".xes" : ".csv,.xes"}
+                    disabled={!format}
+                  />
+                </div>
+              </div>
 
               {isUploading && (
                 <div className="text-sm text-gray-600">Uploading and parsing dataset…</div>
@@ -118,7 +183,7 @@ export default function Step1Upload({
                 {onClear && (
                   <button
                     type="button"
-                    onClick={onClear}
+                    onClick={handleClear}
                     className="text-sm px-3 py-2 rounded-md border border-green-300 bg-white hover:bg-green-100"
                   >
                     Upload another file
