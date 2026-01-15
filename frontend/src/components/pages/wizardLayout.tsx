@@ -197,11 +197,7 @@ export default function WizardLayout() {
         return validateManualMapping(manualMapping);
       case 2:
         return modelTypeNormalized !== null;
-      case 3:
-        return taskNormalized !== null;
-      case 4:
-        return explainMethod !== null;
-      case 5: {
+      case 3: {
         if (!modelTypeNormalized) return false;
         if (configMode === null) return false;
 
@@ -213,6 +209,10 @@ export default function WizardLayout() {
         }
         return false;
       }
+      case 4:
+        return taskNormalized !== null;
+      case 5:
+        return explainMethod !== null;
       default:
         return true;
     }
@@ -222,9 +222,9 @@ export default function WizardLayout() {
     dataset !== null,
     mappingMode !== null,
     modelTypeNormalized !== null,
+    configMode !== null,
     taskNormalized !== null,
     explainMethod !== null,
-    configMode !== null,
     pipelineStatus === "completed",
   ];
 
@@ -324,11 +324,11 @@ export default function WizardLayout() {
     const task = taskNormalized;
 
     if (!mt) {
-      setRunError("Invalid model type. Please re-select Step 2.");
+      setRunError("Invalid model type. Please re-select Step 3.");
       return;
     }
     if (!task) {
-      setRunError("Invalid prediction task. Please re-select Step 3.");
+      setRunError("Invalid prediction task. Please re-select Step 5.");
       return;
     }
 
@@ -466,18 +466,6 @@ export default function WizardLayout() {
               )}
 
               {step === 3 && (
-                <Step3Prediction task={predictionTask} onSelect={setPredictionTask} />
-              )}
-
-              {step === 4 && (
-                <Step4Explainability
-                  modelType={modelTypeNormalized}
-                  method={explainMethod}
-                  onSelect={setExplainMethod}
-                />
-              )}
-
-              {step === 5 && (
                 <Step5Config
                   modelType={modelTypeNormalized}
                   mode={configMode}
@@ -488,6 +476,18 @@ export default function WizardLayout() {
                   gnnConfig={gnnConfig}
                   onGnnChange={setGnnConfig}
                   defaultGnnConfig={defaultGnnConfig}
+                />
+              )}
+
+              {step === 4 && (
+                <Step3Prediction task={predictionTask} onSelect={setPredictionTask} />
+              )}
+
+              {step === 5 && (
+                <Step4Explainability
+                  modelType={modelTypeNormalized}
+                  method={explainMethod}
+                  onSelect={setExplainMethod}
                 />
               )}
 
