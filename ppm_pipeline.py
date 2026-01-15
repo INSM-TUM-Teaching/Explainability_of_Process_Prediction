@@ -48,7 +48,6 @@ if PYTORCH_AVAILABLE:
 
 def detect_and_standardize_columns(df, verbose=False):
     column_mapping = {}
-    columns_to_drop = []
 
     case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
     activity_patterns = ['concept:name', 'Action', 'activity', 'event', 'Event', 'task', 'Task']
@@ -60,25 +59,31 @@ def detect_and_standardize_columns(df, verbose=False):
             column_mapping[col] = 'CaseID'
             break
 
-    for col in df.columns:
-        if col in activity_patterns and col != 'Activity':
-            if 'Activity' in df.columns and col != 'Activity':
-                columns_to_drop.append('Activity')
-            column_mapping[col] = 'Activity'
-            break
+    # Activity - only map if 'Activity' doesn't already exist
+    if 'Activity' not in df.columns:
+        for col in df.columns:
+            if col in activity_patterns:
+                column_mapping[col] = 'Activity'
+                if verbose:
+                    print(f"[COLUMN DETECT] Mapping '{col}' → 'Activity'")
+                break
+    else:
+        if verbose:
+            print(f"[COLUMN DETECT] Using existing 'Activity' column")
 
-    for col in df.columns:
-        if col in timestamp_patterns and col != 'Timestamp':
-            column_mapping[col] = 'Timestamp'
-            break
+    # Timestamp - only map if 'Timestamp' doesn't already exist
+    if 'Timestamp' not in df.columns:
+        for col in df.columns:
+            if col in timestamp_patterns:
+                column_mapping[col] = 'Timestamp'
+                break
 
-    for col in df.columns:
-        if col in resource_patterns and col != 'Resource':
-            column_mapping[col] = 'Resource'
-            break
-
-    if columns_to_drop:
-        df = df.drop(columns=columns_to_drop)
+    # Resource - only map if 'Resource' doesn't already exist  
+    if 'Resource' not in df.columns:
+        for col in df.columns:
+            if col in resource_patterns:
+                column_mapping[col] = 'Resource'
+                break
 
     if column_mapping:
         df = df.rename(columns=column_mapping)
@@ -120,7 +125,24 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
         raise RuntimeError("TensorFlow not available. Transformer runs cannot execute.")
 
     df = pd.read_csv(dataset_path)
+    
+    # DEBUG 1: Raw dataset
+    if 'Activity' in df.columns:
+        print("\n[DEBUG 1] RAW CSV:", df['Activity'].nunique(), "unique activities")
+        print("Sample:", list(df['Activity'].unique()[:5]))
+    else:
+        print("\n[DEBUG 1] RAW CSV: Activity column not found")
+        print("Columns:", list(df.columns))
+    
     df, _, _ = detect_and_standardize_columns(df, verbose=False)
+    
+    # DEBUG 2: After standardization
+    if 'Activity' in df.columns:
+        print("[DEBUG 2] AFTER STANDARDIZE:", df['Activity'].nunique(), "activities")
+        print("Sample:", list(df['Activity'].unique()[:5]))
+    else:
+        print("[DEBUG 2] ERROR: Activity column missing after standardization")
+        print("Columns:", list(df.columns))
 
     df = df.rename(columns={
         'CaseID': 'case:id',
@@ -137,6 +159,11 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     )
 
     data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
+    
+    # DEBUG 3: After prepare_data
+    print("[DEBUG 3] LABEL ENCODER:", len(predictor.label_encoder.classes_), "classes")
+    print("Classes:", list(predictor.label_encoder.classes_))
+    
     predictor.build_model()
     predictor.train(
         data,
@@ -159,7 +186,9 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
             explainability_dir,
             task='activity',
             num_samples=20,
-            methods=explainability_method
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=getattr(predictor, 'scaler', None)
         )
 
     return metrics
@@ -210,7 +239,9 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
             explainability_dir,
             task='time',
             num_samples=20,
-            methods=explainability_method
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=predictor.scaler
         )
 
     return metrics
@@ -261,7 +292,9 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
             explainability_dir,
             task='time',
             num_samples=20,
-            methods=explainability_method
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=predictor.scaler
         )
 
     return metrics

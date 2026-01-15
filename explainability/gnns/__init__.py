@@ -1,11 +1,3 @@
-from .gnn_explainer import (
-    GNNExplainerWrapper,
-    GraphLIMEExplainer,
-    run_gnn_explainability
-)
+from .gnn_explainer import run_gnn_explainability
 
-__all__ = [
-    'GNNExplainerWrapper',
-    'GraphLIMEExplainer',
-    'run_gnn_explainability'
-]
+__all__ = ['run_gnn_explainability']
