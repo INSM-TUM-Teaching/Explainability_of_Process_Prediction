@@ -30,7 +30,6 @@ class SHAPExplainer:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
     def _get_activity_names_for_sample(self, sequence):
-        """Maps token indices to real Activity names."""
         if self.label_encoder is None:
             return [f'Activity_{int(t)}' if t > 0 else '[PAD]' for t in sequence]
         
@@ -146,7 +145,7 @@ class SHAPExplainer:
         plt.close()
 
     def save_explanations(self, output_dir):
-        print("✓ SHAP computations complete.")
+        print("[OK] SHAP computations complete.")
 
 
 class LIMEExplainer:
@@ -169,10 +168,6 @@ class LIMEExplainer:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
     def _aggregate_feature_names(self, data):
-        """
-        Aggregate position-based features into activity-based features.
-        For each position, find the most common activity across all samples.
-        """
         if self.label_encoder is None:
             return [f'Position_{i+1}' for i in range(data.shape[1])]
         
@@ -236,9 +231,11 @@ class LIMEExplainer:
             self.test_data_seq = test_data[0][:num_samples]
             self.test_data_temp = test_data[1][:num_samples]
             self.is_multi_input = True
+            print(f"[DEBUG explain_samples] Processing {len(self.test_data_seq)} sequences")
         else:
             self.test_data_seq = test_data[:num_samples]
             self.is_multi_input = False
+            print(f"[DEBUG explain_samples] Processing {len(self.test_data_seq)} samples")
             
         vocab_size = int(np.max(self.test_data_seq)) + 1
         
@@ -274,7 +271,6 @@ class LIMEExplainer:
         return self.explanations
 
     def _get_activity_name(self, token_idx):
-        """Map single token to activity name."""
         if token_idx == 0: 
             return "[PAD]"
         if self.label_encoder:
@@ -284,14 +280,17 @@ class LIMEExplainer:
                 pass
         return f"Activity_{int(token_idx)}"
 
-    def plot_explanation(self, output_dir, sample_idx=0):
+    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None):
         if sample_idx >= len(self.explanations) or self.explanations[sample_idx] is None:
-            print("LIME Explanation not found for this sample.")
+            print(f"LIME Explanation not found for sample {sample_idx}.")
             return
+        
+        # Use original_idx for filename, sample_idx for data access
+        display_idx = original_idx if original_idx is not None else sample_idx
             
-        print("Generating Research-Grade LIME Plot...")
+        print(f"Generating Research-Grade LIME Plot for sample {display_idx}...")
         exp = self.explanations[sample_idx]
-        current_seq = self.test_data_seq[sample_idx]
+        current_seq = self.test_data_seq[sample_idx]  # Use local index
         
         try:
             if self.task == 'activity':
@@ -302,7 +301,7 @@ class LIMEExplainer:
                 
                 pred_probs = exp.predict_proba
                 confidence = pred_probs[label_to_explain] if pred_probs is not None else 0.0
-                title = f"LIME Explanation (Sample {sample_idx})\nPredicted Class: {label_to_explain} | Confidence: {confidence:.2f}"
+                title = f"LIME Explanation (Sample {display_idx})\nPredicted Class: {label_to_explain} | Confidence: {confidence:.2f}"
                 lime_list = exp.as_list(label=label_to_explain)
             else:
                 raw_pred = exp.predicted_value
@@ -312,12 +311,12 @@ class LIMEExplainer:
                     unscaled = self.scaler.inverse_transform([[raw_pred]])[0][0]
                     display_val = unscaled
                     
-                title = f"LIME Explanation (Sample {sample_idx})\nPredicted Value: {display_val:.2f}"
+                title = f"LIME Explanation (Sample {display_idx})\nPredicted Value: {display_val:.2f}"
                 lime_list = exp.as_list()
                 
         except Exception as e:
             print(f"Warning: Could not extract full LIME details: {e}")
-            title = f"LIME Explanation (Sample {sample_idx})"
+            title = f"LIME Explanation (Sample {display_idx})"
             lime_list = exp.as_list()
 
         activity_stats = {} 
@@ -359,7 +358,7 @@ class LIMEExplainer:
             return
 
         df = pd.DataFrame(data).sort_values('AbsWeight', ascending=True)
-        df[['Activity', 'Weight']].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{sample_idx}.csv'), index=False)
+        df[['Activity', 'Weight']].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.csv'), index=False)
 
         plt.figure(figsize=(10, 6))
         colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['Weight']]
@@ -385,29 +384,109 @@ class LIMEExplainer:
         ], loc='lower right')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'lime_explanation.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.png'), dpi=300)
         plt.close()
 
     def save_explanations(self, output_dir):
-        print("✓ LIME computations complete.")
+        print("[OK] LIME computations complete.")
 
 
-def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=20, methods='all', label_encoder=None, scaler=None):
-    """
-    Run explainability analysis on Transformer model.
+def generate_comparison_report(output_dir, shap_dir, lime_dir):
+    import pandas as pd
+    import os
     
-    CRITICAL: Must pass label_encoder to get actual activity names!
+    summary_data = []
     
-    Args:
-        model: Trained Transformer model
-        data: Dictionary with train/test data
-        output_dir: Where to save results
-        task: 'activity', 'time', or 'remaining_time'
-        num_samples: Number of test samples to explain
-        methods: 'shap', 'lime', or 'all'
-        label_encoder: LabelEncoder from predictor (REQUIRED for activity names!)
-        scaler: StandardScaler from predictor (optional)
-    """
+    # Load SHAP results if available
+    shap_importance = {}
+    if shap_dir and os.path.exists(os.path.join(shap_dir, 'global_importance_data.csv')):
+        shap_df = pd.read_csv(os.path.join(shap_dir, 'global_importance_data.csv'))
+        shap_importance = dict(zip(shap_df['Activity'], shap_df['Mean_Impact']))
+    
+    # Load LIME results if available (aggregate from multiple samples)
+    lime_importance = {}
+    if lime_dir:
+        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_sample_') and f.endswith('.csv')]
+        if lime_files:
+            all_lime_weights = {}
+            for lime_file in lime_files:
+                lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+                for _, row in lime_df.iterrows():
+                    activity = row['Activity']
+                    weight = abs(row['Weight'])
+                    if activity not in all_lime_weights:
+                        all_lime_weights[activity] = []
+                    all_lime_weights[activity].append(weight)
+            
+            # Average LIME weights
+            lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
+    
+    # Combine results
+    all_features = set(shap_importance.keys()) | set(lime_importance.keys())
+    
+    for feature in all_features:
+        shap_score = shap_importance.get(feature, 0)
+        lime_score = lime_importance.get(feature, 0)
+        avg_score = (shap_score + lime_score) / 2 if shap_score and lime_score else (shap_score or lime_score)
+        
+        summary_data.append({
+            'Feature': feature,
+            'SHAP_Importance': shap_score,
+            'LIME_Importance': lime_score,
+            'Average_Importance': avg_score,
+            'Agreement': 'Both' if shap_score > 0 and lime_score > 0 else 'SHAP only' if shap_score > 0 else 'LIME only'
+        })
+    
+    # Save summary
+    summary_df = pd.DataFrame(summary_data)
+    summary_df = summary_df.sort_values('Average_Importance', ascending=False)
+    summary_df.to_csv(os.path.join(output_dir, 'feature_importance_summary.csv'), index=False)
+    
+    # Generate text report
+    with open(os.path.join(output_dir, 'comparison_report.txt'), 'w') as f:
+        f.write("="*70 + "\n")
+        f.write("EXPLAINABILITY METHODS COMPARISON REPORT\n")
+        f.write("="*70 + "\n\n")
+        
+        f.write(f"Total features analyzed: {len(all_features)}\n")
+        f.write(f"Features identified by both methods: {len([x for x in summary_data if x['Agreement'] == 'Both'])}\n")
+        f.write(f"Features identified by SHAP only: {len([x for x in summary_data if x['Agreement'] == 'SHAP only'])}\n")
+        f.write(f"Features identified by LIME only: {len([x for x in summary_data if x['Agreement'] == 'LIME only'])}\n\n")
+        
+        f.write("Top 10 Most Important Features (Average):\n")
+        f.write("-"*70 + "\n")
+        for i, row in enumerate(summary_df.head(10).to_dict('records'), 1):
+            f.write(f"{i:2d}. {row['Feature']:<30} | Avg: {row['Average_Importance']:.4f}\n")
+            f.write(f"    SHAP: {row['SHAP_Importance']:.4f} | LIME: {row['LIME_Importance']:.4f}\n\n")
+    
+    print(f"[OK] Feature importance summary saved: feature_importance_summary.csv")
+    print(f"[OK] Comparison report saved: comparison_report.txt")
+
+
+def select_diverse_samples(data, task, num_diverse=10):
+    import numpy as np
+    
+    if task == 'activity':
+        # For classification: select samples with varying confidence
+        y_test = data.get('y_test', [])
+        test_size = len(y_test)
+    else:
+        # For regression: select samples with varying predicted times
+        y_test = data.get('y_test', [])
+        test_size = len(y_test) if hasattr(y_test, '__len__') else len(data.get('X_seq_test', []))
+    
+    if test_size == 0:
+        return [0]
+    
+    # Select evenly spaced samples
+    max_samples = min(num_diverse, test_size)
+    step = max(1, test_size // max_samples)
+    diverse_indices = list(range(0, test_size, step))[:max_samples]
+    
+    return diverse_indices
+
+
+def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=50, methods='all', label_encoder=None, scaler=None, feature_config=None):
     os.makedirs(output_dir, exist_ok=True)
     
     print("="*60)
@@ -449,10 +528,59 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         
         le = LIMEExplainer(model, task, label_encoder, scaler)
         le.initialize_explainer(train_data, num_classes)
-        le.explain_samples(test_data, num_samples)
-        le.plot_explanation(lime_dir, sample_idx=0)
+        
+        # Select diverse samples FIRST
+        diverse_samples = select_diverse_samples(data, task, num_diverse=10)
+        print(f"Explaining {len(diverse_samples)} diverse samples: {diverse_samples}")
+        
+        # Explain ONLY the diverse samples
+        if isinstance(test_data, (list, tuple)):
+            diverse_test_seq = test_data[0][diverse_samples]
+            diverse_test_temp = test_data[1][diverse_samples]
+            print(f"[DEBUG] Extracted {len(diverse_test_seq)} test sequences, {len(diverse_test_temp)} temp features")
+            diverse_test_data = (diverse_test_seq, diverse_test_temp)
+        else:
+            diverse_test_data = test_data[diverse_samples]
+            print(f"[DEBUG] Extracted {len(diverse_test_data)} test samples")
+        
+        le.explain_samples(diverse_test_data, num_samples=len(diverse_samples))
+        print(f"[DEBUG] Generated {len(le.explanations)} explanations")
+        
+        # Plot all explained samples (now they match 0-9)
+        print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
+        plots_saved = 0
+        for i in range(len(le.explanations)):
+            try:
+                if le.explanations[i] is not None:
+                    # Use original test set index in filename
+                    original_idx = diverse_samples[i]
+                    print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
+                    le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx)
+                    plots_saved += 1
+                else:
+                    print(f"[WARNING] Explanation {i} is None, skipping...")
+            except Exception as e:
+                print(f"[ERROR] Failed to plot sample {i}: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        print(f"[LIME] Successfully saved {plots_saved} plots")
+        
         le.save_explanations(lime_dir)
+    
+    # Generate comprehensive summary outputs
+    if methods == 'all':
+        print("\n--- Generating Comparison Report ---")
+        generate_comparison_report(output_dir, shap_dir if 'shap' in methods or methods == 'all' else None, 
+                                   lime_dir if 'lime' in methods or methods == 'all' else None)
         
     print("\n" + "="*60)
-    print(f"DONE. Results saved to: {output_dir}")
+    print(f"EXPLAINABILITY ANALYSIS COMPLETE")
+    print(f"Results saved to: {output_dir}")
+    print("="*60)
+    print("\nGenerated outputs:")
+    print("  [OK] SHAP global importance plots")
+    print("  [OK] LIME local explanations (10 diverse samples)")
+    print("  [OK] Feature importance summary CSV")
+    print("  [OK] Method comparison report")
     print("="*60)

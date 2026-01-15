@@ -7,9 +7,9 @@ const STEPS = [
   "Dataset Setup",
   "Column Mapping",
   "Select Model Type",
+  "Model Configuration",
   "Select Prediction Task",
   "Select Explainability Method",
-  "Model Configuration",
   "Review & Run",
 ];
 

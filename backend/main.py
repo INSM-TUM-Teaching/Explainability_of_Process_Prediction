@@ -37,6 +37,14 @@ REPO_ROOT = os.path.dirname(BACKEND_DIR)                            # .../repo
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)  # allow importing project-level modules
 
+# Import preprocessing utilities
+try:
+    from conv_and_viz.preprocessor_csv import preprocess_event_log
+    PREPROCESSOR_AVAILABLE = True
+except ImportError:
+    PREPROCESSOR_AVAILABLE = False
+    print("[WARNING] Preprocessor not available - skipping data cleaning")
+
 STORAGE_DIR = os.path.join(BACKEND_DIR, "storage")
 UPLOAD_DIR = os.path.join(STORAGE_DIR, "uploads")
 DATASETS_DIR = os.path.join(STORAGE_DIR, "datasets")
@@ -332,33 +340,53 @@ async def upload_dataset(file: UploadFile = File(...)):
         shutil.rmtree(ds_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Failed to parse dataset: {str(e)}")
 
-    # Detect & standardize
+    # Preprocess the CSV (clean, deduplicate, handle missing values)
+    if PREPROCESSOR_AVAILABLE:
+        try:
+            print(f"[Preprocessing] Cleaning dataset: {stored_path}")
+            df = preprocess_event_log(stored_path, stored_path)
+            print(f"[Preprocessing] Complete. Events: {len(df):,}")
+        except Exception as e:
+            print(f"[WARNING] Preprocessing failed: {e}")
+            print("[WARNING] Continuing with raw CSV...")
+            # If preprocessing fails, reload the raw CSV
+            df = pd.read_csv(stored_path)
+    else:
+        print("[WARNING] Preprocessor not available - skipping data cleaning")
+        df = pd.read_csv(stored_path)
+
+    # Save preprocessed CSV with ORIGINAL column names (no auto-detection)
+    # Column mapping will happen later when user selects Auto-Detect or Manual
     try:
-        df_std, mapping = detect_and_standardize_columns(df, verbose=False)
+        df.to_csv(stored_path, index=False)
     except Exception as e:
         shutil.rmtree(ds_dir, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to write preprocessed dataset: {str(e)}")
 
-    # Persist the standardized dataset so downstream code (and manual mapping) sees the same columns
-    # as returned to the frontend (CaseID/Activity/Timestamp[/Resource]).
-    try:
-        df_std.to_csv(stored_path, index=False)
-    except Exception as e:
-        shutil.rmtree(ds_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Failed to write standardized dataset: {str(e)}")
+    num_events = int(len(df))
+    
+    # Try to detect CaseID for num_cases, but don't rename columns
+    case_col = None
+    case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
+    for col in df.columns:
+        if col in case_patterns:
+            case_col = col
+            break
+    
+    if case_col:
+        num_cases = int(df[case_col].nunique())
+    else:
+        num_cases = 0  # Unknown until column mapping
 
-    num_events = int(len(df_std))
-    num_cases = int(df_std["CaseID"].nunique())
-
-    preview_rows = df_std.head(20).to_dict(orient="records")
+    preview_rows = df.head(20).to_dict(orient="records")
 
     meta = DatasetMeta(
         dataset_id=dataset_id,
         stored_path=stored_path,
         num_events=num_events,
         num_cases=num_cases,
-        columns=list(df_std.columns),
-        detected_mapping=mapping,
+        columns=list(df.columns),
+        detected_mapping={},  # No auto-detection - user will choose later
         created_at=_utc_now(),
     )
     _write_json(_dataset_meta_path(dataset_id), meta.model_dump())
@@ -368,8 +396,8 @@ async def upload_dataset(file: UploadFile = File(...)):
         stored_path=stored_path,
         num_events=num_events,
         num_cases=num_cases,
-        columns=list(df_std.columns),
-        detected_mapping=mapping,
+        columns=list(df.columns),
+        detected_mapping={},  # No auto-detection - user will choose later
         preview=preview_rows,
     )
 

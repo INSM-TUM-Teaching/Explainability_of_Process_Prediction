@@ -6,9 +6,9 @@ const STEP_TITLES = [
   "Dataset Setup",
   "Column Mapping",
   "Select Model Type",
+  "Model Configuration",
   "Prediction Task",
   "Explainability",
-  "Model Configuration",
   "Review & Run",
 ];
 
