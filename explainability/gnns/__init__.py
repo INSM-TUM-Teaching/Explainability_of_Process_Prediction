@@ -1,3 +1,15 @@
-from .gnn_explainer import run_gnn_explainability
+# explainability/gnns/__init__.py
 
-__all__ = ['run_gnn_explainability']
+from .gnn_explainer import (
+    ReadableTableExplainer,
+    GraphLIMEExplainer,
+    run_gnn_explainability,
+    GNNExplainerWrapper
+)
+
+__all__ = [
+    'ReadableTableExplainer',
+    'GraphLIMEExplainer',
+    'run_gnn_explainability',
+    'GNNExplainerWrapper'
+]
