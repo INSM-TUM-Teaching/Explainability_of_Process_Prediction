@@ -639,7 +639,7 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
             num_samples=20,
             methods=explainability_method,
             label_encoder=predictor.label_encoder,
-            scaler=predictor.scaler
+            scaler=None
         )
     
     print("\n" + "="*70)
@@ -685,7 +685,8 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
         dropout_rate=config['dropout_rate']
     )
     data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-    predictor.build_model()
+    
+    predictor.build_model()  # Uses timestep explainability by default
     predictor.train(
         data,
         epochs=config['epochs'],
@@ -693,7 +694,10 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
         patience=config['patience']
     )
     metrics = predictor.evaluate(data)
-    y_pred = predictor.predict(data)
+    
+    # predict() now returns a tuple: (y_pred, timestep_preds)
+    y_pred, timestep_preds = predictor.predict(data)
+    
     predictor.save_results(data, y_pred, output_dir)
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)
@@ -756,7 +760,8 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
         dropout_rate=config['dropout_rate']
     )
     data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-    predictor.build_model()
+    
+    predictor.build_model()  # Uses timestep explainability by default
     predictor.train(
         data,
         epochs=config['epochs'],
@@ -764,7 +769,10 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
         patience=config['patience']
     )
     metrics = predictor.evaluate(data)
-    y_pred = predictor.predict(data)
+    
+    # predict() now returns a tuple: (y_pred, timestep_preds)
+    y_pred, timestep_preds = predictor.predict(data)
+    
     predictor.save_results(data, y_pred, output_dir)
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)

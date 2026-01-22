@@ -121,71 +121,157 @@ class RemainingTimePredictor:
         print("Temporal features created.")
         return df
     
-    def build_model(self):
+    def build_model(self, use_timestep_explainability=True):
+        """
+        Build Remaining Time Prediction Model.
+        
+        Args:
+            use_timestep_explainability: If True (default), enables timestep-level 
+                                        explanations for SHAP/LIME
+        """
         print("\nBuilding Remaining Time Prediction Model...")
+        print(f"Timestep explainability: {'ENABLED' if use_timestep_explainability else 'DISABLED'}")
+        
         self.model = build_time_prediction_model(
             vocab_size=self.vocab_size,
             max_len=self.max_len,
             d_model=self.d_model,
             num_heads=self.num_heads,
             num_blocks=self.num_blocks,
-            dropout_rate=self.dropout_rate
+            dropout_rate=self.dropout_rate,
+            use_timestep_explainability=use_timestep_explainability  # NEW!
         )
-        self.model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
-            loss=keras.losses.LogCosh(),
-            metrics=['mae']
-        )
+        
+        # Handle compilation based on model type
+        if len(self.model.outputs) > 1:
+            # Timestep-explainable model (2 outputs)
+            print("Model type: Timestep-explainable (2 outputs)")
+            # Compile with loss only on the first output
+            self.model.compile(
+                optimizer=keras.optimizers.Adam(learning_rate=0.001),
+                loss=[keras.losses.LogCosh(), None],  # Loss only on first output
+                metrics={'time_output': ['mae']}
+            )
+        else:
+            # Original model (1 output)
+            print("Model type: Original (1 output)")
+            self.model.compile(
+                optimizer=keras.optimizers.Adam(learning_rate=0.001),
+                loss=keras.losses.LogCosh(),
+                metrics=['mae']
+            )
+        
         print("\nModel Summary:")
         self.model.summary()
     
     def train(self, data, epochs=50, batch_size=128, patience=10):
         print(f"\nTraining model for {epochs} epochs...")
+        
         early_stopping = keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=patience,
             restore_best_weights=True,
             verbose=1
         )
-        self.history = self.model.fit(
-            [data['X_seq_train'], data['X_temp_train']], 
-            data['y_train'],
-            validation_data=([data['X_seq_val'], data['X_temp_val']], data['y_val']),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=[early_stopping],
-            verbose=1
-        )
+        
+        # Handle training based on model type
+        if len(self.model.outputs) > 1:
+            # Timestep-explainable model - provide targets as list
+            self.history = self.model.fit(
+                [data['X_seq_train'], data['X_temp_train']], 
+                [data['y_train'], None],  # Target for first output, None for second
+                validation_data=(
+                    [data['X_seq_val'], data['X_temp_val']], 
+                    [data['y_val'], None]  # Target for first output, None for second
+                ),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=[early_stopping],
+                verbose=1
+            )
+        else:
+            # Original model
+            self.history = self.model.fit(
+                [data['X_seq_train'], data['X_temp_train']], 
+                data['y_train'],
+                validation_data=([data['X_seq_val'], data['X_temp_val']], data['y_val']),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=[early_stopping],
+                verbose=1
+            )
+        
         print("\nTraining completed!")
         return self.history
     
     def evaluate(self, data):
         print("\nEvaluating on test set...")
-        test_loss, test_mae = self.model.evaluate(
-            [data['X_seq_test'], data['X_temp_test']], 
-            data['y_test'], 
-            verbose=0
-        )
+        
+        # Handle evaluation based on model type
+        if len(self.model.outputs) > 1:
+            # Timestep-explainable model
+            results = self.model.evaluate(
+                [data['X_seq_test'], data['X_temp_test']], 
+                [data['y_test'], None],  # Target for first output, None for second
+                verbose=0
+            )
+            # results is [total_loss, output1_loss, output1_mae]
+            test_loss = results[1] if len(results) > 1 else results[0]
+            test_mae = results[2] if len(results) > 2 else results[-1]
+        else:
+            # Original model
+            test_loss, test_mae = self.model.evaluate(
+                [data['X_seq_test'], data['X_temp_test']], 
+                data['y_test'], 
+                verbose=0
+            )
+        
         print(f"Test MAE: {test_mae:.4f} days")
         print(f"Test Loss: {test_loss:.4f}")
+        
         return {
             'test_loss': test_loss,
             'test_mae': test_mae
         }
     
     def predict(self, data):
+        """
+        Generate predictions.
+        
+        Returns:
+            y_pred: Final time predictions (n_samples,)
+            timestep_preds: Per-timestep predictions (n_samples, max_len) or None
+        """
         print("\nGenerating predictions...")
-        y_pred = self.model.predict(
+        
+        outputs = self.model.predict(
             [data['X_seq_test'], data['X_temp_test']], 
             verbose=0
-        ).flatten()
-        print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
-        return y_pred
+        )
+        
+        # Handle both single and multi-output models
+        if isinstance(outputs, list) and len(outputs) > 1:
+            # Timestep-explainable model
+            y_pred = outputs[0].flatten()  # Final prediction
+            timestep_preds = outputs[1]     # Per-timestep predictions
+            print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
+            print(f"  - Final predictions shape: {y_pred.shape}")
+            print(f"  - Timestep predictions shape: {timestep_preds.shape}")
+            return y_pred, timestep_preds
+        else:
+            # Original model
+            y_pred = outputs.flatten() if hasattr(outputs, 'flatten') else outputs
+            print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
+            return y_pred, None
     
     def save_results(self, data, y_pred, output_dir):
         print("\nSaving results...")
         
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Handle both tuple and single return from predict()
+        if isinstance(y_pred, tuple):
+            y_pred = y_pred[0]  # Extract final predictions
         
         results = pd.DataFrame({
             'actual_remaining_time_days': data['y_test'],
@@ -199,7 +285,13 @@ class RemainingTimePredictor:
     
     def plot_predictions(self, data, y_pred, output_dir):
         print("\nPlotting predictions...")
+        
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Handle both tuple and single return from predict()
+        if isinstance(y_pred, tuple):
+            y_pred = y_pred[0]  # Extract final predictions
+        
         plt.figure(figsize=(10, 6))
         plt.scatter(data['y_test'], y_pred, alpha=0.5, s=10, color='orange')
         plt.plot([data['y_test'].min(), data['y_test'].max()], 
@@ -207,10 +299,12 @@ class RemainingTimePredictor:
                  'r--', lw=2, label='Perfect Prediction')
         plt.xlabel('Actual Remaining Time (days)', fontsize=12)
         plt.ylabel('Predicted Remaining Time (days)', fontsize=12)
+        
         mae = np.mean(np.abs(data['y_test'] - y_pred))
         plt.title(f'Remaining Time Prediction\nMAE: {mae:.4f} days', fontsize=14)
         plt.legend()
         plt.grid(True, alpha=0.3)
+        
         output_path = os.path.join(output_dir, "remaining_time_predictions_plot.png")
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
@@ -223,11 +317,23 @@ class RemainingTimePredictor:
             return
         
         print("\nPlotting training history...")
+        
         os.makedirs(output_dir, exist_ok=True)
         
+        # Handle different history key formats
+        if 'loss' in self.history.history:
+            train_loss_key = 'loss'
+            val_loss_key = 'val_loss'
+        elif 'time_output_loss' in self.history.history:
+            train_loss_key = 'time_output_loss'
+            val_loss_key = 'val_time_output_loss'
+        else:
+            print("Could not find loss keys in history")
+            return
+        
         plt.figure(figsize=(10, 6))
-        plt.plot(self.history.history["loss"], label="Training Loss", linewidth=2)
-        plt.plot(self.history.history["val_loss"], label="Validation Loss", linewidth=2)
+        plt.plot(self.history.history[train_loss_key], label="Training Loss", linewidth=2)
+        plt.plot(self.history.history[val_loss_key], label="Validation Loss", linewidth=2)
         plt.title("Remaining Time Prediction - Loss Over Time", fontsize=14)
         plt.xlabel("Epoch", fontsize=12)
         plt.ylabel("Loss (LogCosh)", fontsize=12)
@@ -239,10 +345,11 @@ class RemainingTimePredictor:
         plt.close()
         
         print(f"Training history plot saved to: {output_path}")   
+        
         print("\nTraining metrics:")
-        print(f"Final training loss: {self.history.history['loss'][-1]:.4f}")
-        print(f"Final validation loss: {self.history.history['val_loss'][-1]:.4f}")
-        print(f"Best validation loss: {min(self.history.history['val_loss']):.4f}")
+        print(f"Final training loss: {self.history.history[train_loss_key][-1]:.4f}")
+        print(f"Final validation loss: {self.history.history[val_loss_key][-1]:.4f}")
+        print(f"Best validation loss: {min(self.history.history[val_loss_key]):.4f}")
     
     def save_model(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
