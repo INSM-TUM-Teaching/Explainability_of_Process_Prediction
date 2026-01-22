@@ -44,7 +44,7 @@ if TENSORFLOW_AVAILABLE:
 if PYTORCH_AVAILABLE:
     from gnns.prediction.gnn_predictor import GNNPredictor
 
-# Import preprocessing utilities
+
 from conv_and_viz.xes_to_csv import load_event_log, log_to_dataframe_preserve_all
 from conv_and_viz.preprocessor_csv import preprocess_event_log
 
@@ -107,7 +107,7 @@ def get_dataset_files(file_format):
         search_dir = "BPI_Models/BPI_logs_xes"
         file_ext = "*.xes"
     else:
-        # For CSV, check both preprocessed and raw directories
+        
         if os.path.exists(DATASET_DIRECTORY) and glob.glob(os.path.join(DATASET_DIRECTORY, "*.csv")):
             search_dir = DATASET_DIRECTORY
         else:
@@ -150,7 +150,7 @@ def convert_xes_to_csv(xes_path, output_dir):
     
     if df.empty or len(df.columns) < 3:
         print("[WARNING] Standard conversion failed, using manual method...")
-        # Fallback to manual conversion
+        
         data = []
         for trace in event_log:
             trace_attrs = dict(trace.attributes)
@@ -183,7 +183,7 @@ def process_input_file(input_path, file_format):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base_name = os.path.splitext(os.path.basename(input_path))[0]
     
-    # Step 1: Convert XES to CSV if needed
+    
     if file_format == "xes":
         print("\n[Step 1/2] Converting XES to CSV...")
         temp_csv_dir = os.path.join("temp_processing", timestamp)
@@ -196,7 +196,7 @@ def process_input_file(input_path, file_format):
         csv_path = input_path
         print(f"✓ Using CSV file directly")
     
-    # Step 2: Preprocess CSV
+    
     print("\n[Step 2/2] Preprocessing CSV (cleaning, deduplication, missing values)...")
     preprocessed_dir = os.path.join("temp_processing", f"preprocessed_{timestamp}")
     os.makedirs(preprocessed_dir, exist_ok=True)
@@ -238,7 +238,7 @@ def manual_column_mapping(df):
     print("Map columns to required attributes:")
     print("-"*70)
     
-    # Case ID
+    
     while True:
         print(f"\n[1/3] Select CASE ID column (identifies process instances):")
         print("Available columns:")
@@ -257,7 +257,7 @@ def manual_column_mapping(df):
         except ValueError:
             print("Please enter a valid number.")
     
-    # Activity
+    
     while True:
         print(f"\n[2/3] Select ACTIVITY column (contains activity/event names):")
         print("Available columns:")
@@ -277,7 +277,7 @@ def manual_column_mapping(df):
         except ValueError:
             print("Please enter a valid number.")
     
-    # Timestamp
+    
     while True:
         print(f"\n[3/3] Select TIMESTAMP column (event time):")
         print("Available columns:")
@@ -297,7 +297,7 @@ def manual_column_mapping(df):
         except ValueError:
             print("Please enter a valid number.")
     
-    # Optional: Resource
+    
     include_resource = get_yes_no("\nDo you want to include a RESOURCE column? (optional)")
     if include_resource:
         while True:
@@ -592,13 +592,13 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     
-    # Columns already mapped, just verify
+    
     required_cols = {'CaseID', 'Activity', 'Timestamp'}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
         raise ValueError(f"Missing required columns: {missing}")
     
-    # Rename to transformer-expected format
+    
     df = df.rename(columns={
         'CaseID': 'case:id',
         'Activity': 'concept:name',
@@ -662,13 +662,13 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     
-    # Columns already mapped, just verify
+    
     required_cols = {'CaseID', 'Activity', 'Timestamp'}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
         raise ValueError(f"Missing required columns: {missing}")
     
-    # Rename to transformer-expected format
+    
     df = df.rename(columns={
         'CaseID': 'case:concept:name',
         'Activity': 'concept:name',
@@ -733,13 +733,13 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     
-    # Columns already mapped, just verify
+    
     required_cols = {'CaseID', 'Activity', 'Timestamp'}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
         raise ValueError(f"Missing required columns: {missing}")
     
-    # Rename to transformer-expected format
+    
     df = df.rename(columns={
         'CaseID': 'case:concept:name',
         'Activity': 'concept:name',
@@ -818,7 +818,7 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
     
-    # Columns already mapped, just verify
+    
     required_cols = {'CaseID', 'Activity', 'Timestamp'}
     if not required_cols.issubset(df.columns):
         missing = required_cols - set(df.columns)
@@ -871,21 +871,32 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
     predictor.save_results(metrics, output_dir)
     
     if explainability_method and EXPLAINABILITY_AVAILABLE:
-        print("\nRunning explainability analysis...")
-        explainability_dir = os.path.join(output_dir, 'explainability')
-        
-        # Get vocabularies from predictor
-        vocabularies = getattr(predictor, 'vocabs', data.get('vocabs', {}))
-        
-        run_gnn_explainability(
-            model=predictor.model,
-            data=data,
-            output_dir=explainability_dir,
-            device=predictor.device,
-            vocabularies=vocabularies,
-            num_samples=10,
-            methods=explainability_method
-        )
+     print("\nRunning explainability analysis...")
+    explainability_dir = os.path.join(output_dir, 'explainability')
+    
+    
+    vocabularies = getattr(predictor, 'vocabs', data.get('vocabs', {}))
+    
+    # Determine which task to explain based on gnn_task
+    if task == 'next_activity':
+        explain_tasks = ['activity']
+    elif task == 'event_time':
+        explain_tasks = ['event_time']
+    elif task == 'remaining_time':
+        explain_tasks = ['remaining_time']
+    else:  # unified
+        explain_tasks = ['activity', 'event_time', 'remaining_time']
+    
+    run_gnn_explainability(
+        model=predictor.model,
+        data=data,
+        output_dir=explainability_dir,
+        device=predictor.device,
+        vocabularies=vocabularies,
+        num_samples=10,
+        methods=explainability_method,
+        tasks=explain_tasks  # ← ADD THIS LINE
+    )
     
     print("\n" + "="*70)
     if task == 'unified':
