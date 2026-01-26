@@ -10,6 +10,7 @@ const STEP_TITLES = [
   "Prediction Task",
   "Explainability",
   "Review & Run",
+  "Results",
 ];
 
 export default function TopHeader({

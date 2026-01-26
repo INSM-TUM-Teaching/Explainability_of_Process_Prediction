@@ -11,6 +11,7 @@ const STEPS = [
   "Select Prediction Task",
   "Select Explainability Method",
   "Review & Run",
+  "Results",
 ];
 
 export default function Sidebar({
@@ -54,7 +55,7 @@ export default function Sidebar({
                     : "border border-gray-300 text-gray-400"
                 }`}
               >
-                {isCompleted ? "✓" : index + 1}
+                {isCompleted ? "OK" : index + 1}
               </div>
 
               {/* Label */}

@@ -24,7 +24,16 @@ class NextActivityPredictor:
         self.vocab_size = None
         self.history = None
     
-    def prepare_data(self, df, test_size=0.3, val_split=0.5):
+    def prepare_data(
+        self,
+        df,
+        test_size=0.3,
+        val_split=0.5,
+        max_cases=None,
+        max_prefixes_per_case=None,
+        max_graphs=None,
+        **kwargs
+    ):
         print("Preparing data for Next Activity Prediction...")
         
         # Required columns
@@ -32,39 +41,77 @@ class NextActivityPredictor:
         available_cols = [col for col in required_cols if col in df.columns]
         if len(available_cols) != len(required_cols):
             raise ValueError(f"Missing required columns. Expected: {required_cols}, Found: {available_cols}")
-        process_data = df[required_cols].copy()
-        process_data.columns = ['case_id', 'activity', 'timestamp']
+        split_col = "__split" if "__split" in df.columns else None
+        select_cols = required_cols + ([split_col] if split_col else [])
+        process_data = df[select_cols].copy()
+        process_data = process_data.rename(columns={
+            'case:id': 'case_id',
+            'concept:name': 'activity',
+            'time:timestamp': 'timestamp',
+        })
         process_data['timestamp'] = pd.to_datetime(process_data['timestamp'])
         process_data = process_data.sort_values(['case_id', 'timestamp']).reset_index(drop=True)
-        sequences, next_activities, metadata = self._create_sequences_with_prefixes(process_data)
+        sequences_all, next_activities_all, metadata = self._create_sequences_with_prefixes(
+            process_data,
+            max_cases=max_cases,
+            max_prefixes_per_case=max_prefixes_per_case
+        )
         
-        print(f"Total sequences: {len(sequences):,}")
+        print(f"Total sequences: {len(sequences_all):,}")
         print(f"Max sequence length: {metadata['max_len']}")
         
         self.label_encoder.fit(process_data['activity'])
         
-        X_encoded = []
-        for seq in sequences:
-            encoded_seq = self.label_encoder.transform(seq)
-            X_encoded.append(encoded_seq)
-        
-        y_encoded = self.label_encoder.transform(next_activities)
-        
-        X = keras.preprocessing.sequence.pad_sequences(
-            X_encoded, maxlen=self.max_len, padding='pre', value=0
-        )
-        
-        X = X + 1
-        y = y_encoded + 1
+        def encode_sequences(sequences, next_activities):
+            X_encoded = [self.label_encoder.transform(seq) for seq in sequences]
+            y_encoded = self.label_encoder.transform(next_activities)
+            X = keras.preprocessing.sequence.pad_sequences(
+                X_encoded, maxlen=self.max_len, padding='pre', value=0
+            )
+            X = X + 1
+            y = y_encoded + 1
+            return X, y
+
+        if split_col:
+            split_values = set(process_data[split_col].dropna().unique().tolist())
+            if not {"train", "val", "test"}.issubset(split_values):
+                raise ValueError("Split column must include train, val, and test values.")
+
+            train_df = process_data[process_data[split_col] == "train"].drop(columns=[split_col])
+            val_df = process_data[process_data[split_col] == "val"].drop(columns=[split_col])
+            test_df = process_data[process_data[split_col] == "test"].drop(columns=[split_col])
+
+            seq_train, next_train, _ = self._create_sequences_with_prefixes(
+                train_df,
+                max_cases=max_cases,
+                max_prefixes_per_case=max_prefixes_per_case
+            )
+            seq_val, next_val, _ = self._create_sequences_with_prefixes(
+                val_df,
+                max_cases=max_cases,
+                max_prefixes_per_case=max_prefixes_per_case
+            )
+            seq_test, next_test, _ = self._create_sequences_with_prefixes(
+                test_df,
+                max_cases=max_cases,
+                max_prefixes_per_case=max_prefixes_per_case
+            )
+
+            X_train, y_train = encode_sequences(seq_train, next_train)
+            X_val, y_val = encode_sequences(seq_val, next_val)
+            X_test, y_test = encode_sequences(seq_test, next_test)
+        else:
+            X, y = encode_sequences(sequences_all, next_activities_all)
+            X_train, X_temp, y_train, y_temp = train_test_split(
+                X, y, test_size=test_size, random_state=42
+            )
+            X_val, X_test, y_val, y_test = train_test_split(
+                X_temp, y_temp, test_size=val_split, random_state=42
+            )
+
         self.vocab_size = len(self.label_encoder.classes_) + 2
         print(f"Vocabulary size: {self.vocab_size}")
         print(f"Number of unique activities: {len(self.label_encoder.classes_)}")
-        X_train, X_temp, y_train, y_temp = train_test_split(
-            X, y, test_size=test_size, random_state=42
-        )
-        X_val, X_test, y_val, y_test = train_test_split(
-            X_temp, y_temp, test_size=val_split, random_state=42
-        )
         print(f"\nDataset splits:")
         print(f"Train: {len(X_train):,} samples")
         print(f"Validation: {len(X_val):,} samples")
@@ -76,16 +123,27 @@ class NextActivityPredictor:
             'X_test': X_test, 'y_test': y_test
         }
     
-    def _create_sequences_with_prefixes(self, data):
+    def _create_sequences_with_prefixes(self, data, max_cases=None, max_prefixes_per_case=None):
         sequences = []
         next_activities = []
         case_ids_list = []
         prefix_lengths = []
-        
+
         grouped = data.groupby('case_id')
-        for case_id, group in grouped:
+        case_ids = list(grouped.groups.keys())
+        if max_cases is not None:
+            case_ids = sorted(case_ids)[:max_cases]
+
+        for case_id in case_ids:
+            group = grouped.get_group(case_id)
             activities = group['activity'].values
-            for i in range(1, len(activities)):
+
+            prefix_indices = list(range(1, len(activities)))
+            if max_prefixes_per_case is not None and len(prefix_indices) > max_prefixes_per_case:
+                step = max(1, len(prefix_indices) // max_prefixes_per_case)
+                prefix_indices = prefix_indices[::step][:max_prefixes_per_case]
+
+            for i in prefix_indices:
                 prefix = activities[:i]
                 next_activity = activities[i]
                 

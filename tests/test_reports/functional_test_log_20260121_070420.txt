@@ -1,0 +1,10 @@
+FUNCTIONAL TEST RUN
+Started: 2026-01-21T07:04:20.956312
+
+Starting functional pipeline tests...
+[INFO] Uploading dataset for transformer:next_activity
+[INFO] Generating splits for transformer:next_activity
+[INFO] Starting run for transformer:next_activity
+[INFO] Polling run f6ce7e0e-fefa-439b-8ad1-c9bf4d60d2c2
+[OK] Functional pipeline succeeded: transformer:next_activity
+Report written to tests\test_reports\functional_test_report_20260121_070455.json

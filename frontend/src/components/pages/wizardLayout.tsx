@@ -20,17 +20,75 @@ import StepProgressHeader from "../ui/StepProgressHeader";
 import WizardFooter from "../ui/WizardFooter";
 
 import {
+  artifactsZipUrl,
   createRun,
   getRun,
+  getRunLogs,
   listArtifacts,
   type DatasetUploadResponse,
   type RunStatus,
 } from "../../lib/api";
 
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 8;
 
 export type PipelineStatus = "idle" | "running" | "completed";
 export type ViewMode = "wizard" | "results";
+
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+
+function cleanLogLine(line: string): string {
+  return line.replace(ANSI_RE, "").replace(/\r/g, "").trim();
+}
+
+function isNoiseLine(line: string): boolean {
+  if (!line) return true;
+  if (line.includes("ms/step")) return true;
+  if (line.includes("====")) return true;
+  if (line.includes("ETA") || line.includes("eta")) return true;
+  return false;
+}
+
+function extractEpochProgress(lines: string[]): { current: number; total: number } | null {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const m = lines[i].match(/Epoch\s+(\d+)\s*\/\s*(\d+)/i);
+    if (m) {
+      const current = Number(m[1]);
+      const total = Number(m[2]);
+      if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
+        return { current, total };
+      }
+    }
+  }
+  return null;
+}
+
+function estimateProgressFromLogs(lines: string[], status: RunStatus | null): number {
+  if (!status) return 0;
+  if (status.status === "queued") return 10;
+  if (status.status === "failed") return 100;
+  if (status.status === "succeeded") return 100;
+
+  const epoch = extractEpochProgress(lines);
+  let progress = 25;
+
+  if (epoch) {
+    const frac = Math.min(1, epoch.current / epoch.total);
+    progress = 30 + frac * 50; // 30-80
+  }
+
+  const joined = lines.join("\n").toLowerCase();
+  if (joined.includes("evaluating on test") || joined.includes("evaluating")) {
+    progress = Math.max(progress, 85);
+  }
+  if (joined.includes("saving results") || joined.includes("results saved")) {
+    progress = Math.max(progress, 92);
+  }
+  if (joined.includes("explainability")) {
+    progress = Math.max(progress, 95);
+  }
+
+  return Math.min(99, Math.round(progress));
+}
 
 function normalizeModelType(v: string | null): "gnn" | "transformer" | null {
   if (!v) return null;
@@ -42,11 +100,12 @@ function normalizeModelType(v: string | null): "gnn" | "transformer" | null {
 
 function normalizeTask(
   v: string | null
-): "next_activity" | "event_time" | "remaining_time" | "unified" | null {
+): "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | null {
   if (!v) return null;
   const s = v.toLowerCase().trim();
 
   if (s === "next_activity" || s.includes("next activity")) return "next_activity";
+  if (s === "custom_activity" || s.includes("custom")) return "custom_activity";
   if (s === "event_time" || s.includes("event time") || s === "timestamp") return "event_time";
   if (s === "remaining_time" || s.includes("remaining time")) return "remaining_time";
   if (s === "unified") return "unified";
@@ -114,8 +173,10 @@ export default function WizardLayout() {
   /* -------------------- STEP DATA -------------------- */
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [dataset, setDataset] = useState<DatasetUploadResponse | null>(null);
+  const [datasetMode, setDatasetMode] = useState<"raw" | "preprocessed" | "skip" | null>(null);
+  const [splitConfig, setSplitConfig] = useState({ test_size: 0.1, val_split: 0.11 });
 
-  const [mappingMode, setMappingMode] = useState<MappingMode | null>(null);
+  const [mappingMode, setMappingMode] = useState<MappingMode | null>("manual");
   const [manualMapping, setManualMapping] = useState<ManualMapping>({
     case_id: "",
     activity: "",
@@ -125,6 +186,8 @@ export default function WizardLayout() {
 
   const [modelType, setModelType] = useState<string | null>(null);
   const [predictionTask, setPredictionTask] = useState<string | null>(null);
+  const [predictionCategory, setPredictionCategory] = useState<"classification" | "regression" | null>(null);
+  const [customTargetColumn, setCustomTargetColumn] = useState<string | null>(null);
   const [explainMethod, setExplainMethod] = useState<ExplainValue | null>(null);
   const [configMode, setConfigMode] = useState<ConfigMode | null>(null);
 
@@ -167,6 +230,8 @@ export default function WizardLayout() {
   const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
   const [artifacts, setArtifacts] = useState<string[]>([]);
   const [runError, setRunError] = useState<string | null>(null);
+  const [runLogs, setRunLogs] = useState<string[]>([]);
+  const [autoDownloadedRunId, setAutoDownloadedRunId] = useState<string | null>(null);
 
   const [viewMode, setViewMode] = useState<ViewMode>("wizard");
 
@@ -189,11 +254,10 @@ export default function WizardLayout() {
   const isStepValid = () => {
     switch (step) {
       case 0:
-        return dataset !== null;
+        return dataset !== null && !!dataset.split_paths;
       case 1:
         if (!dataset) return false;
         if (mappingMode === null) return false;
-        if (mappingMode === "auto") return true;
         return validateManualMapping(manualMapping);
       case 2:
         return modelTypeNormalized !== null;
@@ -210,35 +274,39 @@ export default function WizardLayout() {
         return false;
       }
       case 4:
-        return taskNormalized !== null;
+        if (!taskNormalized) return false;
+        if (taskNormalized === "custom_activity") {
+          if (!customTargetColumn) return false;
+          if (!dataset?.column_types) return false;
+          if (dataset.column_types[customTargetColumn] !== "categorical") return false;
+        }
+        return true;
       case 5:
         return explainMethod !== null;
+      case 7:
+        return true;
       default:
         return true;
     }
   };
 
   const completedSteps = [
-    dataset !== null,
-    mappingMode !== null,
+    dataset !== null && !!dataset.split_paths,
+    !!dataset && validateManualMapping(manualMapping),
     modelTypeNormalized !== null,
     configMode !== null,
     taskNormalized !== null,
     explainMethod !== null,
     pipelineStatus === "completed",
+    viewMode === "results",
   ];
 
   /* -------------------- HANDLERS -------------------- */
   const handleUploaded = (file: File, resp: DatasetUploadResponse) => {
     setUploadedFile(file);
     setDataset(resp);
-    setMappingMode(null);
-    setManualMapping({
-      case_id: resp.columns.includes("CaseID") ? "CaseID" : "",
-      activity: resp.columns.includes("Activity") ? "Activity" : "",
-      timestamp: resp.columns.includes("Timestamp") ? "Timestamp" : "",
-      resource: resp.columns.includes("Resource") ? "Resource" : null,
-    });
+    setMappingMode("manual");
+    setManualMapping({ case_id: "", activity: "", timestamp: "", resource: null });
 
     // clear run state
     setPipelineStatus("idle");
@@ -247,12 +315,35 @@ export default function WizardLayout() {
     setRunStatus(null);
     setArtifacts([]);
     setRunError(null);
+    setAutoDownloadedRunId(null);
+    setRunLogs([]);
+  };
+
+  const handleDatasetUpdate = (resp: DatasetUploadResponse) => {
+    setDataset(resp);
+    setManualMapping((prev) => {
+      const cols = resp.columns ?? [];
+      const next = { ...prev };
+
+      if (next.case_id && !cols.includes(next.case_id)) next.case_id = "";
+      if (next.activity && !cols.includes(next.activity)) next.activity = "";
+      if (next.timestamp && !cols.includes(next.timestamp)) next.timestamp = "";
+      if (next.resource && !cols.includes(next.resource)) next.resource = null;
+
+      return next;
+    });
+    if (customTargetColumn && !resp.columns.includes(customTargetColumn)) {
+      setCustomTargetColumn(null);
+      if (predictionTask === "custom_activity") {
+        setPredictionTask(null);
+      }
+    }
   };
 
   const clearUpload = () => {
     setUploadedFile(null);
     setDataset(null);
-    setMappingMode(null);
+    setMappingMode("manual");
     setManualMapping({ case_id: "", activity: "", timestamp: "", resource: null });
 
     setPipelineStatus("idle");
@@ -261,6 +352,8 @@ export default function WizardLayout() {
     setRunStatus(null);
     setArtifacts([]);
     setRunError(null);
+    setAutoDownloadedRunId(null);
+    setRunLogs([]);
   };
 
   // Clear explainability immediately when user changes model type (no effects)
@@ -283,11 +376,15 @@ export default function WizardLayout() {
 
     setUploadedFile(null);
     setDataset(null);
-    setMappingMode(null);
+    setDatasetMode(null);
+    setSplitConfig({ test_size: 0.1, val_split: 0.11 });
+    setMappingMode("manual");
     setManualMapping({ case_id: "", activity: "", timestamp: "", resource: null });
 
     setModelType(null);
     setPredictionTask(null);
+    setPredictionCategory(null);
+    setCustomTargetColumn(null);
     setExplainMethod(null);
     setConfigMode(null);
     setTransformerConfig(defaultTransformerConfig);
@@ -351,10 +448,11 @@ export default function WizardLayout() {
         model_type: mt,
         task,
         config: configToSend,
-        split: { test_size: 0.2, val_split: 0.5 },
+        split: splitConfig,
         explainability: explainToSend,
-        mapping_mode: mappingMode,
-        column_mapping: mappingMode === "manual" ? manualMapping : null,
+        target_column: task === "custom_activity" ? customTargetColumn : null,
+        mapping_mode: "manual",
+        column_mapping: manualMapping,
       });
 
       setRunId(res.run_id);
@@ -383,17 +481,42 @@ export default function WizardLayout() {
         if (cancelled) return;
 
         setRunStatus(st);
+        let cleanedLogs: string[] = [];
+        try {
+          const logs = await getRunLogs(runId, 120);
+          const rawLines = logs.lines ?? [];
+          cleanedLogs = rawLines
+            .map(cleanLogLine)
+            .filter((line) => line.length > 0)
+            .filter((line) => !isNoiseLine(line));
+          if (!cancelled && cleanedLogs.length > 0) setRunLogs(cleanedLogs);
+        } catch {
+          // Keep last known logs if polling fails.
+        }
 
-        if (st.status === "queued") setProgress(20);
-        if (st.status === "running") setProgress((p) => Math.max(p, 60));
-        if (st.status === "succeeded") setProgress(100);
-        if (st.status === "failed") setProgress(100);
+        if (st.status === "succeeded" || st.status === "failed") {
+          setProgress(100);
+        } else {
+          const nextProgress = estimateProgressFromLogs(cleanedLogs, st);
+          setProgress((prev) => Math.max(prev, nextProgress));
+        }
 
         if (st.status === "succeeded") {
           const arts = await listArtifacts(runId);
           if (cancelled) return;
           setArtifacts(arts.artifacts);
           setPipelineStatus("completed");
+          setStep(7);
+          setViewMode("results");
+          if (autoDownloadedRunId !== runId) {
+            const link = document.createElement("a");
+            link.href = artifactsZipUrl(runId);
+            link.download = `run_${runId}_artifacts.zip`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setAutoDownloadedRunId(runId);
+          }
         }
 
         if (st.status === "failed") {
@@ -445,16 +568,19 @@ export default function WizardLayout() {
                   uploadedFile={uploadedFile}
                   dataset={dataset}
                   onUploaded={handleUploaded}
+                  onDatasetUpdate={handleDatasetUpdate}
                   onClear={clearUpload}
+                  mode={datasetMode}
+                  onModeChange={setDatasetMode}
+                  splitConfig={splitConfig}
+                  onSplitConfigChange={setSplitConfig}
                 />
               )}
 
               {step === 1 && (
                 <Step2Mapping
                   dataset={dataset}
-                  mode={mappingMode}
                   manualMapping={manualMapping}
-                  onModeChange={setMappingMode}
                   onManualMappingChange={(patch) =>
                     setManualMapping((prev) => ({ ...prev, ...patch }))
                   }
@@ -480,7 +606,29 @@ export default function WizardLayout() {
               )}
 
               {step === 4 && (
-                <Step3Prediction task={predictionTask} onSelect={setPredictionTask} />
+                <Step3Prediction
+                  task={predictionTask}
+                  category={predictionCategory}
+                  targetColumn={customTargetColumn}
+                  dataset={dataset}
+                  onSelectTask={(nextTask) => {
+                    setPredictionTask(nextTask);
+                    if (nextTask === "event_time" || nextTask === "remaining_time") {
+                      setPredictionCategory("regression");
+                    } else {
+                      setPredictionCategory("classification");
+                    }
+                    if (nextTask !== "custom_activity") {
+                      setCustomTargetColumn(null);
+                    }
+                  }}
+                  onSelectCategory={(nextCategory) => {
+                    setPredictionCategory(nextCategory);
+                    setPredictionTask(null);
+                    setCustomTargetColumn(null);
+                  }}
+                  onTargetColumnChange={setCustomTargetColumn}
+                />
               )}
 
               {step === 5 && (
@@ -506,9 +654,13 @@ export default function WizardLayout() {
                   runId={runId}
                   runStatus={runStatus}
                   artifacts={artifacts}
+                  logs={runLogs}
                   error={runError}
                   onStartPipeline={startPipeline}
-                  onViewResults={() => setViewMode("results")}
+                  onViewResults={() => {
+                    setStep(7);
+                    setViewMode("results");
+                  }}
                 />
               )}
             </div>

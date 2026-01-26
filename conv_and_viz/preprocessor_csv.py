@@ -52,7 +52,7 @@ def detect_columns(df):
     return column_mapping
 
 
-def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
+def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv", options=None):
     """
     Preprocess an event log file (XES or CSV) for predictive process monitoring.
     
@@ -63,6 +63,20 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
     Returns:
         DataFrame: Preprocessed dataframe
     """
+    default_options = {
+        "sort_and_normalize_timestamps": True,
+        "check_millisecond_order": True,
+        "impute_categorical": True,
+        "impute_numeric_neighbors": True,
+        "drop_missing_timestamps": True,
+        "fill_remaining_missing": True,
+        "remove_duplicates": True,
+    }
+    if options:
+        for key, value in options.items():
+            if key in default_options and value is not None:
+                default_options[key] = bool(value)
+
     if input_path.endswith('.xes'):
         if not PM4PY_AVAILABLE:
             raise ImportError("PM4Py is required to process XES files. Install with: pip install pm4py")
@@ -88,12 +102,15 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
     else:
         print("Warning: No case ID column detected")
 
-    if case_col and timestamp_col:
+    if case_col and timestamp_col and (
+        default_options["sort_and_normalize_timestamps"]
+        or default_options["check_millisecond_order"]
+    ):
         df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce')
         df.sort_values(by=[case_col, timestamp_col], inplace=True)
         print("DataFrame sorted by CaseID and Timestamp.")
 
-    if case_col and timestamp_col:
+    if case_col and timestamp_col and default_options["check_millisecond_order"]:
         df['Timestamp_Sec'] = df[timestamp_col].dt.floor('s')
         df['Prev_CaseID'] = df[case_col].shift(1)
         df['Prev_Timestamp_Sec'] = df['Timestamp_Sec'].shift(1)
@@ -108,7 +125,8 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
         print(f"Total Unique Cases where Milliseconds Determine Order: {cases_affected_by_milliseconds}")
 
         df.drop(columns=['Timestamp_Sec', 'Prev_CaseID', 'Prev_Timestamp_Sec'], inplace=True)
-        
+
+    if case_col and timestamp_col and default_options["sort_and_normalize_timestamps"]:
         df[timestamp_col] = df[timestamp_col].dt.floor('s')
         if df[timestamp_col].dt.tz is not None:
             df[timestamp_col] = df[timestamp_col].dt.tz_localize(None)
@@ -116,33 +134,36 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
     
     print("\n--- Checking Data Types and Handling Wrong Values ---")
     
-    for col in df.columns:
-        if col in [case_col, timestamp_col]:
-            continue
-        
-        detected_type = detect_column_type(df[col])
-        
-        if detected_type == 'categorical':
-            df[col] = df[col].ffill().bfill()
-        
-        elif detected_type == 'numerical':
-            mask = df[col].isna()
-            for idx in df[mask].index:
-                prev_idx = idx - 1
-                next_idx = idx + 1
-                
-                prev_val = df.loc[prev_idx, col] if prev_idx in df.index else np.nan
-                next_val = df.loc[next_idx, col] if next_idx in df.index else np.nan
-                
-                if pd.notna(prev_val) and pd.notna(next_val):
-                    df.loc[idx, col] = (prev_val + next_val) / 2
-                elif pd.notna(prev_val):
-                    df.loc[idx, col] = prev_val
-                elif pd.notna(next_val):
-                    df.loc[idx, col] = next_val
+    if default_options["impute_categorical"] or default_options["impute_numeric_neighbors"]:
+        for col in df.columns:
+            if col in [case_col, timestamp_col]:
+                continue
+            
+            detected_type = detect_column_type(df[col])
+            
+            if detected_type == 'categorical' and default_options["impute_categorical"]:
+                df[col] = df[col].ffill().bfill()
+            
+            elif detected_type == 'numerical' and default_options["impute_numeric_neighbors"]:
+                mask = df[col].isna()
+                for idx in df[mask].index:
+                    prev_idx = idx - 1
+                    next_idx = idx + 1
+                    
+                    prev_val = df.loc[prev_idx, col] if prev_idx in df.index else np.nan
+                    next_val = df.loc[next_idx, col] if next_idx in df.index else np.nan
+                    
+                    if pd.notna(prev_val) and pd.notna(next_val):
+                        df.loc[idx, col] = (prev_val + next_val) / 2
+                    elif pd.notna(prev_val):
+                        df.loc[idx, col] = prev_val
+                    elif pd.notna(next_val):
+                        df.loc[idx, col] = next_val
 
     print("\n--- Handling Null and Zero Values ---")
-    missing_cols = df.columns[df.isnull().any()].tolist()
+    missing_cols = []
+    if default_options["drop_missing_timestamps"] or default_options["fill_remaining_missing"]:
+        missing_cols = df.columns[df.isnull().any()].tolist()
     
     if missing_cols:
         print(f"Columns with missing values: {missing_cols}")
@@ -152,7 +173,7 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
         numeric_cols = [col for col in missing_cols if detect_column_type(df[col]) == 'numerical']
         categorical_cols = [col for col in missing_cols if detect_column_type(df[col]) == 'categorical']
         
-        if timestamp_col and timestamp_col in missing_cols:
+        if default_options["drop_missing_timestamps"] and timestamp_col and timestamp_col in missing_cols:
             rows_before = len(df)
             df = df.dropna(subset=[timestamp_col])
             rows_after = len(df)
@@ -164,10 +185,11 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
             if timestamp_col in categorical_cols:
                 categorical_cols.remove(timestamp_col)
         
-        for col in numeric_cols:
-            df[col] = df[col].fillna(0.0)
-        for col in categorical_cols:
-            df[col] = df[col].fillna('N/A')
+        if default_options["fill_remaining_missing"]:
+            for col in numeric_cols:
+                df[col] = df[col].fillna(0.0)
+            for col in categorical_cols:
+                df[col] = df[col].fillna('N/A')
         
         print("\n--- Missing Value Count AFTER Imputation ---")
         remaining_missing = [col for col in missing_cols if col in df.columns]
@@ -184,14 +206,16 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv"):
     print(f"Total rows before checking: {initial_rows}")
     print(f"Total exact duplicate rows found: {duplicate_rows}")
     
-    if duplicate_rows > 0:
+    if default_options["remove_duplicates"] and duplicate_rows > 0:
         df.drop_duplicates(inplace=True) 
         
         final_rows = len(df)
         print(f"Removed {duplicate_rows} duplicate rows.")
         print(f"Total rows after removal: {final_rows}")
-    else:
+    elif duplicate_rows == 0:
         print("No exact duplicate rows found.")
+    else:
+        print("Duplicate rows found, but removal is disabled.")
     
     output_dir = os.path.dirname(output_csv_path)
     if output_dir:

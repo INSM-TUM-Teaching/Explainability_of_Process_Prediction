@@ -59,6 +59,7 @@ def _apply_manual_column_mapping(
     dataset_path: str,
     out_csv_path: str,
     mapping: Dict[str, Any],
+    target_column: str | None = None,
 ) -> str:
     """
     Create a mapped CSV with canonical columns:
@@ -92,12 +93,20 @@ def _apply_manual_column_mapping(
         if col and col not in df.columns:
             raise RuntimeError(f"Invalid column_mapping: column not found: {col}")
 
+    if target_column:
+        if target_column not in df.columns:
+            raise RuntimeError(f"Invalid target_column: column not found: {target_column}")
+
     rename = {case_col: "CaseID", act_col: "Activity", ts_col: "Timestamp"}
     if res_col:
         rename[res_col] = "Resource"
 
     df = df.rename(columns=rename)
     keep_cols = ["CaseID", "Activity", "Timestamp"] + (["Resource"] if res_col else [])
+    if target_column and target_column not in keep_cols:
+        keep_cols.append(target_column)
+    if "__split" in df.columns:
+        keep_cols.append("__split")
     df = df[keep_cols]
 
     os.makedirs(os.path.dirname(out_csv_path), exist_ok=True)
@@ -138,6 +147,7 @@ def main():
 
     model_type = (req.get("model_type") or "").lower().strip()
     task = (req.get("task") or "").lower().strip()
+    target_column = req.get("target_column") or None
 
     split = req.get("split") or {"test_size": 0.2, "val_split": 0.5}
     test_size = float(split.get("test_size", 0.2))
@@ -148,6 +158,8 @@ def main():
 
     mapping_mode = (req.get("mapping_mode") or "").strip().lower() or "auto"
     column_mapping = req.get("column_mapping") or None
+    if task == "custom_activity" and not target_column:
+        raise RuntimeError("custom_activity requires target_column")
 
     if mapping_mode not in {"auto", "manual"}:
         patch_status(
@@ -164,7 +176,9 @@ def main():
                 raise RuntimeError("mapping_mode=manual requires column_mapping")
 
             mapped_path = os.path.join(run_dir, "input", "dataset_mapped.csv")
-            dataset_path = _apply_manual_column_mapping(dataset_path, mapped_path, column_mapping)
+            dataset_path = _apply_manual_column_mapping(
+                dataset_path, mapped_path, column_mapping, target_column=target_column
+            )
     except Exception as e:
         # If we fail before the normal "running" patch, ensure we don't leave the run stuck in queued.
         patch_status(status_path, status="failed", finished_at=utc_now(), error=str(e))
@@ -205,10 +219,15 @@ def main():
             config = default_gnn_config()
 
         if model_type == "transformer":
-            if task == "next_activity":
+            if task in {"next_activity", "custom_activity"}:
                 metrics = run_next_activity_prediction(
-                    dataset_path, artifacts_dir, test_size, val_split, config,
-                    explainability_method=explainability
+                    dataset_path,
+                    artifacts_dir,
+                    test_size,
+                    val_split,
+                    config,
+                    explainability_method=explainability,
+                    target_column=target_column if task == "custom_activity" else None,
                 )
             elif task == "event_time":
                 metrics = run_event_time_prediction(
@@ -224,9 +243,10 @@ def main():
                 raise RuntimeError(f"Unsupported transformer task: {task}")
 
         elif model_type == "gnn":
-            if task not in {"next_activity", "event_time", "remaining_time", "unified"}:
+            if task not in {"next_activity", "custom_activity", "event_time", "remaining_time", "unified"}:
                 raise RuntimeError(f"Unsupported gnn task: {task}")
 
+            gnn_task = "next_activity" if task == "custom_activity" else task
             metrics = run_gnn_unified_prediction(
                 dataset_path,
                 artifacts_dir,
@@ -234,7 +254,8 @@ def main():
                 val_split,
                 config,
                 explainability_method=explainability,
-                task=task,
+                task=gnn_task,
+                target_column=target_column if task == "custom_activity" else None,
             )
         else:
             raise RuntimeError(f"Unsupported model_type: {model_type}")
