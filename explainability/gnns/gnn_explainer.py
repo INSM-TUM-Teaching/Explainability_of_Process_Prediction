@@ -167,14 +167,13 @@ class TemporalGradientExplainer:
 
     def compute_temporal_gradients(self, graphs, task='activity', num_samples=10):
         """
-        Compute gradient-based attributions for each time step in the sequence.
+        Compute gradient-based attributions for each node/time step in the sequence.
         Returns per-sample temporal gradient contributions.
         """
         self.model.eval()
         temporal_contributions = []
         observed_sequences = []
         predictions = []
-        true_values = []
         
         sample_indices = np.random.choice(len(graphs), min(num_samples, len(graphs)), replace=False)
         selected_graphs = [graphs[i] for i in sample_indices]
@@ -209,13 +208,21 @@ class TemporalGradientExplainer:
                     grad = graph.x_dict['activity'].grad
                     inp = graph.x_dict['activity']
                     
+                    # Compute contribution per node (row) by summing across features
+                    # grad shape: (num_nodes, num_features)
+                    # We want contribution per node/time step
                     contribution = (grad * inp).sum(dim=1).cpu().numpy()
-                    temporal_contributions.append(contribution)
                     
+                    # Get observed values (sum of features per node)
                     observed = inp.sum(dim=1).cpu().numpy()
-                    observed_sequences.append(observed)
                     
-                    predictions.append(pred_value)
+                    # Only keep if we have more than 1 time step
+                    if len(contribution) > 1:
+                        temporal_contributions.append(contribution)
+                        observed_sequences.append(observed)
+                        predictions.append(pred_value)
+                    else:
+                        print(f"[WARNING] Graph has only {len(contribution)} node(s), skipping.")
         
         return temporal_contributions, observed_sequences, predictions
 
@@ -228,7 +235,7 @@ class TemporalGradientExplainer:
         contributions, observed_seqs, preds = self.compute_temporal_gradients(graphs, task, num_samples)
         
         if not contributions:
-            print("[WARNING] Temporal gradient plot skipped: No gradients computed.")
+            print("[WARNING] Temporal gradient plot skipped: No valid gradients computed.")
             return
         
         preds = self._maybe_unscale(np.array(preds))
@@ -241,19 +248,37 @@ class TemporalGradientExplainer:
             signal = contributions[i]
             observed = observed_seqs[i] if i < len(observed_seqs) else None
             
-            valid_len = int(np.count_nonzero(signal))
-            if valid_len == 0:
-                valid_len = len(signal)
+            # Get sequence length
+            seq_len = len(signal)
             
-            signal = signal[-valid_len:]
-            if observed is not None:
-                observed = observed[-valid_len:]
-                min_len = min(len(signal), len(observed))
-                signal = signal[-min_len:]
-                observed = observed[-min_len:]
+            # Skip if only 1 or 0 time steps
+            if seq_len <= 1:
+                print(f"[WARNING] Sample {i} has only {seq_len} time step(s), skipping plot.")
+                continue
+            
+            # Find valid (non-zero) length
+            non_zero_indices = np.nonzero(signal)[0]
+            if len(non_zero_indices) > 1:
+                valid_len = non_zero_indices[-1] + 1
+            else:
+                valid_len = seq_len
+            
+            # Trim to valid length (from beginning)
+            if valid_len > 1:
+                signal = signal[:valid_len]
+                if observed is not None and len(observed) >= valid_len:
+                    observed = observed[:valid_len]
+                elif observed is not None:
+                    # Align lengths
+                    min_len = min(len(signal), len(observed))
+                    signal = signal[:min_len]
+                    observed = observed[:min_len]
             
             seq_len = len(signal)
-            if seq_len == 0:
+            
+            # Final check
+            if seq_len <= 1:
+                print(f"[WARNING] Sample {i} has only {seq_len} valid time step(s), skipping plot.")
                 continue
                 
             x = np.arange(1, seq_len + 1)
@@ -277,16 +302,17 @@ class TemporalGradientExplainer:
             legend_handles.append(Patch(facecolor=pos_color, label="Positive Gradient values"))
             legend_handles.append(Patch(facecolor=neg_color, label="Negative Gradient values"))
             
-            if y_true is not None and i < len(y_true) and hasattr(y_true[i], '__len__'):
-                observed = y_true[i]
-                if valid_len is not None:
-                    observed = observed[-valid_len:]
+            # Check if y_true has sequence data for this sample
+            if y_true is not None and i < len(y_true):
+                if hasattr(y_true[i], '__len__') and len(y_true[i]) > 1:
+                    observed = np.array(y_true[i])[:seq_len]
             
             if observed is not None and len(observed) == len(signal):
                 ax2 = ax.twinx()
                 ax2.plot(x, observed, color='#555555', linewidth=1.5)
                 ax2.set_ylabel("Observed data values")
                 legend_handles.append(Line2D([0], [0], color='#555555', linewidth=1.5, label="Observed data"))
+            
             ax.legend(handles=legend_handles, loc='upper right')
             
             plt.tight_layout()
