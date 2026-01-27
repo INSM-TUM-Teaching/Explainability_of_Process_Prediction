@@ -1,0 +1,31 @@
+# Ignore files and folders that should not be uploaded to Cloud Build when using:
+#   gcloud run deploy --source .
+
+.git
+.gitignore
+
+**/.DS_Store
+**/__pycache__/
+**/*.pyc
+
+# IDE
+.idea/
+.vscode/
+
+# Python virtualenvs
+venv*/
+**/.venv/
+backend/.venv/
+venv_bpm/
+venv_gnn/
+
+# Frontend dev deps/builds
+frontend/node_modules/
+frontend/.vite/
+
+# Large / generated artifacts
+BPI_Models/
+results/
+comprehensive_test_results/
+backend/storage/
+temp_processing/

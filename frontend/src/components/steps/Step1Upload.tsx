@@ -24,7 +24,7 @@ type Step1UploadProps = {
   onClear?: () => void;
 };
 
-const MAX_UPLOAD_MB = 400;
+const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB ?? 400);
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const MIN_SPLIT_PCT = 1;
 const TRAIN_COLOR = "#1E3F7C";
@@ -775,14 +775,19 @@ export default function Step1Upload({
       <Card title="Dataset Requirements">
         <div className="bg-brand-50 border border-brand-200 rounded-lg p-4">
           <ul className="text-sm text-gray-700 list-disc ml-5 space-y-1">
+<<<<<<< HEAD
             <li>File size: Maximum 400 MB</li>
             <li>Formats: CSV or XES (preprocessed and splits must be CSV)</li>
             <li>Required columns: Case ID, Activity, Timestamp</li>
+=======
+            <li>File size: Maximum {MAX_UPLOAD_MB} MB (checked in frontend + backend)</li>
+            <li>Formats: CSV or XES</li>
+            <li>Required columns: Case ID, Activity, Timestamp (validated in backend via auto-detection)</li>
+>>>>>>> 5d611ba (Add Firebase Hosting + Cloud Run deploy setup)
           </ul>
         </div>
       </Card>
     </div>
   );
 }
-
 

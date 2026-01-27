@@ -112,10 +112,51 @@ cp .env.example .env.local 2>/dev/null || true
 
 # Put this line into frontend/.env.local
 # (Adjust if your backend runs on a different host/port)
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8000/api
 
 # Start the frontend dev server
 npm run dev
+
+---
+
+## Deployment (Firebase Hosting + Cloud Run)
+
+This repo is set up so the frontend calls the backend via same-origin `/api/*`:
+
+- Firebase Hosting serves `frontend/dist`
+- Firebase Hosting rewrites `/api/**` to Cloud Run service `ppm-backend` in `europe-west1`
+- Backend endpoints are under `/api/...`
+
+### One-time setup (Console)
+
+1. Firebase Console: create/select project `explainability-bedf8`
+2. Enable Billing (Blaze)
+3. Google Cloud APIs: enable Cloud Run Admin API, Cloud Build API, Artifact Registry API
+4. (Optional) Firebase Auth can be added later if needed.
+
+### Deploy backend (Cloud Run)
+
+```bash
+gcloud auth login
+gcloud config set project explainability-bedf8
+gcloud run deploy ppm-backend --source . --region europe-west1 --allow-unauthenticated
+```
+
+### Deploy frontend (Firebase Hosting)
+
+```bash
+firebase login
+firebase use explainability-bedf8
+
+npm --prefix frontend ci
+npm --prefix frontend run build
+
+firebase deploy --only hosting
+```
+
+### API authentication
+
+Auth is currently not enforced. If you want to add authentication later, we can integrate Firebase Auth or another provider.
 
 
 Frontend will be available at:

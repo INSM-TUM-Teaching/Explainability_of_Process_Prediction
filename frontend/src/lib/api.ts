@@ -1,7 +1,7 @@
 // frontend/src/lib/api.ts
 
 const RAW_API_BASE =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api";
 
 export const API_BASE = RAW_API_BASE.replace(/\/+$/, ""); // trim trailing slashes
 
