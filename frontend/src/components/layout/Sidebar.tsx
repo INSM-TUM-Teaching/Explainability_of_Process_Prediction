@@ -19,7 +19,7 @@ export default function Sidebar({
   completedSteps,
 }: SidebarProps) {
   return (
-    <aside className="w-72 border-r bg-white p-6">
+    <aside className="w-72 border-r bg-white pt-20 px-6 pb-6">
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-lg font-semibold">

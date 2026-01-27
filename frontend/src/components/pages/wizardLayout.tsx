@@ -18,6 +18,8 @@ import ResultsView from "../results/ResultsView";
 
 import StepProgressHeader from "../ui/StepProgressHeader";
 import WizardFooter from "../ui/WizardFooter";
+import ppmxLogo from "../../assets/ppmx.png";
+import tumLogo from "../../assets/tum.png";
 
 import {
   artifactsZipUrl,
@@ -544,145 +546,162 @@ export default function WizardLayout() {
   const showResults = viewMode === "results";
 
   return (
-    <div className="flex h-screen">
-      <Sidebar currentStep={step} completedSteps={completedSteps} />
+    <div className="flex h-screen flex-col">
+      <div className="shrink-0 border-b bg-white">
+        <div className="flex items-center justify-between px-4 py-3">
+          <img
+            src={tumLogo}
+            alt="TUM"
+            className="h-8 w-auto object-contain"
+          />
+          <img
+            src={ppmxLogo}
+            alt="PPMX"
+            className="h-9 w-auto object-contain"
+          />
+        </div>
+      </div>
 
-      {showResults ? (
-        <ResultsView
-          runId={runId}
-          onBackToPipeline={() => {
-            setViewMode("wizard");
-            setStep(6);
-          }}
-        />
-      ) : (
-        <div className="flex-1 flex flex-col min-w-0 bg-gray-50">
-          <div className="px-8 pt-6 shrink-0">
-            <StepProgressHeader step={step} totalSteps={TOTAL_STEPS} />
-          </div>
+      <div className="flex flex-1 min-h-0">
+        <Sidebar currentStep={step} completedSteps={completedSteps} />
 
-          <div className="flex-1 overflow-auto min-w-0">
-            <div className="w-full px-8 py-6">
-              {step === 0 && (
-                <Step1Upload
-                  uploadedFile={uploadedFile}
-                  dataset={dataset}
-                  onUploaded={handleUploaded}
-                  onDatasetUpdate={handleDatasetUpdate}
-                  onClear={clearUpload}
-                  mode={datasetMode}
-                  onModeChange={setDatasetMode}
-                  splitConfig={splitConfig}
-                  onSplitConfigChange={setSplitConfig}
-                />
-              )}
+        {showResults ? (
+          <ResultsView
+            runId={runId}
+            onBackToPipeline={() => {
+              setViewMode("wizard");
+              setStep(6);
+            }}
+          />
+        ) : (
+          <div className="flex-1 flex flex-col min-w-0 bg-gray-50">
+            <div className="px-8 pt-8 shrink-0">
+              <StepProgressHeader step={step} totalSteps={TOTAL_STEPS} />
+            </div>
 
-              {step === 1 && (
-                <Step2Mapping
-                  dataset={dataset}
-                  manualMapping={manualMapping}
-                  onManualMappingChange={(patch) =>
-                    setManualMapping((prev) => ({ ...prev, ...patch }))
-                  }
-                />
-              )}
+            <div className="flex-1 overflow-auto min-w-0">
+              <div className="w-full px-8 py-6">
+                {step === 0 && (
+                  <Step1Upload
+                    uploadedFile={uploadedFile}
+                    dataset={dataset}
+                    onUploaded={handleUploaded}
+                    onDatasetUpdate={handleDatasetUpdate}
+                    onClear={clearUpload}
+                    mode={datasetMode}
+                    onModeChange={setDatasetMode}
+                    splitConfig={splitConfig}
+                    onSplitConfigChange={setSplitConfig}
+                  />
+                )}
 
-              {step === 2 && (
-                <Step2Model modelType={modelType} onSelect={handleSelectModelType} />
-              )}
-
-              {step === 3 && (
-                <Step5Config
-                  modelType={modelTypeNormalized}
-                  mode={configMode}
-                  onSelect={setConfigMode}
-                  transformerConfig={transformerConfig}
-                  onTransformerChange={setTransformerConfig}
-                  defaultTransformerConfig={defaultTransformerConfig}
-                  gnnConfig={gnnConfig}
-                  onGnnChange={setGnnConfig}
-                  defaultGnnConfig={defaultGnnConfig}
-                />
-              )}
-
-              {step === 4 && (
-                <Step3Prediction
-                  task={predictionTask}
-                  category={predictionCategory}
-                  targetColumn={customTargetColumn}
-                  dataset={dataset}
-                  onSelectTask={(nextTask) => {
-                    setPredictionTask(nextTask);
-                    if (nextTask === "event_time" || nextTask === "remaining_time") {
-                      setPredictionCategory("regression");
-                    } else {
-                      setPredictionCategory("classification");
+                {step === 1 && (
+                  <Step2Mapping
+                    dataset={dataset}
+                    manualMapping={manualMapping}
+                    onManualMappingChange={(patch) =>
+                      setManualMapping((prev) => ({ ...prev, ...patch }))
                     }
-                    if (nextTask !== "custom_activity") {
+                  />
+                )}
+
+                {step === 2 && (
+                  <Step2Model modelType={modelType} onSelect={handleSelectModelType} />
+                )}
+
+                {step === 3 && (
+                  <Step5Config
+                    modelType={modelTypeNormalized}
+                    mode={configMode}
+                    onSelect={setConfigMode}
+                    transformerConfig={transformerConfig}
+                    onTransformerChange={setTransformerConfig}
+                    defaultTransformerConfig={defaultTransformerConfig}
+                    gnnConfig={gnnConfig}
+                    onGnnChange={setGnnConfig}
+                    defaultGnnConfig={defaultGnnConfig}
+                  />
+                )}
+
+                {step === 4 && (
+                  <Step3Prediction
+                    task={predictionTask}
+                    category={predictionCategory}
+                    targetColumn={customTargetColumn}
+                    dataset={dataset}
+                    onSelectTask={(nextTask) => {
+                      setPredictionTask(nextTask);
+                      if (nextTask === "event_time" || nextTask === "remaining_time") {
+                        setPredictionCategory("regression");
+                      } else {
+                        setPredictionCategory("classification");
+                      }
+                      if (nextTask !== "custom_activity") {
+                        setCustomTargetColumn(null);
+                      }
+                    }}
+                    onSelectCategory={(nextCategory) => {
+                      setPredictionCategory(nextCategory);
+                      setPredictionTask(null);
                       setCustomTargetColumn(null);
-                    }
-                  }}
-                  onSelectCategory={(nextCategory) => {
-                    setPredictionCategory(nextCategory);
-                    setPredictionTask(null);
-                    setCustomTargetColumn(null);
-                  }}
-                  onTargetColumnChange={setCustomTargetColumn}
-                />
-              )}
+                    }}
+                    onTargetColumnChange={setCustomTargetColumn}
+                  />
+                )}
 
-              {step === 5 && (
-                <Step4Explainability
-                  modelType={modelTypeNormalized}
-                  method={explainMethod}
-                  onSelect={setExplainMethod}
-                />
-              )}
+                {step === 5 && (
+                  <Step4Explainability
+                    modelType={modelTypeNormalized}
+                    method={explainMethod}
+                    onSelect={setExplainMethod}
+                  />
+                )}
 
-              {step === 6 && (
-                <Step6Review
-                  uploadedFile={uploadedFile}
-                  dataset={dataset}
-                  modelType={modelType}
-                  predictionTask={predictionTask}
-                  explainMethod={explainMethod} // OK: ExplainValue is a string union
-                  mappingMode={mappingMode}
-                  manualMapping={manualMapping}
-                  configMode={configMode}
-                  pipelineStatus={pipelineStatus}
-                  progress={progress}
-                  runId={runId}
-                  runStatus={runStatus}
-                  artifacts={artifacts}
-                  logs={runLogs}
-                  error={runError}
-                  onStartPipeline={startPipeline}
-                  onViewResults={() => {
-                    setStep(7);
-                    setViewMode("results");
-                  }}
-                />
-              )}
+                {step === 6 && (
+                  <Step6Review
+                    uploadedFile={uploadedFile}
+                    dataset={dataset}
+                    modelType={modelType}
+                    predictionTask={predictionTask}
+                    explainMethod={explainMethod} // OK: ExplainValue is a string union
+                    mappingMode={mappingMode}
+                    manualMapping={manualMapping}
+                    configMode={configMode}
+                    pipelineStatus={pipelineStatus}
+                    progress={progress}
+                    runId={runId}
+                    runStatus={runStatus}
+                    artifacts={artifacts}
+                    logs={runLogs}
+                    error={runError}
+                    onStartPipeline={startPipeline}
+                    onViewResults={() => {
+                      setStep(7);
+                      setViewMode("results");
+                    }}
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="shrink-0 px-8 pb-6 border-t bg-white">
+              <WizardFooter
+                step={step}
+                canContinue={pipelineStatus !== "running" && isStepValid()}
+                onCancel={resetAll}
+                onPrevious={() => {
+                  if (pipelineStatus === "running") return;
+                  prevStep();
+                }}
+                onContinue={() => {
+                  if (pipelineStatus === "running") return;
+                  nextStep();
+                }}
+              />
             </div>
           </div>
-
-          <div className="shrink-0 px-8 pb-6 border-t bg-white">
-            <WizardFooter
-              step={step}
-              canContinue={pipelineStatus !== "running" && isStepValid()}
-              onCancel={resetAll}
-              onPrevious={() => {
-                if (pipelineStatus === "running") return;
-                prevStep();
-              }}
-              onContinue={() => {
-                if (pipelineStatus === "running") return;
-                nextStep();
-              }}
-            />
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
