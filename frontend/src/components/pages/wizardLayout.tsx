@@ -36,6 +36,7 @@ const TOTAL_STEPS = 8;
 export type PipelineStatus = "idle" | "running" | "completed";
 export type ViewMode = "wizard" | "results";
 
+// eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 function cleanLogLine(line: string): string {
