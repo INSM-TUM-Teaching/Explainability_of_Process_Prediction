@@ -44,7 +44,7 @@ export default function Step2Mapping({
     <div className="space-y-8 w-full">
       <div>
         <h2 className="text-2xl font-semibold">Column Mapping</h2>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-brand-600">
           Map your dataset columns to the required schema. Resource is optional.
         </p>
       </div>

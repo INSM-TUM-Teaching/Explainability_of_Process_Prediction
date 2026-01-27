@@ -56,8 +56,8 @@ export default function UploadDropzone({
         disabled
           ? "border-gray-200 bg-gray-50 opacity-70"
           : isDragging
-          ? "border-blue-500 bg-blue-50"
-          : "border-gray-300"
+          ? "border-brand-500 bg-brand-50"
+          : "border-brand-200 bg-white"
       }`}
     >
       <div className="text-4xl mb-4">⬆️</div>
@@ -74,7 +74,9 @@ export default function UploadDropzone({
       <label className="inline-block">
         <span
           className={`px-4 py-2 rounded cursor-pointer ${
-            disabled ? "bg-gray-300 text-gray-700" : "bg-blue-500 text-white"
+            disabled
+              ? "bg-gray-300 text-gray-700"
+              : "bg-brand-600 text-white hover:bg-brand-700"
           }`}
         >
           Browse Files
@@ -90,3 +92,4 @@ export default function UploadDropzone({
     </div>
   );
 }
+

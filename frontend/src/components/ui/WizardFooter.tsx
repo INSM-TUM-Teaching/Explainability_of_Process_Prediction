@@ -21,11 +21,11 @@ export default function WizardFooter({
         className="
           px-6 py-2
           rounded-md
-          border border-gray-300
+          border border-brand-200
           bg-white
-          text-gray-900
-          hover:bg-gray-50
-          hover:border-gray-400
+          text-brand-700
+          hover:bg-brand-50
+          hover:border-brand-300
           transition
         "
       >
@@ -45,7 +45,7 @@ export default function WizardFooter({
             ${
               step === 0
                 ? "border-gray-200 text-gray-400 bg-white cursor-not-allowed"
-                : "border-gray-300 text-gray-900 bg-white hover:bg-gray-50 hover:border-gray-400"
+                : "border-brand-200 text-brand-700 bg-white hover:bg-brand-50 hover:border-brand-300"
             }
           `}
         >
@@ -62,8 +62,8 @@ export default function WizardFooter({
             transition
             ${
               canContinue
-                ? "bg-blue-600 text-white hover:bg-blue-700"
-                : "bg-blue-300 text-white cursor-not-allowed"
+                ? "bg-brand-600 text-white hover:bg-brand-700"
+                : "bg-brand-300 text-white cursor-not-allowed"
             }
           `}
         >
@@ -73,3 +73,4 @@ export default function WizardFooter({
     </div>
   );
 }
+

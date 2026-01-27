@@ -23,7 +23,7 @@ export default function Step3Prediction({
 
   const baseCard =
     "w-full self-stretch border rounded-lg p-6 cursor-pointer transition flex items-start justify-between";
-  const selectedCard = "border-blue-500 bg-blue-50 ring-1 ring-blue-400";
+  const selectedCard = "border-brand-500 bg-brand-50 ring-1 ring-brand-400";
   const unselectedCard =
     "border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50";
 
@@ -37,7 +37,7 @@ export default function Step3Prediction({
     <div className="space-y-8 w-full max-w-none">
       <div>
         <h2 className="text-2xl font-semibold">Select Prediction Task</h2>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-brand-600">
           Choose the type of prediction you want to perform on your process data.
         </p>
       </div>
@@ -57,7 +57,7 @@ export default function Step3Prediction({
           </div>
           <div
             className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-              category === "classification" ? "border-blue-600 bg-blue-600" : "border-gray-300"
+              category === "classification" ? "border-brand-600 bg-brand-600" : "border-gray-300"
             }`}
           />
         </div>
@@ -76,7 +76,7 @@ export default function Step3Prediction({
           </div>
           <div
             className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-              category === "regression" ? "border-blue-600 bg-blue-600" : "border-gray-300"
+              category === "regression" ? "border-brand-600 bg-brand-600" : "border-gray-300"
             }`}
           />
         </div>
@@ -99,7 +99,7 @@ export default function Step3Prediction({
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
                 isSelected("next_activity")
-                  ? "border-blue-600 bg-blue-600"
+                  ? "border-brand-600 bg-brand-600"
                   : "border-gray-300"
               }`}
             />
@@ -120,7 +120,7 @@ export default function Step3Prediction({
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
                 isSelected("custom_activity")
-                  ? "border-blue-600 bg-blue-600"
+                  ? "border-brand-600 bg-brand-600"
                   : "border-gray-300"
               }`}
             />
@@ -171,7 +171,7 @@ export default function Step3Prediction({
             </div>
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-                isSelected("event_time") ? "border-blue-600 bg-blue-600" : "border-gray-300"
+                isSelected("event_time") ? "border-brand-600 bg-brand-600" : "border-gray-300"
               }`}
             />
           </div>
@@ -191,7 +191,7 @@ export default function Step3Prediction({
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
                 isSelected("remaining_time")
-                  ? "border-blue-600 bg-blue-600"
+                  ? "border-brand-600 bg-brand-600"
                   : "border-gray-300"
               }`}
             />
@@ -201,3 +201,4 @@ export default function Step3Prediction({
     </div>
   );
 }
+

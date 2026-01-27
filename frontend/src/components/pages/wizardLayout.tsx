@@ -547,7 +547,7 @@ export default function WizardLayout() {
 
   return (
     <div className="flex h-screen flex-col">
-      <div className="shrink-0 border-b bg-white">
+      <div className="shrink-0 border-b border-brand-100 bg-white shadow-sm">
         <div className="flex items-center justify-between px-4 py-3">
           <img
             src={tumLogo}
@@ -557,7 +557,7 @@ export default function WizardLayout() {
           <img
             src={ppmxLogo}
             alt="PPMX"
-            className="h-9 w-auto object-contain"
+            className="h-12 w-auto object-contain"
           />
         </div>
       </div>
@@ -574,7 +574,7 @@ export default function WizardLayout() {
             }}
           />
         ) : (
-          <div className="flex-1 flex flex-col min-w-0 bg-gray-50">
+          <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
             <div className="px-8 pt-8 shrink-0">
               <StepProgressHeader step={step} totalSteps={TOTAL_STEPS} />
             </div>
@@ -684,7 +684,7 @@ export default function WizardLayout() {
               </div>
             </div>
 
-            <div className="shrink-0 px-8 pb-6 border-t bg-white">
+            <div className="shrink-0 px-8 pb-6 border-t border-brand-100 bg-white">
               <WizardFooter
                 step={step}
                 canContinue={pipelineStatus !== "running" && isStepValid()}

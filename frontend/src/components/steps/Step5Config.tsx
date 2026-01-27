@@ -54,7 +54,7 @@ export default function Step5Config({
     return (
       <div className="space-y-3">
         <h2 className="text-2xl font-semibold">Model Configuration</h2>
-        <p className="text-sm text-gray-600">Select a model type in Step 2 first.</p>
+        <p className="text-sm text-brand-600">Select a model type in Step 2 first.</p>
       </div>
     );
   }
@@ -65,7 +65,7 @@ export default function Step5Config({
     <div className="space-y-6 max-w-5xl">
       <div>
         <h2 className="text-2xl font-semibold">Model Configuration</h2>
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-brand-600">
           {isTransformer
             ? "These options map 1:1 to the backend Transformer config."
             : "These options map 1:1 to the backend GNN config."}
@@ -128,7 +128,7 @@ function ConfigCard({
     <div
       onClick={onClick}
       className={`border rounded-xl p-6 cursor-pointer transition ${
-        selected ? "border-blue-500 bg-blue-50" : "border-gray-200 bg-white hover:border-gray-300"
+        selected ? "border-brand-500 bg-brand-50" : "border-gray-200 bg-white hover:border-gray-300"
       }`}
     >
       <div className="flex items-start gap-4">
@@ -329,7 +329,7 @@ function ParameterField({
           max={max}
           step={step}
           onChange={onChange}
-          className="w-full bg-white text-black border rounded px-3 py-2 appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+          className="w-full bg-white text-black border rounded px-3 py-2 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-500"
         />
       ) : (
         <div className="px-3 py-2 font-medium text-black">{value}</div>
@@ -340,7 +340,7 @@ function ParameterField({
 
 function Icon({ selected }: { selected: boolean }) {
   return (
-    <div className={`p-3 rounded-lg transition ${selected ? "bg-blue-500" : "bg-gray-100"}`}>
+    <div className={`p-3 rounded-lg transition ${selected ? "bg-brand-500" : "bg-gray-100"}`}>
       <Settings className={`w-5 h-5 ${selected ? "text-white" : "text-gray-600"}`} />
     </div>
   );
@@ -350,11 +350,12 @@ function Radio({ selected }: { selected: boolean }) {
   return (
     <div
       className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-        selected ? "border-blue-500" : "border-gray-300"
+        selected ? "border-brand-500" : "border-gray-300"
       }`}
     >
-      {selected && <div className="w-2.5 h-2.5 bg-blue-500 rounded-full" />}
+      {selected && <div className="w-2.5 h-2.5 bg-brand-500 rounded-full" />}
     </div>
   );
 }
+
 

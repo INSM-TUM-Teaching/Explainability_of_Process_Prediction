@@ -27,6 +27,9 @@ type Step1UploadProps = {
 const MAX_UPLOAD_MB = 400;
 const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const MIN_SPLIT_PCT = 1;
+const TRAIN_COLOR = "#1E3F7C";
+const VALID_COLOR = "#3F6DBE";
+const TEST_COLOR = "#F47F11";
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -298,7 +301,7 @@ export default function Step1Upload({
     <div className="space-y-8 w-full">
       <div>
         <h2 className="text-2xl font-semibold">Dataset Setup</h2>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-brand-600">
           Choose how you want to provide data: raw upload, preprocessed upload, or your own splits.
         </p>
       </div>
@@ -310,7 +313,7 @@ export default function Step1Upload({
             onClick={() => handleModeSelect("raw")}
             className={[
               "border rounded-lg p-4 text-left transition",
-              mode === "raw" ? "border-blue-500 ring-1 ring-blue-200" : "hover:border-gray-300",
+              mode === "raw" ? "border-brand-500 ring-1 ring-brand-200" : "hover:border-gray-300",
             ].join(" ")}
           >
             <div className="font-semibold text-gray-900">1) Upload Raw Dataset</div>
@@ -322,7 +325,7 @@ export default function Step1Upload({
             className={[
               "border rounded-lg p-4 text-left transition",
               mode === "preprocessed"
-                ? "border-blue-500 ring-1 ring-blue-200"
+                ? "border-brand-500 ring-1 ring-brand-200"
                 : "hover:border-gray-300",
             ].join(" ")}
           >
@@ -335,7 +338,7 @@ export default function Step1Upload({
             className={[
               "border rounded-lg p-4 text-left transition",
               mode === "skip"
-                ? "border-blue-500 ring-1 ring-blue-200"
+                ? "border-brand-500 ring-1 ring-brand-200"
                 : "hover:border-gray-300",
             ].join(" ")}
           >
@@ -358,7 +361,7 @@ export default function Step1Upload({
                       className={[
                         "px-4 py-2 rounded-md border text-sm",
                         format === "csv"
-                          ? "border-blue-500 bg-blue-50"
+                          ? "border-brand-500 bg-brand-50"
                           : "border-gray-200 bg-white hover:bg-gray-50",
                       ].join(" ")}
                       onClick={() => {
@@ -374,7 +377,7 @@ export default function Step1Upload({
                         className={[
                           "px-4 py-2 rounded-md border text-sm",
                           format === "xes"
-                            ? "border-blue-500 bg-blue-50"
+                            ? "border-brand-500 bg-brand-50"
                             : "border-gray-200 bg-white hover:bg-gray-50",
                         ].join(" ")}
                         onClick={() => {
@@ -459,7 +462,7 @@ export default function Step1Upload({
                       "px-4 py-2 rounded-md text-sm border",
                       isUploadingSplits
                         ? "border-gray-300 bg-gray-100 text-gray-500"
-                        : "border-blue-400 bg-blue-50 text-blue-800 hover:bg-blue-100",
+                        : "border-brand-400 bg-brand-50 text-brand-800 hover:bg-brand-100",
                     ].join(" ")}
                   >
                     {isUploadingSplits ? "Uploading splits..." : "Upload splits"}
@@ -505,32 +508,6 @@ export default function Step1Upload({
                       Upload another file
                     </button>
                   )}
-                </div>
-
-                <div className="text-sm text-gray-700 bg-white border border-green-200 rounded-md p-4">
-                  <div className="font-medium text-gray-800">Detected mapping</div>
-                  <div className="mt-2 text-xs text-gray-700">
-                    Backend standardizes to: <span className="font-mono">CaseID</span>,{" "}
-                    <span className="font-mono">Activity</span>,{" "}
-                    <span className="font-mono">Timestamp</span> (and optionally{" "}
-                    <span className="font-mono">Resource</span>).
-                  </div>
-                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-                    {Object.keys(dataset.detected_mapping ?? {}).length === 0 ? (
-                      <div className="text-gray-600">No renaming was needed.</div>
-                    ) : (
-                      Object.entries(dataset.detected_mapping).map(([from, to]) => (
-                        <div
-                          key={`${from}->${to}`}
-                          className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded px-3 py-2"
-                        >
-                          <span className="font-mono text-gray-700">{from}</span>
-                          <span className="text-gray-500 mx-2">{"->"}</span>
-                          <span className="font-mono text-gray-900">{to}</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
                 </div>
 
                 {mode === "raw" && (
@@ -648,7 +625,7 @@ export default function Step1Upload({
                       {dataset.is_preprocessed && (
                         <a
                           href={preprocessedDatasetUrl(dataset.dataset_id)}
-                          className="px-4 py-2 rounded-md text-sm border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                          className="px-4 py-2 rounded-md text-sm border border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100"
                           download
                         >
                           Export preprocessed dataset
@@ -670,13 +647,13 @@ export default function Step1Upload({
                     <div className="font-medium text-gray-800">Generate Splits</div>
                     <div className="space-y-4 text-sm text-gray-700">
                       <div className="flex items-center justify-between">
-                        <span className="font-medium text-purple-700">
+                        <span className="font-medium text-brand-700">
                           Train {trainPct.toFixed(1)}%
                         </span>
-                        <span className="font-medium text-blue-700">
+                        <span className="font-medium text-brand-600">
                           Valid {valPct.toFixed(1)}%
                         </span>
-                        <span className="font-medium text-amber-700">
+                        <span className="font-medium text-accent-700">
                           Test {testPct.toFixed(1)}%
                         </span>
                       </div>
@@ -691,7 +668,7 @@ export default function Step1Upload({
                         <div
                           className="absolute top-1/2 -translate-y-1/2 h-2 w-full rounded-full"
                           style={{
-                            background: `linear-gradient(to right, #6d28d9 0% ${trainEnd}%, #0ea5e9 ${trainEnd}% ${valEnd}%, #f97316 ${valEnd}% 100%)`,
+                            background: `linear-gradient(to right, ${TRAIN_COLOR} 0% ${trainEnd}%, ${VALID_COLOR} ${trainEnd}% ${valEnd}%, ${TEST_COLOR} ${valEnd}% 100%)`,
                           }}
                         />
                         <div
@@ -703,7 +680,7 @@ export default function Step1Upload({
                           style={
                             {
                               left: `${trainEnd}%`,
-                              "--handle-color": "#6d28d9",
+                              "--handle-color": TRAIN_COLOR,
                               zIndex: 30,
                             } as CSSProperties
                           }
@@ -721,7 +698,7 @@ export default function Step1Upload({
                           style={
                             {
                               left: `${valEnd}%`,
-                              "--handle-color": "#f97316",
+                              "--handle-color": TEST_COLOR,
                               zIndex: 40,
                             } as CSSProperties
                           }
@@ -745,7 +722,7 @@ export default function Step1Upload({
                           "px-4 py-2 rounded-md text-sm border",
                           isGeneratingSplits
                             ? "border-gray-300 bg-gray-100 text-gray-500"
-                            : "border-blue-400 bg-blue-50 text-blue-800 hover:bg-blue-100",
+                            : "border-brand-400 bg-brand-50 text-brand-800 hover:bg-brand-100",
                         ].join(" ")}
                       >
                         {isGeneratingSplits ? "Generating splits..." : "Generate splits"}
@@ -766,21 +743,21 @@ export default function Step1Upload({
                     <div className="font-medium text-gray-800">Download Splits</div>
                     <div className="flex flex-wrap gap-3">
                       <a
-                        className="px-4 py-2 rounded-md text-sm border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        className="px-4 py-2 rounded-md text-sm border border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100"
                         href={splitDownloadUrl(dataset.dataset_id, "train")}
                         download
                       >
                         Download train.csv
                       </a>
                       <a
-                        className="px-4 py-2 rounded-md text-sm border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        className="px-4 py-2 rounded-md text-sm border border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100"
                         href={splitDownloadUrl(dataset.dataset_id, "val")}
                         download
                       >
                         Download val.csv
                       </a>
                       <a
-                        className="px-4 py-2 rounded-md text-sm border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                        className="px-4 py-2 rounded-md text-sm border border-brand-300 bg-brand-50 text-brand-700 hover:bg-brand-100"
                         href={splitDownloadUrl(dataset.dataset_id, "test")}
                         download
                       >
@@ -796,14 +773,16 @@ export default function Step1Upload({
       )}
 
       <Card title="Dataset Requirements">
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <div className="bg-brand-50 border border-brand-200 rounded-lg p-4">
           <ul className="text-sm text-gray-700 list-disc ml-5 space-y-1">
-            <li>File size: Maximum 400 MB (checked in frontend + backend)</li>
+            <li>File size: Maximum 400 MB</li>
             <li>Formats: CSV or XES (preprocessed and splits must be CSV)</li>
-            <li>Required columns: Case ID, Activity, Timestamp (validated in backend via auto-detection)</li>
+            <li>Required columns: Case ID, Activity, Timestamp</li>
           </ul>
         </div>
       </Card>
     </div>
   );
 }
+
+

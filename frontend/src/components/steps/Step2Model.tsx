@@ -8,7 +8,7 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
 
   const baseCard =
     "w-full self-stretch border rounded-lg p-6 cursor-pointer transition flex items-start justify-between";
-  const selectedCard = "border-blue-500 bg-blue-50 ring-1 ring-blue-400";
+  const selectedCard = "border-brand-500 bg-brand-50 ring-1 ring-brand-400";
   const unselectedCard =
     "border-gray-200 bg-white hover:border-gray-300 hover:bg-gray-50";
 
@@ -17,7 +17,7 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
       {/* Header */}
       <div>
         <h2 className="text-2xl font-semibold">Select Model Type</h2>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-brand-600">
           Choose the machine learning model architecture for your prediction task.
         </p>
       </div>
@@ -42,7 +42,7 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
         <div
           className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
             isSelected("transformer")
-              ? "border-blue-600 bg-blue-600"
+              ? "border-brand-600 bg-brand-600"
               : "border-gray-300"
           }`}
         />
@@ -64,10 +64,11 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
         {/* Radio */}
         <div
           className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-            isSelected("gnn") ? "border-blue-600 bg-blue-600" : "border-gray-300"
+            isSelected("gnn") ? "border-brand-600 bg-brand-600" : "border-gray-300"
           }`}
         />
       </div>
     </div>
   );
 }
+

@@ -13,8 +13,8 @@ body,
 /* Remove Vite template centering that causes shrink-to-content layouts */
 body {
   margin: 0;
-  background: #f9fafb; /* matches your wizard bg-gray-50 */
-  color: #111827;
+  background: linear-gradient(180deg, #f4f8fd 0%, #eef3fa 100%);
+  color: #0d1c37;
 }
 
 /* Optional: predictable sizing */
