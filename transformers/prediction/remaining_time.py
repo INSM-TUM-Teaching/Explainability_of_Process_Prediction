@@ -6,7 +6,6 @@ from tensorflow import keras
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import os
-
 from ..model import build_time_prediction_model
 
 
@@ -72,10 +71,11 @@ class RemainingTimePredictor:
         X_seq = keras.preprocessing.sequence.pad_sequences(
             sequences, maxlen=self.max_len, padding='pre', value=0
         )
-        X_seq = X_seq + 1
         
+        X_seq = X_seq + 1
         X_temp = np.array(temporal_features)
         y_remaining = np.array(remaining_times)
+        
         X_temp_scaled = self.scaler.fit_transform(X_temp)
         
         self.vocab_size = len(self.label_encoder.classes_) + 2
@@ -84,7 +84,7 @@ class RemainingTimePredictor:
         print(f"Temporal features shape: {X_temp_scaled.shape}")
         print(f"Remaining time targets shape: {y_remaining.shape}")
         print(f"Vocabulary size: {self.vocab_size}")
-        
+
         X_seq_train, X_seq_temp, X_temp_train, X_temp_temp, y_train, y_temp = train_test_split(
             X_seq, X_temp_scaled, y_remaining, test_size=test_size, random_state=42
         )
@@ -92,6 +92,59 @@ class RemainingTimePredictor:
         X_seq_val, X_seq_test, X_temp_val, X_temp_test, y_val, y_test = train_test_split(
             X_seq_temp, X_temp_temp, y_temp, test_size=val_split, random_state=42
         )
+        
+        # ==================== NEW: Extract Timestamps for Explainability ====================
+        print("\nExtracting timestamps for explainability...")
+        
+        def extract_timestamps_for_sequences(df_data, max_length):
+            """Extract timestamp labels for each sequence"""
+            all_timestamps = []
+            
+            for case_id, group in df_data.groupby('case:concept:name'):
+                group = group.sort_values('time:timestamp').reset_index(drop=True)
+                timestamps = group['time:timestamp'].values
+                
+                # Calculate relative time from case start
+                start_time = timestamps[0]
+                
+                # Create prefix sequences (same as training data generation)
+                for i in range(1, len(timestamps)):
+                    # Get timestamps for prefix up to position i
+                    prefix_timestamps = timestamps[:i]
+                    
+                    # Calculate days from start for each timestamp
+                    timestamp_labels = []
+                    for j, ts in enumerate(prefix_timestamps):
+                        days_diff = (ts - start_time).astype('timedelta64[s]').astype(float) / 86400
+                        if days_diff == 0:
+                            timestamp_labels.append("Day 0")
+                        else:
+                            timestamp_labels.append(f"Day {days_diff:.1f}")
+                    
+                    # Pad to max_length (prepend padding like sequences)
+                    if len(timestamp_labels) < max_length:
+                        padded = ['[PAD]'] * (max_length - len(timestamp_labels)) + timestamp_labels
+                    else:
+                        padded = timestamp_labels[-max_length:]
+                    
+                    all_timestamps.append(padded)
+            
+            return all_timestamps
+        
+        # Extract timestamps for all data
+        all_timestamps = extract_timestamps_for_sequences(df, self.max_len)
+        
+        # Split timestamps same way as sequences
+        timestamps_train, timestamps_temp = train_test_split(
+            all_timestamps, test_size=test_size, random_state=42
+        )
+        
+        timestamps_val, timestamps_test = train_test_split(
+            timestamps_temp, test_size=val_split, random_state=42
+        )
+        
+        print(f"Extracted timestamps for {len(timestamps_test)} test samples")
+        # ==================== END: Timestamp Extraction ====================
         
         print(f"\nDataset splits:")
         print(f"Train: {len(X_seq_train):,} samples")
@@ -101,7 +154,8 @@ class RemainingTimePredictor:
         return {
             'X_seq_train': X_seq_train, 'X_temp_train': X_temp_train, 'y_train': y_train,
             'X_seq_val': X_seq_val, 'X_temp_val': X_temp_val, 'y_val': y_val,
-            'X_seq_test': X_seq_test, 'X_temp_test': X_temp_test, 'y_test': y_test
+            'X_seq_test': X_seq_test, 'X_temp_test': X_temp_test, 'y_test': y_test,
+            'timestamps_test': timestamps_test  # NEW: Add timestamps for explainability
         }
     
     def _calculate_temporal_features(self, df):
@@ -115,6 +169,7 @@ class RemainingTimePredictor:
             group['fvt2'].fillna(0, inplace=True)
             
             group['fvt3'] = (group['time:timestamp'] - group['time:timestamp'].iloc[0]).dt.total_seconds() / 86400
+            
             return group
         
         df = df.groupby('case:concept:name', group_keys=False).apply(calculate_features)
@@ -139,21 +194,18 @@ class RemainingTimePredictor:
             num_heads=self.num_heads,
             num_blocks=self.num_blocks,
             dropout_rate=self.dropout_rate,
-            use_timestep_explainability=use_timestep_explainability  # NEW!
+            use_timestep_explainability=use_timestep_explainability
         )
-        
+
         # Handle compilation based on model type
         if len(self.model.outputs) > 1:
-            # Timestep-explainable model (2 outputs)
             print("Model type: Timestep-explainable (2 outputs)")
-            # Compile with loss only on the first output
             self.model.compile(
                 optimizer=keras.optimizers.Adam(learning_rate=0.001),
-                loss=[keras.losses.LogCosh(), None],  # Loss only on first output
+                loss=[keras.losses.LogCosh(), None],
                 metrics={'time_output': ['mae']}
             )
         else:
-            # Original model (1 output)
             print("Model type: Original (1 output)")
             self.model.compile(
                 optimizer=keras.optimizers.Adam(learning_rate=0.001),
@@ -174,15 +226,13 @@ class RemainingTimePredictor:
             verbose=1
         )
         
-        # Handle training based on model type
         if len(self.model.outputs) > 1:
-            # Timestep-explainable model - provide targets as list
             self.history = self.model.fit(
                 [data['X_seq_train'], data['X_temp_train']], 
-                [data['y_train'], None],  # Target for first output, None for second
+                [data['y_train'], None],
                 validation_data=(
                     [data['X_seq_val'], data['X_temp_val']], 
-                    [data['y_val'], None]  # Target for first output, None for second
+                    [data['y_val'], None]
                 ),
                 epochs=epochs,
                 batch_size=batch_size,
@@ -190,7 +240,6 @@ class RemainingTimePredictor:
                 verbose=1
             )
         else:
-            # Original model
             self.history = self.model.fit(
                 [data['X_seq_train'], data['X_temp_train']], 
                 data['y_train'],
@@ -207,19 +256,15 @@ class RemainingTimePredictor:
     def evaluate(self, data):
         print("\nEvaluating on test set...")
         
-        # Handle evaluation based on model type
         if len(self.model.outputs) > 1:
-            # Timestep-explainable model
             results = self.model.evaluate(
                 [data['X_seq_test'], data['X_temp_test']], 
-                [data['y_test'], None],  # Target for first output, None for second
+                [data['y_test'], None],
                 verbose=0
             )
-            # results is [total_loss, output1_loss, output1_mae]
             test_loss = results[1] if len(results) > 1 else results[0]
             test_mae = results[2] if len(results) > 2 else results[-1]
         else:
-            # Original model
             test_loss, test_mae = self.model.evaluate(
                 [data['X_seq_test'], data['X_temp_test']], 
                 data['y_test'], 
@@ -235,13 +280,6 @@ class RemainingTimePredictor:
         }
     
     def predict(self, data):
-        """
-        Generate predictions.
-        
-        Returns:
-            y_pred: Final time predictions (n_samples,)
-            timestep_preds: Per-timestep predictions (n_samples, max_len) or None
-        """
         print("\nGenerating predictions...")
         
         outputs = self.model.predict(
@@ -249,17 +287,14 @@ class RemainingTimePredictor:
             verbose=0
         )
         
-        # Handle both single and multi-output models
         if isinstance(outputs, list) and len(outputs) > 1:
-            # Timestep-explainable model
-            y_pred = outputs[0].flatten()  # Final prediction
-            timestep_preds = outputs[1]     # Per-timestep predictions
+            y_pred = outputs[0].flatten()
+            timestep_preds = outputs[1]
             print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
             print(f"  - Final predictions shape: {y_pred.shape}")
             print(f"  - Timestep predictions shape: {timestep_preds.shape}")
             return y_pred, timestep_preds
         else:
-            # Original model
             y_pred = outputs.flatten() if hasattr(outputs, 'flatten') else outputs
             print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
             return y_pred, None
@@ -269,9 +304,8 @@ class RemainingTimePredictor:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # Handle both tuple and single return from predict()
         if isinstance(y_pred, tuple):
-            y_pred = y_pred[0]  # Extract final predictions
+            y_pred = y_pred[0]
         
         results = pd.DataFrame({
             'actual_remaining_time_days': data['y_test'],
@@ -281,6 +315,7 @@ class RemainingTimePredictor:
         
         output_path = os.path.join(output_dir, "remaining_time_predictions.csv")
         results.to_csv(output_path, index=False)
+        
         print(f"Results saved to: {output_path}")
     
     def plot_predictions(self, data, y_pred, output_dir):
@@ -288,9 +323,8 @@ class RemainingTimePredictor:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # Handle both tuple and single return from predict()
         if isinstance(y_pred, tuple):
-            y_pred = y_pred[0]  # Extract final predictions
+            y_pred = y_pred[0]
         
         plt.figure(figsize=(10, 6))
         plt.scatter(data['y_test'], y_pred, alpha=0.5, s=10, color='orange')
@@ -320,7 +354,6 @@ class RemainingTimePredictor:
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # Handle different history key formats
         if 'loss' in self.history.history:
             train_loss_key = 'loss'
             val_loss_key = 'val_loss'
@@ -344,7 +377,7 @@ class RemainingTimePredictor:
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
         
-        print(f"Training history plot saved to: {output_path}")   
+        print(f"Training history plot saved to: {output_path}")
         
         print("\nTraining metrics:")
         print(f"Final training loss: {self.history.history[train_loss_key][-1]:.4f}")

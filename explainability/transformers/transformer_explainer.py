@@ -1,9 +1,12 @@
 """
-Transformer Explainability Module with Timestep-Level Attribution Support
+Transformer Explainability Module with Timestep-Level Attribution Support + TIMESTAMPS
 
-This module provides SHAP and LIME explainers that can generate:
-1. Traditional aggregated explanations (backward compatible)
-2. Timestep-level temporal explanations (NEW - for time predictions)
+This module provides SHAP and LIME explainers with timestamp support on x-axis.
+
+UPDATES:
+- Timestamps displayed on x-axis instead of "0, 1, 2, 3..."
+- Shows "Day 0", "Day 0.5", "Day 2.1" etc.
+- Works for both SHAP and LIME visualizations
 
 File: explainability/transformers/transformer_explainer.py
 """
@@ -178,19 +181,26 @@ class SHAPExplainer:
 
 
 # ============================================================================
-# TIMESTEP-LEVEL SHAP EXPLAINER (NEW - for Time Predictions)
+# TIMESTEP-LEVEL SHAP EXPLAINER (NEW - with TIMESTAMP support)
 # ============================================================================
 class TimestepSHAPExplainer(SHAPExplainer):
-    """Extended SHAP Explainer with timestep-level attribution support"""
+    """Extended SHAP Explainer with timestep-level attribution + TIMESTAMP support"""
     
-    def __init__(self, model, task='time', label_encoder=None, scaler=None):
+    def __init__(self, model, task='time', label_encoder=None, scaler=None, timestamps=None):
         super().__init__(model, task, label_encoder, scaler)
         self.model_has_timestep_outputs = self._detect_model_type()
+        self.timestamps = timestamps  # NEW: Store actual event timestamps
         
         if self.model_has_timestep_outputs:
             print("[OK] Detected timestep-explainable model - will generate temporal plots")
         else:
             print("[INFO] Using original aggregated explanations")
+        
+        # NEW: Log timestamp availability
+        if self.timestamps is not None:
+            print(f"[OK] Timestamps provided for {len(self.timestamps)} samples")
+        else:
+            print("[INFO] No timestamps provided - will use timestep indices")
     
     def _detect_model_type(self):
         """Auto-detect if model has timestep outputs"""
@@ -207,7 +217,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
     def plot_temporal_evolution(self, output_dir, sample_idx=0, show_prediction=True):
         """
         Generate temporal evolution plot with SHAP bars and prediction overlay.
-        This matches your target visualization!
+        NOW WITH TIMESTAMPS ON X-AXIS!
         """
         if self.shap_values is None:
             print("No SHAP values computed. Run explain_samples() first.")
@@ -223,7 +233,19 @@ class TimestepSHAPExplainer(SHAPExplainer):
         non_pad_mask = sample_sequence > 0
         filtered_shap = sample_shap[non_pad_mask]
         filtered_activities = [name for name, is_valid in zip(activity_names, non_pad_mask) if is_valid]
-        timesteps = np.arange(len(filtered_shap))
+        
+        # NEW: Get actual timestamps or fall back to indices
+        if self.timestamps is not None and sample_idx < len(self.timestamps):
+            sample_timestamps = self.timestamps[sample_idx]
+            # Filter timestamps same way as activities
+            filtered_timestamps = [sample_timestamps[i] for i, valid in enumerate(non_pad_mask) if valid]
+            x_values = np.arange(len(filtered_timestamps))  # For bar positions
+            x_labels = filtered_timestamps  # Actual timestamp labels
+            use_timestamps = True
+        else:
+            x_values = np.arange(len(filtered_shap))
+            x_labels = x_values  # Fall back to indices
+            use_timestamps = False
         
         # Create figure with dual y-axes
         fig, ax1 = plt.subplots(figsize=(16, 7))
@@ -232,13 +254,22 @@ class TimestepSHAPExplainer(SHAPExplainer):
         positive_shap = np.where(filtered_shap > 0, filtered_shap, 0)
         negative_shap = np.where(filtered_shap < 0, filtered_shap, 0)
         
-        ax1.bar(timesteps, positive_shap, color='#d62728', alpha=0.8, 
+        # USE x_values for positioning
+        ax1.bar(x_values, positive_shap, color='#d62728', alpha=0.8, 
                 label='Positive Shapley values', width=0.8)
-        ax1.bar(timesteps, negative_shap, color='#1f77b4', alpha=0.8, 
+        ax1.bar(x_values, negative_shap, color='#1f77b4', alpha=0.8, 
                 label='Negative Shapley values', width=0.8)
         
         ax1.axhline(0, color='black', linewidth=1)
-        ax1.set_xlabel('Time steps', fontsize=13, fontweight='bold')
+        
+        # NEW: Set x-axis labels to timestamps
+        if use_timestamps:
+            ax1.set_xticks(x_values)
+            ax1.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=9)
+            ax1.set_xlabel('Event Timestamp (Days from Case Start)', fontsize=13, fontweight='bold')
+        else:
+            ax1.set_xlabel('Time steps', fontsize=13, fontweight='bold')
+        
         ax1.set_ylabel('SHAP values (contribution to prediction)', fontsize=12, fontweight='bold')
         ax1.grid(axis='y', linestyle='--', alpha=0.3)
         ax1.legend(loc='upper left', fontsize=11)
@@ -247,10 +278,11 @@ class TimestepSHAPExplainer(SHAPExplainer):
         abs_shap = np.abs(filtered_shap)
         threshold = np.percentile(abs_shap, 75)  # Top 25%
         
-        for i, (ts, act, shap_val) in enumerate(zip(timesteps, filtered_activities, filtered_shap)):
+        # USE x_values in loop
+        for i, (x_pos, act, shap_val) in enumerate(zip(x_values, filtered_activities, filtered_shap)):
             if abs_shap[i] > threshold and act != '[PAD]':
                 y_pos = shap_val + (0.2 if shap_val > 0 else -0.2)
-                ax1.text(ts, y_pos, act, ha='center', va='bottom' if shap_val > 0 else 'top',
+                ax1.text(x_pos, y_pos, act, ha='center', va='bottom' if shap_val > 0 else 'top',
                         fontsize=9, fontweight='bold', 
                         bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
         
@@ -271,9 +303,9 @@ class TimestepSHAPExplainer(SHAPExplainer):
                             filtered_preds.reshape(-1, 1)
                         ).flatten()
                     
-                    # Plot on secondary y-axis
+                    # Plot on secondary y-axis - USE x_values
                     ax2 = ax1.twinx()
-                    ax2.plot(timesteps, filtered_preds, color='black', linewidth=2, 
+                    ax2.plot(x_values, filtered_preds, color='black', linewidth=2, 
                             label='Predicted remaining time', marker='o', markersize=3)
                     ax2.set_ylabel('Predicted remaining time (days)', fontsize=12, fontweight='bold')
                     ax2.legend(loc='upper right', fontsize=11)
@@ -286,16 +318,21 @@ class TimestepSHAPExplainer(SHAPExplainer):
         plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_sample_{sample_idx}.png'), dpi=300)
         plt.close()
         
-        # Save data
-        df = pd.DataFrame({
-            'Timestep': timesteps,
+        # Save data WITH TIMESTAMPS
+        df_data = {
             'Activity': filtered_activities,
             'SHAP_Value': filtered_shap
-        })
+        }
+        if use_timestamps:
+            df_data['Timestamp'] = x_labels  # Add timestamp column
+        else:
+            df_data['Timestep'] = x_values  # Fall back to indices
+        
+        df = pd.DataFrame(df_data)
         df.to_csv(os.path.join(output_dir, f'shap_timestep_data_sample_{sample_idx}.csv'), index=False)
     
     def plot_timestep_heatmap(self, output_dir, sample_idx=0):
-        """Generate heatmap showing SHAP values across timesteps"""
+        """Generate heatmap showing SHAP values across timesteps WITH TIMESTAMPS"""
         if self.shap_values is None:
             return
         
@@ -310,16 +347,26 @@ class TimestepSHAPExplainer(SHAPExplainer):
         filtered_activities = [name for name, is_valid in zip(activity_names, non_pad_mask) if is_valid]
         timesteps = np.arange(len(filtered_shap))
         
+        # NEW: Get timestamps for labels
+        if self.timestamps is not None and sample_idx < len(self.timestamps):
+            sample_timestamps = self.timestamps[sample_idx]
+            filtered_timestamps = [sample_timestamps[i] for i, valid in enumerate(non_pad_mask) if valid]
+            # Combine activity + timestamp for x-labels
+            x_labels = [f"{act}\n{ts}" for act, ts in zip(filtered_activities, filtered_timestamps)]
+        else:
+            x_labels = filtered_activities
+        
         fig, ax = plt.subplots(figsize=(14, 6))
         
         colors = ['#d62728' if val < 0 else '#2ca02c' for val in filtered_shap]
         bars = ax.bar(timesteps, filtered_shap, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
         
         ax.set_xticks(timesteps)
-        ax.set_xticklabels(filtered_activities, rotation=45, ha='right', fontsize=9)
+        ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=8)
         
         ax.axhline(0, color='black', linewidth=1)
-        ax.set_xlabel('Timestep (Activity)', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Event (Activity + Timestamp)' if self.timestamps else 'Timestep (Activity)', 
+                      fontsize=12, fontweight='bold')
         ax.set_ylabel('SHAP Value (Contribution)', fontsize=12, fontweight='bold')
         ax.set_title(f'Timestep-Level SHAP Attribution - Sample {sample_idx}', 
                      fontsize=14, fontweight='bold')
@@ -394,16 +441,17 @@ class TimestepSHAPExplainer(SHAPExplainer):
 
 
 # ============================================================================
-# LIME EXPLAINER (Enhanced with Timestep Support)
+# LIME EXPLAINER (Enhanced with Timestep + TIMESTAMP Support)
 # ============================================================================
 class LIMEExplainer:
-    """LIME Explainer with timestep-level support"""
+    """LIME Explainer with timestep-level + TIMESTAMP support"""
     
-    def __init__(self, model, task='activity', label_encoder=None, scaler=None):
+    def __init__(self, model, task='activity', label_encoder=None, scaler=None, timestamps=None):
         self.model = model
         self.task = task
         self.label_encoder = label_encoder
         self.scaler = scaler
+        self.timestamps = timestamps  # NEW: Store timestamps
         self.explainer = None
         self.explanations = []
         self.test_data_seq = None
@@ -416,8 +464,14 @@ class LIMEExplainer:
         else:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
+        # NEW: Log timestamp availability
+        if self.timestamps is not None:
+            print(f"[OK] Timestamps provided for LIME - {len(self.timestamps)} samples")
+        else:
+            print("[INFO] No timestamps for LIME - will use position labels")
+        
     def _aggregate_feature_names(self, data):
-        """Generate feature names based on activities"""
+        """Generate feature names based on activities or timestamps"""
         if self.label_encoder is None:
             return [f'Position_{i+1}' for i in range(data.shape[1])]
         
@@ -528,7 +582,7 @@ class LIMEExplainer:
         return f"Activity_{int(token_idx)}"
 
     def plot_explanation(self, output_dir, sample_idx=0, original_idx=None):
-        """Plot LIME explanation for a sample"""
+        """Plot LIME explanation for a sample WITH TIMESTAMPS"""
         if sample_idx >= len(self.explanations) or self.explanations[sample_idx] is None:
             print(f"LIME Explanation not found for sample {sample_idx}.")
             return
@@ -566,14 +620,23 @@ class LIMEExplainer:
             title = f"LIME Explanation (Sample {display_idx})"
             lime_list = exp.as_list()
 
+        # NEW: Build activity stats with timestamps
         activity_stats = {} 
         for rule, weight in lime_list:
+            # Extract position from rule
             if rule.startswith('Position_'):
                 match = re.search(r'Position_(\d+)', rule)
                 if match:
                     pos = int(match.group(1)) - 1
                     if 0 <= pos < len(current_seq):
                         name = self._get_activity_name(current_seq[pos])
+                        
+                        # NEW: Add timestamp to name if available
+                        if self.timestamps is not None and sample_idx < len(self.timestamps):
+                            sample_timestamps = self.timestamps[sample_idx]
+                            if pos < len(sample_timestamps):
+                                timestamp = sample_timestamps[pos]
+                                name = f"{name} @ {timestamp}"  # Add timestamp
                     else:
                         name = rule
                 else:
@@ -602,7 +665,7 @@ class LIMEExplainer:
         df = pd.DataFrame(data).sort_values('AbsWeight', ascending=True)
         df[['Activity', 'Weight']].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.csv'), index=False)
 
-        plt.figure(figsize=(10, 6))
+        plt.figure(figsize=(12, 8))  # Larger for timestamps
         colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['Weight']]
         
         bars = plt.barh(df['Activity'], df['Weight'], color=colors, height=0.6)
@@ -625,7 +688,7 @@ class LIMEExplainer:
         ], loc='lower right')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
     def save_explanations(self, output_dir):
@@ -638,10 +701,12 @@ class LIMEExplainer:
 def run_transformer_explainability(model, data, output_dir, task='activity', 
                                    num_samples=50, methods='all', 
                                    label_encoder=None, scaler=None, 
+                                   timestamps=None,  # NEW PARAMETER
                                    feature_config=None):
     """
     Run explainability analysis on transformer model.
     Automatically detects if model supports timestep-level explanations.
+    NOW WITH TIMESTAMP SUPPORT!
     
     Args:
         model: Trained transformer model
@@ -652,6 +717,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity',
         methods: 'shap', 'lime', or 'all'
         label_encoder: For activity name mapping
         scaler: For time denormalization
+        timestamps: ACTUAL EVENT TIMESTAMPS (list of lists) - NEW!
         feature_config: Additional configuration (optional)
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -661,6 +727,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity',
     
     print("="*70)
     print(f"EXPLAINABILITY MODULE: {task.upper()} PREDICTION")
+    if timestamps is not None:
+        print(f"TIMESTAMP MODE: Enabled (showing actual event times)")
     print("="*70)
     
     if label_encoder is None:
@@ -684,7 +752,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity',
         
         # Use timestep-aware SHAP for time tasks
         if is_time_task and ExplainabilityConfig.ENABLE_TIMESTEP_EXPLANATIONS:
-            se = TimestepSHAPExplainer(model, task, label_encoder, scaler)
+            se = TimestepSHAPExplainer(model, task, label_encoder, scaler, timestamps)  # Pass timestamps
             se.initialize_explainer(train_data)
             se.explain_samples(test_data, num_samples)
             
@@ -719,7 +787,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity',
         lime_dir = os.path.join(output_dir, 'lime')
         os.makedirs(lime_dir, exist_ok=True)
         
-        le = LIMEExplainer(model, task, label_encoder, scaler)
+        le = LIMEExplainer(model, task, label_encoder, scaler, timestamps)  # Pass timestamps
         le.initialize_explainer(train_data, num_classes)
         
         # Select diverse samples
@@ -752,6 +820,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity',
     print("\n" + "="*70)
     print("EXPLAINABILITY ANALYSIS COMPLETE")
     print(f"Results saved to: {output_dir}")
+    if timestamps is not None:
+        print("✅ Timestamps displayed on x-axis")
     print("="*70)
 
 
