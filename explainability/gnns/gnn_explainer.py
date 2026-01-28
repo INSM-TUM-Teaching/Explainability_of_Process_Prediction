@@ -23,10 +23,6 @@ plt.rcParams.update({
 
 
 class ReadableTableExplainer:
-    """
-    Feature-level explainer with READABLE table.
-    Shows activities and resources at each step in a clean, understandable format.
-    """
     
     def __init__(self, model, device, vocabularies=None):
         self.model = model
@@ -43,16 +39,13 @@ class ReadableTableExplainer:
             self.vocabs = {}
 
     def _get_activity_name(self, idx):
-        """Get activity name, truncated if too long"""
         if 'Activity' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Activity'].items()}
             name = inv_vocab.get(int(idx), f"Act_{idx}")
-            # Truncate long names
             return name[:18] + ".." if len(name) > 18 else name
         return f"Activity_{idx}"
 
     def _get_resource_name(self, idx):
-        """Get resource name, truncated if too long"""
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
@@ -60,7 +53,6 @@ class ReadableTableExplainer:
         return f"Resource_{idx}"
 
     def explain_time_series_with_features(self, graphs, task='event_time', num_samples=50):
-        """Compute contributions with feature information"""
         self.model.eval()
         
         time_step_data = []
@@ -76,7 +68,6 @@ class ReadableTableExplainer:
             graph = graph.to(self.device)
             seq_len = graph['activity'].x.shape[0]
             
-            # Enable gradients
             for key in graph.x_dict:
                 if key in ['activity', 'resource', 'time']:
                     graph.x_dict[key] = graph.x_dict[key].detach().clone()
@@ -101,15 +92,13 @@ class ReadableTableExplainer:
                     step_info = {'step': step}
                     contrib_sum = 0.0
                     
-                    # FOR TIME TASKS: Only use timestamp gradients
                     if task in ['event_time', 'remaining_time']:
-                        # ONLY timestamp contribution
                         if 'time' in graph.x_dict and graph.x_dict['time'].grad is not None:
                             time_grad = graph.x_dict['time'].grad[step]
                             time_inp = graph.x_dict['time'][step]
                             contrib_sum += (time_grad * time_inp).abs().sum().item()
+                            step_info['timestamp'] = time_inp.item()
                         
-                        # Still extract activity/resource for CONTEXT (but don't add to contribution)
                         if 'activity' in graph.x_dict:
                             act_inp = graph.x_dict['activity'][step]
                             act_idx = act_inp.argmax().item()
@@ -121,7 +110,6 @@ class ReadableTableExplainer:
                             step_info['resource'] = self._get_resource_name(res_idx)
                     
                     else:
-                        # FOR ACTIVITY TASK: Use all features
                         if 'activity' in graph.x_dict and graph.x_dict['activity'].grad is not None:
                             act_grad = graph.x_dict['activity'].grad[step]
                             act_inp = graph.x_dict['activity'][step]
@@ -140,6 +128,7 @@ class ReadableTableExplainer:
                             time_grad = graph.x_dict['time'].grad[step]
                             time_inp = graph.x_dict['time'][step]
                             contrib_sum += (time_grad * time_inp).abs().sum().item()
+                            step_info['timestamp'] = time_inp.item()
                     
                     step_info['contribution'] = contrib_sum
                     time_step_data.append(step_info)
@@ -149,7 +138,6 @@ class ReadableTableExplainer:
         
         df = pd.DataFrame(time_step_data)
         
-        # Aggregate by step
         step_summary = []
         for step in range(df['step'].max() + 1):
             step_data = df[df['step'] == step]
@@ -190,16 +178,11 @@ class ReadableTableExplainer:
         }
     
     def explain_individual_sample(self, graph, task='event_time'):
-        """
-        Explain a single sample using gradients.
-        Returns per-step contributions and feature info.
-        """
         self.model.eval()
         graph = graph.to(self.device)
         
         seq_len = graph['activity'].x.shape[0]
         
-        # Enable gradients
         for key in graph.x_dict:
             if key in ['activity', 'resource', 'time']:
                 graph.x_dict[key] = graph.x_dict[key].detach().clone()
@@ -214,9 +197,8 @@ class ReadableTableExplainer:
             score = out[2]
             true_val = graph.y_remaining_time.item()
         elif task == 'activity':
-            # For activity, use the logits for the predicted class
             predicted_class = out[0].argmax()
-            score = out[0][predicted_class]  # Score for the predicted class
+            score = out[0][predicted_class]
             true_val = graph.y_activity.item()
         else:
             return None, None, None, None
@@ -224,7 +206,6 @@ class ReadableTableExplainer:
         self.model.zero_grad()
         score.backward()
         
-        # Extract per-step contributions and features
         step_contributions = []
         step_info = []
         
@@ -233,15 +214,13 @@ class ReadableTableExplainer:
                 contrib_sum = 0.0
                 info = {'step': step}
                 
-                # FOR TIME TASKS: Only use timestamp gradients
                 if task in ['event_time', 'remaining_time']:
-                    # ONLY timestamp contribution
                     if 'time' in graph.x_dict and graph.x_dict['time'].grad is not None:
                         time_grad = graph.x_dict['time'].grad[step]
                         time_inp = graph.x_dict['time'][step]
                         contrib_sum += (time_grad * time_inp).abs().sum().item()
+                        info['timestamp'] = time_inp.item()
                     
-                    # Still extract activity/resource for CONTEXT (but don't add to contribution)
                     if 'activity' in graph.x_dict:
                         act_inp = graph.x_dict['activity'][step]
                         act_idx = act_inp.argmax().item()
@@ -253,7 +232,6 @@ class ReadableTableExplainer:
                         info['resource'] = self._get_resource_name(res_idx)
                 
                 elif task == 'activity':
-                    # FOR ACTIVITY TASK: Only use activity gradients (not time/resource)
                     if 'activity' in graph.x_dict and graph.x_dict['activity'].grad is not None:
                         act_grad = graph.x_dict['activity'].grad[step]
                         act_inp = graph.x_dict['activity'][step]
@@ -261,7 +239,6 @@ class ReadableTableExplainer:
                         act_idx = act_inp.argmax().item()
                         info['activity'] = self._get_activity_name(act_idx)
                     
-                    # Still extract resource/time for CONTEXT (but don't add to contribution)
                     if 'resource' in graph.x_dict:
                         res_inp = graph.x_dict['resource'][step]
                         res_idx = res_inp.argmax().item()
@@ -269,10 +246,9 @@ class ReadableTableExplainer:
                     
                     if 'time' in graph.x_dict:
                         time_inp = graph.x_dict['time'][step]
-                        # Just for display, not contribution
+                        info['timestamp'] = time_inp.item()
                 
                 else:
-                    # FOR OTHER TASKS: Use all features
                     if 'activity' in graph.x_dict and graph.x_dict['activity'].grad is not None:
                         act_grad = graph.x_dict['activity'].grad[step]
                         act_inp = graph.x_dict['activity'][step]
@@ -291,6 +267,7 @@ class ReadableTableExplainer:
                         time_grad = graph.x_dict['time'].grad[step]
                         time_inp = graph.x_dict['time'][step]
                         contrib_sum += (time_grad * time_inp).abs().sum().item()
+                        info['timestamp'] = time_inp.item()
                 
                 step_contributions.append(contrib_sum)
                 step_info.append(info)
@@ -298,7 +275,6 @@ class ReadableTableExplainer:
         return np.array(step_contributions), score.item(), true_val, step_info
     
     def plot_individual_gradient_explanation(self, contributions, pred, true_val, step_info, output_dir, task, sample_id):
-        """Plot SHAP-style explanation with activity labels on ALL bars"""
         os.makedirs(output_dir, exist_ok=True)
         
         if contributions is None:
@@ -306,135 +282,133 @@ class ReadableTableExplainer:
         
         num_steps = len(contributions)
         
-        # Create figure with single plot
+        timestamps = []
+        for info in step_info:
+            if 'timestamp' in info:
+                timestamps.append(info['timestamp'])
+            else:
+                timestamps.append(None)
+        
         fig, ax = plt.subplots(figsize=(18, 8))
         
-        # Center contributions around mean
         centered_contrib = contributions - np.mean(contributions)
+        
+        if task in ['event_time', 'remaining_time']:
+            x_labels = []
+            for i, info in enumerate(step_info):
+                if timestamps[i] is not None:
+                    timestamp = timestamps[i]
+                    if timestamp < 1:
+                        x_labels.append(f"{timestamp*24:.1f}h")
+                    else:
+                        x_labels.append(f"Day {timestamp:.1f}")
+                else:
+                    x_labels.append(f"Step {info['step']}")
+        else:
+            x_labels = []
+            for info in step_info:
+                activity = info.get('activity', f"Step_{info['step']}")
+                if len(activity) > 15:
+                    activity = activity[:13] + '..'
+                x_labels.append(activity)
         
         time_steps = np.arange(num_steps)
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
         
-        # Plot bars
-        ax.bar(time_steps, positive, color='#d62728', alpha=0.85, 
-               label='Positive', width=0.75, edgecolor='darkred', linewidth=0.8)
-        ax.bar(time_steps, negative, color='#1f77b4', alpha=0.85, 
-               label='Negative', width=0.75, edgecolor='darkblue', linewidth=0.8)
+        ax.bar(time_steps, positive, color='#2ecc71', alpha=0.85,
+               label='Increases Prediction', width=0.75, edgecolor='#27ae60', linewidth=0.8)
+        ax.bar(time_steps, negative, color='#e74c3c', alpha=0.85,
+               label='Decreases Prediction', width=0.75, edgecolor='#c0392b', linewidth=0.8)
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
         
-        # Add activity labels ON ALL BARS (no threshold filtering)
-        max_contrib = np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
-        label_offset = max_contrib * 0.10  # Increased from 0.08
+        if task in ['event_time', 'remaining_time']:
+            max_contrib = np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
+            label_offset = max_contrib * 0.15
+            
+            for i in range(num_steps):
+                info = step_info[i]
+                activity = info.get('activity', 'N/A')
+                
+                if len(activity) > 12:
+                    activity = activity[:10] + '..'
+                
+                contrib_val = centered_contrib[i]
+                
+                if contrib_val > 0:
+                    y_pos = contrib_val + label_offset
+                    va = 'bottom'
+                else:
+                    y_pos = contrib_val - label_offset
+                    va = 'top'
+                
+                bbox_props = dict(boxstyle='round,pad=0.35', facecolor='lightyellow', 
+                                 edgecolor='gray', linewidth=0.6, alpha=0.85)
+                
+                ax.text(time_steps[i], y_pos, activity, 
+                       ha='center', va=va, fontsize=8, 
+                       bbox=bbox_props, rotation=0)
         
-        # LABEL ALL STEPS (removed threshold filter)
-        for i in range(num_steps):
-            info = step_info[i]
-            activity = info.get('activity', 'N/A')
-            
-            # Truncate long activity names
-            if len(activity) > 12:
-                activity = activity[:10] + '..'
-            
-            contrib_val = centered_contrib[i]
-            
-            # Position label above positive bars, below negative bars
-            if contrib_val > 0:
-                y_pos = contrib_val + label_offset
-                va = 'bottom'
-                rotation = 45
-            else:
-                y_pos = contrib_val - label_offset
-                va = 'top'
-                rotation = 45
-            
-            # Add yellow box background for labels (like SHAP)
-            bbox_props = dict(boxstyle='round,pad=0.4', facecolor='#FFFACD', 
-                             edgecolor='black', linewidth=0.8, alpha=0.9)
-            
-            ax.text(i, y_pos, activity, 
-                   ha='center', va=va, fontsize=9, fontweight='bold',
-                   rotation=rotation, bbox=bbox_props)
+        if task in ['event_time', 'remaining_time']:
+            xlabel = 'Event (Timestamp)'
+        else:
+            xlabel = 'Event (Activity + Timestamp)'
         
-        # NO second y-axis or observed data line
+        ax.set_xlabel(xlabel, fontweight='bold', fontsize=14)
+        ax.set_ylabel('Gradient Value (Contribution)', fontweight='bold', fontsize=14)
         
-        # Formatting
-        ax.set_xlabel(f'Time step (Sample {sample_id})', 
-                     fontweight='bold', fontsize=14)
-        ax.set_ylabel('Feature Contribution', 
-                     fontweight='bold', fontsize=14, color='black')
-        
-        # Title
         task_name = task.replace('_', ' ').title()
-        ax.set_title(f'Graph Neural Network (GNN) - Gradient Descent\n{task_name}',
+        ax.set_title(f'Timestep-Level Gradient Attribution - Sample {sample_id}',
                     fontweight='bold', fontsize=16, pad=20)
         
-        # Legend
-        ax.legend(loc='upper left', framealpha=0.95, fontsize=12)
+        ax.legend(loc='upper right', framealpha=0.95, fontsize=12)
         
-        # Grid
         ax.grid(True, alpha=0.3, axis='y', linestyle='--', linewidth=0.8)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         
-        # X-axis ticks
-        if num_steps <= 25:
-            ax.set_xticks(time_steps)
-            ax.set_xticklabels([f'{i}' for i in time_steps], fontsize=10)
-        else:
-            skip = max(1, num_steps // 25)
-            ax.set_xticks(time_steps[::skip])
-            ax.set_xticklabels([f'{i}' for i in time_steps[::skip]], fontsize=10)
+        ax.set_xticks(time_steps)
+        ax.set_xticklabels(x_labels, fontsize=9, rotation=45, ha='right')
         
-        # Set y-limits for better visibility (increased margin)
-        y_margin = max_contrib * 0.40  # Increased from 0.35
+        max_contrib = np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
+        y_margin = max_contrib * 0.45
         ax.set_ylim(negative.min() - y_margin if len(negative) > 0 else -1, 
                    positive.max() + y_margin if len(positive) > 0 else 1)
         
         plt.tight_layout()
         
-        output_path = os.path.join(output_dir, f'gradient_sample_{sample_id}_{task}.png')
+        output_path = os.path.join(output_dir, f'gradient_timestep_heatmap_sample_{sample_id}.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
         
-        print(f"  [✓] SHAP-style plot saved: gradient_sample_{sample_id}_{task}.png")
+        print(f"  [✓] Gradient plot saved: gradient_timestep_heatmap_sample_{sample_id}.png")
         
-        # Save CSV with appropriate columns based on task
         if step_info:
             df_info = pd.DataFrame(step_info)
-            df_info['shap_contribution'] = centered_contrib
+            df_info['gradient_value'] = centered_contrib
             
-            # Add note about what contributes to the values
             if task in ['event_time', 'remaining_time']:
-                # For time tasks, make it clear contributions are from timestamps only
-                csv_path = os.path.join(output_dir, f'gradient_sample_{sample_id}_{task}_details.csv')
-                
-                # Reorder columns to emphasize timestamp contribution
                 cols = ['step']
+                if 'timestamp' in df_info.columns:
+                    cols.append('timestamp')
                 if 'activity' in df_info.columns:
                     cols.append('activity')
-                if 'resource' in df_info.columns:
-                    cols.append('resource')
-                cols.append('shap_contribution')
-                
+                cols.append('gradient_value')
                 df_info = df_info[cols]
                 
-                # Add header comment to CSV
+                csv_path = os.path.join(output_dir, f'gradient_timestep_sample_{sample_id}_details.csv')
                 with open(csv_path, 'w') as f:
                     f.write(f"# Task: {task}\n")
-                    f.write(f"# SHAP contributions calculated from: TIMESTAMP GRADIENTS ONLY\n")
-                    f.write(f"# Activity and Resource columns shown for CONTEXT only\n")
-                    f.write(f"# (they do NOT contribute to the shap_contribution values)\n")
+                    f.write(f"# Gradient values from: TIMESTAMP FEATURES ONLY\n")
+                    f.write(f"# Activity shown for context only\n")
                     df_info.to_csv(f, index=False)
                 
-                print(f"  [✓] Details CSV saved (timestamp-only contributions)")
+                print(f"  [✓] Details CSV saved")
             else:
-                # For activity task, all features contribute
-                df_info.to_csv(os.path.join(output_dir, f'gradient_sample_{sample_id}_{task}_details.csv'), index=False)
-                print(f"  [✓] Details CSV saved (all features)")
+                df_info.to_csv(os.path.join(output_dir, f'gradient_timestep_sample_{sample_id}_details.csv'), index=False)
+                print(f"  [✓] Details CSV saved")
 
     def plot_with_readable_table(self, results, output_dir, task):
-        """Create SHAP-style visualization (no table, labels on bars)"""
         os.makedirs(output_dir, exist_ok=True)
         
         summary_df = results['summary']
@@ -443,12 +417,10 @@ class ReadableTableExplainer:
         
         max_len = len(summary_df)
         
-        # Aggregate for long sequences
         if max_len > 40:
             bin_size = max(2, max_len // 35)
             print(f"[INFO] Long sequence ({max_len} steps) - binning into ~{max_len//bin_size} bins")
             
-            # Bin the data
             binned_data = []
             for bin_idx in range((max_len + bin_size - 1) // bin_size):
                 start_step = bin_idx * bin_size
@@ -468,44 +440,36 @@ class ReadableTableExplainer:
             activities = plot_df['top_activity'].values
             xlabel_text = 'Event sequence position (binned)'
         else:
-            # Use raw data
             x_values = summary_df['step'].values
             contributions = summary_df['avg_contribution'].values
             activities = summary_df['top_activity'].values
             xlabel_text = 'Event sequence position (BPI Dataset)'
         
-        # Center contributions
         mean_val = np.mean(contributions[contributions > 0]) if np.any(contributions > 0) else 0
         centered_contrib = contributions - mean_val
         
-        # Create single plot
         fig, ax = plt.subplots(figsize=(20, 8))
         
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
         
-        # Plot bars
         ax.bar(x_values, positive, color='#d62728', alpha=0.85, 
                label='Positive', width=0.75, edgecolor='darkred', linewidth=0.8)
         ax.bar(x_values, negative, color='#1f77b4', alpha=0.85, 
                label='Negative', width=0.75, edgecolor='darkblue', linewidth=0.8)
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
         
-        # Add activity labels on bars
         max_contrib = np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
         label_offset = max_contrib * 0.12
         
-        # Only label significant bars (top contributors)
-        threshold = np.percentile(np.abs(centered_contrib), 70) if len(centered_contrib) > 0 else 0  # Top 30%
+        threshold = np.percentile(np.abs(centered_contrib), 70) if len(centered_contrib) > 0 else 0
         
         for i, (x, contrib, activity) in enumerate(zip(x_values, centered_contrib, activities)):
-            if abs(contrib) >= threshold:  # Only label important steps
-                # Truncate activity name
+            if abs(contrib) >= threshold:
                 activity_str = str(activity)
                 if len(activity_str) > 12:
                     activity_str = activity_str[:10] + '..'
                 
-                # Position
                 if contrib > 0:
                     y_pos = contrib + label_offset
                     va = 'bottom'
@@ -513,7 +477,6 @@ class ReadableTableExplainer:
                     y_pos = contrib - label_offset
                     va = 'top'
                 
-                # Yellow box label
                 bbox_props = dict(boxstyle='round,pad=0.4', facecolor='#FFFACD', 
                                  edgecolor='black', linewidth=0.8, alpha=0.9)
                 
@@ -521,28 +484,21 @@ class ReadableTableExplainer:
                        ha='center', va=va, fontsize=10, fontweight='bold',
                        rotation=45, bbox=bbox_props)
         
-        # NO second y-axis for aggregated view (flat line doesn't add value)
-        
-        # Formatting
         num_samples = len(predictions) if len(predictions) > 0 else 0
         ax.set_xlabel(xlabel_text, fontweight='bold', fontsize=14)
         ax.set_ylabel('Feature Contribution', 
                      fontweight='bold', fontsize=14)
         
         task_name = task.replace('_', ' ').title()
-        # Updated title to show aggregation
         ax.set_title(f'Graph Neural Network (GNN) Model - SHAP Explainability (Averaged Over {num_samples} Samples)\n{task_name}',
                     fontweight='bold', fontsize=17, pad=20)
         
-        # Legend
         ax.legend(loc='upper left', framealpha=0.95, fontsize=12)
         
-        # Grid
         ax.grid(True, alpha=0.3, axis='y', linestyle='--', linewidth=0.8)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         
-        # X-ticks
         if len(x_values) <= 30:
             ax.set_xticks(x_values)
             if max_len > 40:
@@ -563,12 +519,10 @@ class ReadableTableExplainer:
         
         print(f"[✓] SHAP-style plot saved")
         
-        # Still save CSV
         summary_df.to_csv(os.path.join(output_dir, f'feature_summary_{task}.csv'), index=False)
         print(f"[✓] CSV saved")
 
     def explain_global_activity(self, graphs, num_samples=50):
-        """Activity classification bar chart"""
         self.model.eval()
         importances = {'activity': [], 'resource': []}
         
@@ -608,7 +562,6 @@ class ReadableTableExplainer:
         return global_imp
 
     def plot_global_importance_activity(self, importances, output_dir):
-        """Bar chart for activity prediction"""
         os.makedirs(output_dir, exist_ok=True)
         
         data = []
@@ -658,9 +611,6 @@ class ReadableTableExplainer:
 
 
 class GraphLIMEExplainer:
-    """
-    GraphLIME local explainer for individual predictions.
-    """
     
     def __init__(self, model, device, vocabularies=None):
         self.model = model
@@ -689,14 +639,10 @@ class GraphLIMEExplainer:
         return f"Resource_{idx}"
     
     def explain_local(self, graph, task='event_time', num_perturbations=200):
-        """
-        Local explanation for a single graph showing which steps matter.
-        """
         self.model.eval()
         graph = graph.to(self.device)
         
-        # Get base prediction
-        predicted_class = None  # For activity task
+        predicted_class = None
         with torch.no_grad():
             out = self.model(graph)
             if task == 'event_time':
@@ -706,17 +652,15 @@ class GraphLIMEExplainer:
                 base_score = out[2].item()
                 true_val = graph.y_remaining_time.item()
             elif task == 'activity':
-                # For activity, use the probability of the predicted class (not just index)
-                probs = torch.softmax(out[0], dim=-1)  # Softmax over last dimension
-                predicted_class = probs.argmax().item()  # Get predicted class from probs
-                base_score = probs[predicted_class].item()  # Confidence score
+                probs = torch.softmax(out[0], dim=-1)
+                predicted_class = probs.argmax().item()
+                base_score = probs[predicted_class].item()
                 true_val = graph.y_activity.item()
             else:
-                return None, None, None, None
+                return None, None, None, None, None
         
         seq_len = graph['activity'].x.shape[0]
         
-        # Extract activity/resource names for display
         step_info = []
         with torch.no_grad():
             for step in range(seq_len):
@@ -727,14 +671,14 @@ class GraphLIMEExplainer:
                 if 'resource' in graph.x_dict:
                     res_idx = graph['resource'].x[step].argmax().item()
                     info['resource'] = self._get_resource_name(res_idx)
+                if 'time' in graph.x_dict:
+                    info['timestamp'] = graph['time'].x[step].item()
                 step_info.append(info)
         
-        # Perturb by masking time steps
         X_perturb = []
         y_perturb = []
         
         for _ in range(num_perturbations):
-            # Create mask
             mask = np.ones(seq_len)
             num_to_mask = max(1, np.random.randint(1, max(2, int(seq_len * 0.4))))
             mask_indices = np.random.choice(seq_len, size=num_to_mask, replace=False)
@@ -742,26 +686,18 @@ class GraphLIMEExplainer:
             
             X_perturb.append(mask)
             
-            # Apply mask
             masked_graph = graph.clone()
             mask_tensor = torch.tensor(mask, device=self.device, dtype=torch.float32).view(-1, 1)
             
-            # FOR TIME TASKS: Only mask timestamps (not activity/resource)
             if task in ['event_time', 'remaining_time']:
-                # Only perturb time features
                 masked_graph['time'].x = masked_graph['time'].x * mask_tensor
-                # Keep activity and resource unchanged
             elif task == 'activity':
-                # FOR ACTIVITY TASK: Only mask activity features (not time/resource)
                 masked_graph['activity'].x = masked_graph['activity'].x * mask_tensor
-                # Keep resource and time unchanged
             else:
-                # FOR OTHER TASKS: Mask all features
                 masked_graph['activity'].x = masked_graph['activity'].x * mask_tensor
                 masked_graph['resource'].x = masked_graph['resource'].x * mask_tensor
                 masked_graph['time'].x = masked_graph['time'].x * mask_tensor
             
-            # Get prediction
             with torch.no_grad():
                 out_p = self.model(masked_graph)
                 if task == 'event_time':
@@ -769,28 +705,24 @@ class GraphLIMEExplainer:
                 elif task == 'remaining_time':
                     score = out_p[2].item()
                 elif task == 'activity':
-                    # Use probability of the predicted class (same as base prediction)
-                    probs = torch.softmax(out_p[0], dim=-1)  # Softmax over last dimension
-                    score = probs[predicted_class].item()  # How confident is it now?
+                    probs = torch.softmax(out_p[0], dim=-1)
+                    score = probs[predicted_class].item()
                 y_perturb.append(score)
         
         X_perturb = np.array(X_perturb)
         y_perturb = np.array(y_perturb)
         
-        # Fit Ridge regression
         distances = pairwise_distances(X_perturb, X_perturb[0].reshape(1, -1), metric='cosine').ravel()
         weights = np.sqrt(np.exp(-(distances**2) / 0.25))
         
         simpler_model = Ridge(alpha=1.0)
         simpler_model.fit(X_perturb, y_perturb, sample_weight=weights)
         
-        # Coefficients = importance of each step
         step_importance = simpler_model.coef_
         
         return step_importance, base_score, true_val, step_info, predicted_class
     
     def plot_local_explanation(self, importance, base_score, true_val, step_info, output_dir, task, sample_id, predicted_class=None):
-        """Plot local explanation with horizontal bars (original style with updated labels)"""
         os.makedirs(output_dir, exist_ok=True)
         
         if importance is None:
@@ -798,72 +730,66 @@ class GraphLIMEExplainer:
         
         num_steps = len(importance)
         
-        # Get feature names (activities) with O_ prefix
-        feature_names = []
-        for info in step_info:
-            activity = info.get('activity', f'Step_{info["step"]}')
-            feature_names.append(f'O_{activity}')
+        if task in ['event_time', 'remaining_time']:
+            feature_names = []
+            for info in step_info:
+                if 'timestamp' in info:
+                    timestamp = info['timestamp']
+                    if timestamp < 1:
+                        feature_names.append(f"Timestamp: {timestamp*24:.1f}h")
+                    else:
+                        feature_names.append(f"Timestamp: {timestamp:.1f}d")
+                else:
+                    feature_names.append(f"t={info['step']}")
+        else:
+            feature_names = []
+            for info in step_info:
+                activity = info.get('activity', f'Step_{info["step"]}')
+                feature_names.append(f'O_{activity}')
         
-        # Create horizontal bar plot
         fig, ax = plt.subplots(figsize=(10, max(6, num_steps * 0.5)))
         
-        # Sort by importance (absolute value)
         sorted_indices = np.argsort(np.abs(importance))
         sorted_importance = importance[sorted_indices]
         sorted_names = [feature_names[i] for i in sorted_indices]
         
-        # Color bars: green for positive, red for negative
         colors = ['green' if x > 0 else 'red' for x in sorted_importance]
         
-        # Plot horizontal bars
         y_pos = np.arange(len(sorted_names))
         
-        # Track which legend entries we've added
         has_positive = False
         has_negative = False
         
-        # Create bars with labels for legend
         for i, (y, importance_val, color) in enumerate(zip(y_pos, sorted_importance, colors)):
             if importance_val > 0 and not has_positive:
-                # First positive bar - add to legend
                 ax.barh(y, importance_val, color=color, alpha=0.7, edgecolor='black', 
                        linewidth=1, label='Support')
                 has_positive = True
             elif importance_val < 0 and not has_negative:
-                # First negative bar - add to legend
                 ax.barh(y, importance_val, color=color, alpha=0.7, edgecolor='black', 
                        linewidth=1, label='Contradict')
                 has_negative = True
             else:
-                # Regular bar without label
                 ax.barh(y, importance_val, color=color, alpha=0.7, edgecolor='black', linewidth=1)
         
-        # Labels - Updated as requested
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(sorted_names, fontsize=10)
+        ax.set_yticklabels(sorted_names, fontsize=9)
         ax.set_xlabel('Feature Contribution (LIME)', fontweight='bold', fontsize=12)
-        # No Y-axis label
         
-        # Title - Updated as requested
         task_name = task.replace('_', ' ').title()
         if task == 'activity':
-            # For activity, show the predicted activity name and confidence
             pred_activity = self._get_activity_name(int(predicted_class)) if predicted_class is not None else "Unknown"
-            confidence_pct = base_score * 100  # Convert probability to percentage
+            confidence_pct = base_score * 100
             ax.set_title(f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\nPrediction: {pred_activity} ({confidence_pct:.1f}%)',
                         fontweight='bold', fontsize=13, pad=15)
         else:
-            # For time tasks, show numeric prediction
             ax.set_title(f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\nPrediction: {base_score:.2f}',
                         fontweight='bold', fontsize=13, pad=15)
         
-        # Legend
         ax.legend(loc='best', framealpha=0.95, fontsize=11)
         
-        # Vertical line at x=0
         ax.axvline(x=0, color='black', linestyle='-', linewidth=2)
         
-        # Grid
         ax.grid(True, alpha=0.3, axis='x', linestyle='--')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
@@ -876,21 +802,27 @@ class GraphLIMEExplainer:
         
         print(f"  [✓] LIME plot saved: graphlime_sample_{sample_id}_{task}.png")
         
-        # Save step details to CSV
         if step_info:
             df_info = pd.DataFrame(step_info)
             df_info['lime_contribution'] = importance
+            
+            if task in ['event_time', 'remaining_time']:
+                cols = ['step']
+                if 'timestamp' in df_info.columns:
+                    cols.append('timestamp')
+                cols.append('lime_contribution')
+                df_info = df_info[cols]
+            
             df_info.to_csv(os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}_details.csv'), index=False)
             print(f"  [✓] Step details CSV saved")
 
 
 def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, 
                           num_samples=50, methods='all', tasks=None):
-    """Run explainability with readable tables and LIME support"""
     os.makedirs(output_dir, exist_ok=True)
     
     print("\n" + "="*70)
-    print("GNN EXPLAINABILITY - READABLE TABLE VERSION")
+    print("GNN EXPLAINABILITY - SHAP-STYLE VISUALIZATION")
     print("="*70)
     
     if 'test_graphs' in data:
@@ -911,10 +843,9 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None,
     print(f"\n[→] Tasks: {tasks}")
     print(f"[→] Samples: {num_samples}")
     
-    # ========== GRADIENT-BASED EXPLANATIONS ==========
     if methods in ['gradient', 'all']:
         print("\n" + "─"*70)
-        print("GRADIENT ANALYSIS")
+        print("GRADIENT ANALYSIS (SHAP-STYLE)")
         print("─"*70)
         
         explainer = ReadableTableExplainer(model, device, vocabularies)
@@ -929,28 +860,19 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None,
                     explainer.plot_global_importance_activity(imp, grad_dir)
                     
                 elif task in ['event_time', 'remaining_time']:
-                    # Global aggregated explanation (DISABLED - only showing individual samples)
-                    # print("  Creating global aggregated explanation...")
-                    # results = explainer.explain_time_series_with_features(graphs, task, num_samples)
-                    # explainer.plot_with_readable_table(results, grad_dir, task)
-                    
-                    # Individual sample explanations only
-                    print(f"\n  Creating individual sample explanations...")
+                    print(f"  Creating individual sample explanations...")
                     num_individual = min(5, len(graphs))
                     
-                    # Pick samples from different parts of dataset (not just first 5!)
                     sample_indices = []
                     if len(graphs) > 100:
-                        # Pick from different quartiles for variety
                         sample_indices = [
-                            len(graphs) // 4,      # 25% through dataset
-                            len(graphs) // 2,      # 50% through dataset  
-                            3 * len(graphs) // 4,  # 75% through dataset
-                            len(graphs) - 100,     # Near end
-                            len(graphs) - 50,      # Very near end
+                            len(graphs) // 4,
+                            len(graphs) // 2,
+                            3 * len(graphs) // 4,
+                            len(graphs) - 100,
+                            len(graphs) - 50,
                         ]
                     else:
-                        # Small dataset - skip first few short prefixes
                         start = min(10, len(graphs) // 3)
                         sample_indices = list(range(start, min(start + num_individual, len(graphs))))
                     
@@ -965,7 +887,6 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None,
                 import traceback
                 traceback.print_exc()
     
-    # ========== GRAPHLIME LOCAL ANALYSIS ==========
     if methods in ['lime', 'all']:
         print("\n" + "─"*70)
         print("GRAPHLIME LOCAL ANALYSIS")
@@ -974,7 +895,6 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None,
         lime_explainer = GraphLIMEExplainer(model, device, vocabularies)
         lime_dir = os.path.join(output_dir, 'graphlime')
         
-        # Analyze first 5 samples
         num_local_samples = min(5, len(graphs))
         print(f"\n[→] Analyzing {num_local_samples} individual samples...")
         
