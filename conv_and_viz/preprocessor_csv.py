@@ -11,45 +11,14 @@ except ImportError:
 
 
 def detect_column_type(series):
-    """Detect whether a column is categorical or numerical."""
-    if series.dtype in ['object', 'string', 'category', 'bool']:
+    """Detect whether a column is categorical, numerical, or datetime."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return 'datetime'
+    if pd.api.types.is_bool_dtype(series):
         return 'categorical'
-    elif series.dtype in ['int64', 'int32', 'float64', 'float32']:
+    if pd.api.types.is_numeric_dtype(series):
         return 'numerical'
-    else:
-        return 'categorical'
-
-
-def detect_columns(df):
-    """Detect standard column names in the dataframe."""
-    column_mapping = {}
-    
-    case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
-    activity_patterns = ['concept:name', 'Activity', 'activity', 'event', 'Event', 'task', 'Task', 'Action']
-    timestamp_patterns = ['time:timestamp', 'Timestamp', 'timestamp', 'time', 'Time', 'start_time', 'StartTime']
-    resource_patterns = ['org:resource', 'Resource', 'resource', 'user', 'User', 'org:role', 'role', 'Role']
-    
-    for col in df.columns:
-        if col in case_patterns:
-            column_mapping['case'] = col
-            break
-    
-    for col in df.columns:
-        if col in activity_patterns:
-            column_mapping['activity'] = col
-            break
-    
-    for col in df.columns:
-        if col in timestamp_patterns:
-            column_mapping['timestamp'] = col
-            break
-    
-    for col in df.columns:
-        if col in resource_patterns:
-            column_mapping['resource'] = col
-            break
-    
-    return column_mapping
+    return 'categorical'
 
 
 def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv", options=None):
@@ -88,27 +57,28 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv", opt
     print(f"Loaded {len(df)} events from {input_path}")
     print(f"Original columns: {list(df.columns)}")
 
-    column_map = detect_columns(df)
-    timestamp_col = column_map.get('timestamp')
-    case_col = column_map.get('case')
-    
-    if timestamp_col:
-        print(f"Detected timestamp column: {timestamp_col}")
-    else:
-        print("Warning: No timestamp column detected")
-    
-    if case_col:
-        print(f"Detected case ID column: {case_col}")
-    else:
-        print("Warning: No case ID column detected")
+    # Only auto-detect timestamp column (no other column detection).
+    timestamp_col = None
+    case_col = None
+    timestamp_patterns = [
+        "time:timestamp",
+        "timestamp",
+        "time",
+        "start_time",
+        "starttime",
+        "complete_time",
+        "completetime",
+    ]
+    for col in df.columns:
+        if col.strip().lower() in timestamp_patterns:
+            timestamp_col = col
+            break
 
-    if case_col and timestamp_col and (
+    if timestamp_col and (
         default_options["sort_and_normalize_timestamps"]
         or default_options["check_millisecond_order"]
     ):
         df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce')
-        df.sort_values(by=[case_col, timestamp_col], inplace=True)
-        print("DataFrame sorted by CaseID and Timestamp.")
 
     if case_col and timestamp_col and default_options["check_millisecond_order"]:
         df['Timestamp_Sec'] = df[timestamp_col].dt.floor('s')
@@ -126,11 +96,12 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv", opt
 
         df.drop(columns=['Timestamp_Sec', 'Prev_CaseID', 'Prev_Timestamp_Sec'], inplace=True)
 
-    if case_col and timestamp_col and default_options["sort_and_normalize_timestamps"]:
+    if timestamp_col and default_options["sort_and_normalize_timestamps"]:
         df[timestamp_col] = df[timestamp_col].dt.floor('s')
         if df[timestamp_col].dt.tz is not None:
             df[timestamp_col] = df[timestamp_col].dt.tz_localize(None)
-        df.sort_values(by=[case_col, timestamp_col], inplace=True)
+        # Drop timezone offsets like +00:00 in string representation
+        df[timestamp_col] = df[timestamp_col].dt.strftime('%Y-%m-%d %H:%M:%S')
     
     print("\n--- Checking Data Types and Handling Wrong Values ---")
     
@@ -172,6 +143,7 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv", opt
         
         numeric_cols = [col for col in missing_cols if detect_column_type(df[col]) == 'numerical']
         categorical_cols = [col for col in missing_cols if detect_column_type(df[col]) == 'categorical']
+        datetime_cols = [col for col in missing_cols if detect_column_type(df[col]) == 'datetime']
         
         if default_options["drop_missing_timestamps"] and timestamp_col and timestamp_col in missing_cols:
             rows_before = len(df)
@@ -190,6 +162,7 @@ def preprocess_event_log(input_path, output_csv_path="preprocessed_log.csv", opt
                 df[col] = df[col].fillna(0.0)
             for col in categorical_cols:
                 df[col] = df[col].fillna('N/A')
+            # Do not fill datetime columns with strings.
         
         print("\n--- Missing Value Count AFTER Imputation ---")
         remaining_missing = [col for col in missing_cols if col in df.columns]
