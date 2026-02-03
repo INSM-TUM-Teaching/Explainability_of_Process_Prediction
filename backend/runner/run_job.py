@@ -158,6 +158,7 @@ def main():
 
     mapping_mode = (req.get("mapping_mode") or "").strip().lower() or "auto"
     column_mapping = req.get("column_mapping") or None
+    skip_auto_mapping = mapping_mode == "manual"
     if task == "custom_activity" and not target_column:
         raise RuntimeError("custom_activity requires target_column")
 
@@ -228,16 +229,19 @@ def main():
                     config,
                     explainability_method=explainability,
                     target_column=target_column if task == "custom_activity" else None,
+                    skip_auto_mapping=skip_auto_mapping,
                 )
             elif task == "event_time":
                 metrics = run_event_time_prediction(
                     dataset_path, artifacts_dir, test_size, val_split, config,
-                    explainability_method=explainability
+                    explainability_method=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
                 )
             elif task == "remaining_time":
                 metrics = run_remaining_time_prediction(
                     dataset_path, artifacts_dir, test_size, val_split, config,
-                    explainability_method=explainability
+                    explainability_method=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
                 )
             else:
                 raise RuntimeError(f"Unsupported transformer task: {task}")
@@ -256,6 +260,7 @@ def main():
                 explainability_method=explainability,
                 task=gnn_task,
                 target_column=target_column if task == "custom_activity" else None,
+                skip_auto_mapping=skip_auto_mapping,
             )
         else:
             raise RuntimeError(f"Unsupported model_type: {model_type}")

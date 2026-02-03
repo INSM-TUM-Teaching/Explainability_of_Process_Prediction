@@ -22,6 +22,23 @@ plt.rcParams.update({
     'figure.titlesize': 16
 })
 
+
+def _dir_has_png(path):
+    if not os.path.isdir(path):
+        return False
+    return any(name.lower().endswith(".png") for name in os.listdir(path))
+
+
+def _write_placeholder_plot(output_path, title, lines=None):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.axis("off")
+    body = [title] + (lines or [])
+    ax.text(0.5, 0.5, "\n".join(body), ha="center", va="center", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close()
+
 class GradientExplainer:
     def __init__(self, model, device, vocabularies=None):
         self.model = model
@@ -109,7 +126,13 @@ class GradientExplainer:
         df = pd.DataFrame(data).sort_values('Importance', ascending=True)
         df.to_csv(os.path.join(output_dir, f'gradient_global_{task}.csv'), index=False)
         
-        if df.empty: return
+        if df.empty:
+            _write_placeholder_plot(
+                os.path.join(output_dir, f'gradient_global_{task}.png'),
+                f"No gradient importances available ({task})",
+                ["All feature importances were zero or missing."]
+            )
+            return
 
         plt.figure(figsize=(10, 6))
         colors = {'Activity': '#1f77b4', 'Resource': '#ff7f0e'}
@@ -392,19 +415,36 @@ class TemporalGradientExplainer:
 
         if not graphs:
             print("[WARNING] Temporal gradient plot skipped: no graphs available.")
+            _write_placeholder_plot(
+                os.path.join(output_dir, f'temporal_placeholder_{task}.png'),
+                f"No temporal plots generated ({task})",
+                ["No graphs available for temporal attribution."]
+            )
             return
 
         sample_count = min(num_samples, len(graphs))
         sample_indices = np.random.choice(len(graphs), sample_count, replace=False)
         print(f"Generating temporal gradient plots for {len(sample_indices)} samples ({task})...")
 
+        created = 0
         for i, idx in enumerate(sample_indices):
             graph = graphs[idx]
-            contrib, pred, true_val, step_info = self.explain_individual_sample(graph, task)
-            if contrib is None:
-                print(f"[WARNING] Sample {idx} skipped (no contribution).")
-                continue
-            self.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, output_dir, task, i)
+            try:
+                contrib, pred, true_val, step_info = self.explain_individual_sample(graph, task)
+                if contrib is None:
+                    print(f"[WARNING] Sample {idx} skipped (no contribution).")
+                    continue
+                self.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, output_dir, task, i)
+                created += 1
+            except Exception as e:
+                print(f"[WARNING] Temporal plot failed for sample {idx}: {e}")
+
+        if created == 0:
+            _write_placeholder_plot(
+                os.path.join(output_dir, f'temporal_placeholder_{task}.png'),
+                f"No temporal plots generated ({task})",
+                ["All temporal samples failed or returned empty attributions."]
+            )
 
 
 class GraphLIMEExplainer:
@@ -1399,6 +1439,13 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
                     lime_explainer.plot_local(exp_list, score, lime_dir, task, idx)
                 except Exception as e:
                     print(f"[ERROR] Failed Sample {idx} {task}: {e}")
+
+        if not _dir_has_png(lime_dir):
+            _write_placeholder_plot(
+                os.path.join(lime_dir, "graphlime_placeholder.png"),
+                "No GraphLIME plots generated",
+                ["GraphLIME failed for all samples."]
+            )
 
     if methods == 'all':
         print("\n[Generating Comprehensive Analysis]")

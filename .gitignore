@@ -60,3 +60,6 @@ __pycache__/
 *.pyc
 .venv/
 BPI_dataset/
+automated_batch_results/
+tests/
+automated_batch_reruns/
