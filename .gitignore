@@ -44,20 +44,13 @@ frontend/dist/
 frontend/.env.local
 frontend/.env.*.local
 
-# ----------------------------
-# Large datasets / local assets (your original rules)
-# ----------------------------
 BPI_Challenge_2017/
 BPI_Models/
 
-# Do NOT ignore requirements.txt (you want this committed)
-# requirements.txt
 
-# Optional: ignore local docs/notebooks (your original rules)
 Predictive_process_monitoring_with_Transformer_Network.pdf
 transformers.ipynb
 
-# --- Do NOT commit local GNN extras (your request) ---
 gnn/
 gnns/graph_lime.py
 node_modules/
@@ -66,3 +59,7 @@ frontend/tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
 .venv/
+BPI_dataset/
+automated_batch_results/
+tests/
+automated_batch_reruns/

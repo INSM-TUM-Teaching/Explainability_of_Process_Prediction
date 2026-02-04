@@ -13,6 +13,7 @@ function formatPredictionTask(task: string | null): string {
   if (!task) return "-";
   const s = task.toLowerCase().trim();
   if (s === "next_activity" || s.includes("next activity")) return "Next Activity Prediction";
+  if (s === "custom_activity" || s.includes("custom")) return "Custom Activity Prediction";
   if (s === "event_time" || s.includes("event time") || s === "timestamp") return "Event Time Prediction";
   if (s === "remaining_time" || s.includes("remaining time")) return "Remaining Time Prediction";
   if (s === "unified") return "Unified Prediction";
@@ -37,7 +38,7 @@ type Step6ReviewProps = {
   modelType: string | null;
   predictionTask: string | null;
   explainMethod: string | null;
-  mappingMode: "auto" | "manual" | null;
+  mappingMode: "manual" | null;
   manualMapping: ManualMapping;
   configMode: "default" | "custom" | null;
 
@@ -47,6 +48,7 @@ type Step6ReviewProps = {
   runId: string | null;
   runStatus: RunStatus | null;
   artifacts: string[];
+  logs: string[];
 
   error: string | null;
 
@@ -68,6 +70,7 @@ export default function Step6Review({
   runId,
   runStatus,
   artifacts,
+  logs,
   error,
   onStartPipeline,
   onViewResults,
@@ -85,10 +88,21 @@ export default function Step6Review({
       : "-";
 
   const backendStatus = runStatus?.status ?? (pipelineStatus === "idle" ? "-" : "queued");
+  const lastLogLine = [...logs].reverse().find((l) => l.trim().length > 0) ?? "-";
+  const etaMinutes = (() => {
+    if (pipelineStatus !== "running") return null;
+    if (progress <= 1 || progress >= 100) return null;
+    const startedAt = runStatus?.started_at ?? runStatus?.created_at ?? null;
+    if (!startedAt) return null;
+    const started = Date.parse(startedAt);
+    if (!Number.isFinite(started)) return null;
+    const elapsedMs = Date.now() - started;
+    if (elapsedMs <= 0) return null;
+    const remainingMs = (elapsedMs * (100 - progress)) / progress;
+    return Math.max(1, Math.ceil(remainingMs / 60000));
+  })();
   const mappingLabel =
-    mappingMode === "auto"
-      ? "Automatic"
-      : mappingMode === "manual"
+    mappingMode === "manual"
       ? `Manual (case_id=${manualMapping.case_id}, activity=${manualMapping.activity}, timestamp=${manualMapping.timestamp}${
           manualMapping.resource ? `, resource=${manualMapping.resource}` : ""
         })`
@@ -97,7 +111,7 @@ export default function Step6Review({
   return (
     <div className="space-y-6 w-full">
       {/* SUMMARY */}
-      <div className="border rounded-xl p-6 bg-white">
+      <div className="border border-brand-100 rounded-xl p-6 bg-white">
         <h2 className="text-lg font-semibold mb-4">Review & Run Pipeline</h2>
 
         <div className="grid grid-cols-2 gap-4 text-sm">
@@ -130,13 +144,13 @@ export default function Step6Review({
 
       {/* READY */}
       {pipelineStatus === "idle" && (
-        <div className="border rounded-xl p-6 bg-blue-50">
+        <div className="border border-brand-200 rounded-xl p-6 bg-brand-50">
           <p className="text-sm text-gray-700 mb-4">
             Your pipeline is configured and ready to run.
           </p>
 
           <button
-            className="px-5 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            className="px-5 py-2 bg-brand-600 text-white rounded hover:bg-brand-700"
             onClick={onStartPipeline}
             disabled={!dataset}
             title={!dataset ? "Upload a dataset first" : undefined}
@@ -148,19 +162,38 @@ export default function Step6Review({
 
       {/* RUNNING */}
       {pipelineStatus === "running" && (
-        <div className="border rounded-xl p-6 bg-white">
+        <div className="border border-brand-100 rounded-xl p-6 bg-white">
           <div className="mb-3 text-sm font-medium">Pipeline Execution in Progress</div>
 
-          <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+          <div className="w-full bg-brand-100 rounded-full h-2 mb-2">
             <div
-              className="bg-blue-600 h-2 rounded-full transition-all"
+              className="h-2 rounded-full transition-all bg-gradient-to-r from-brand-600 to-accent-500"
               style={{ width: `${progress}%` }}
             />
           </div>
 
           <div className="text-sm text-gray-600">
-            {progress}% • backend status: <span className="font-medium">{backendStatus}</span>
+            {progress}% - backend status: <span className="font-medium">{backendStatus}</span>
           </div>
+
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm text-gray-700">
+            <div>
+              <div className="font-medium">{lastLogLine}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Estimated time remaining</div>
+              <div className="font-medium">{etaMinutes ? `${etaMinutes} min` : "-"}</div>
+            </div>
+          </div>
+
+          {logs.length > 0 && (
+            <div className="mt-4">
+              <div className="text-xs text-gray-500 mb-2">Recent logs</div>
+              <pre className="text-xs bg-brand-50 border border-brand-100 rounded-lg p-3 max-h-40 overflow-auto">
+                {logs.slice(-12).join("\n")}
+              </pre>
+            </div>
+          )}
         </div>
       )}
 
@@ -178,7 +211,7 @@ export default function Step6Review({
                 {artifacts.map((a) => (
                   <li key={a}>
                     <a
-                      className="text-blue-700 hover:underline"
+                      className="text-brand-700 hover:underline"
                       href={artifactUrl(runId, a)}
                       target="_blank"
                       rel="noreferrer"
@@ -208,8 +241,9 @@ export default function Step6Review({
 function SummaryItem({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-gray-500 text-xs mb-1">{label}</div>
-      <div className="font-medium text-gray-900 break-words">{value}</div>
+      <div className="text-brand-600 text-xs mb-1">{label}</div>
+      <div className="font-medium text-brand-900 break-words">{value}</div>
     </div>
   );
 }
+

@@ -18,9 +18,18 @@ export type JsonObject = { [key: string]: JsonValue };
 export type DatasetUploadResponse = {
   dataset_id: string;
   stored_path: string;
+  raw_path?: string | null;
+  preprocessed_path?: string | null;
+  split_dataset_path?: string | null;
+  split_paths?: Record<string, string> | null;
+  split_source?: "generated" | "uploaded" | null;
+  split_config?: { test_size: number; val_split: number } | null;
+  is_preprocessed?: boolean;
+  preprocessed_at?: string | null;
   num_events: number;
   num_cases: number;
   columns: string[];
+  column_types: Record<string, "categorical" | "numerical">;
   detected_mapping: Record<string, string>;
   preview: Array<Record<string, JsonValue>>;
 };
@@ -28,9 +37,19 @@ export type DatasetUploadResponse = {
 export type DatasetMeta = {
   dataset_id: string;
   stored_path: string;
+  raw_path?: string | null;
+  preprocessed_path?: string | null;
+  split_dataset_path?: string | null;
+  split_paths?: Record<string, string> | null;
+  split_source?: "generated" | "uploaded" | null;
+  split_config?: { test_size: number; val_split: number } | null;
+  is_preprocessed?: boolean;
+  preprocessed_at?: string | null;
+  preprocessing_options?: Record<string, boolean> | null;
   num_events: number;
   num_cases: number;
   columns: string[];
+  column_types: Record<string, "categorical" | "numerical">;
   detected_mapping: Record<string, string>;
   created_at: string;
 };
@@ -46,14 +65,20 @@ export type RunStatus = {
   error?: string | null;
 };
 
+export type RunLogsRes = {
+  run_id: string;
+  lines: string[];
+};
+
 export type CreateRunReq = {
   dataset_id: string;
   model_type: "gnn" | "transformer";
-  task: "next_activity" | "event_time" | "remaining_time" | "unified";
+  task: "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified";
   config?: Record<string, JsonValue>;
   split?: { test_size: number; val_split: number };
   explainability?: JsonValue; // e.g. "none" | null | {...}
   mapping_mode?: "auto" | "manual";
+  target_column?: string | null;
   column_mapping?: {
     case_id: string;
     activity: string;
@@ -70,6 +95,21 @@ export type CreateRunRes = {
 export type ArtifactsListRes = {
   run_id: string;
   artifacts: string[];
+};
+
+export type PreprocessOptions = {
+  sort_and_normalize_timestamps?: boolean;
+  check_millisecond_order?: boolean;
+  impute_categorical?: boolean;
+  impute_numeric_neighbors?: boolean;
+  drop_missing_timestamps?: boolean;
+  fill_remaining_missing?: boolean;
+  remove_duplicates?: boolean;
+};
+
+export type SplitConfig = {
+  test_size: number;
+  val_split: number;
 };
 
 // -----------------------------
@@ -104,11 +144,19 @@ export async function health(): Promise<{ ok: boolean; service: string }> {
   return (await res.json()) as { ok: boolean; service: string };
 }
 
-export async function uploadDataset(file: File): Promise<DatasetUploadResponse> {
+export async function uploadDataset(
+  file: File,
+  opts?: { preprocessed?: boolean }
+): Promise<DatasetUploadResponse> {
   const form = new FormData();
   form.append("file", file);
 
-  const res = await apiFetch(`${API_BASE}/datasets/upload`, {
+  const url =
+    opts?.preprocessed === true
+      ? `${API_BASE}/datasets/upload?preprocessed=true`
+      : `${API_BASE}/datasets/upload`;
+
+  const res = await apiFetch(url, {
     method: "POST",
     body: form,
   });
@@ -121,6 +169,82 @@ export async function getDataset(dataset_id: string): Promise<DatasetMeta> {
     `${API_BASE}/datasets/${encodeURIComponent(dataset_id)}`
   );
   return (await res.json()) as DatasetMeta;
+}
+
+export async function preprocessDataset(
+  dataset_id: string,
+  options: PreprocessOptions
+): Promise<DatasetUploadResponse> {
+  const res = await apiFetch(
+    `${API_BASE}/datasets/${encodeURIComponent(dataset_id)}/preprocess`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options ?? {}),
+    }
+  );
+  return (await res.json()) as DatasetUploadResponse;
+}
+
+export function preprocessedDatasetUrl(dataset_id: string): string {
+  return `${API_BASE}/datasets/${encodeURIComponent(dataset_id)}/preprocessed`;
+}
+
+export async function generateSplits(
+  dataset_id: string,
+  config: SplitConfig
+): Promise<DatasetUploadResponse> {
+  const res = await apiFetch(
+    `${API_BASE}/datasets/${encodeURIComponent(dataset_id)}/splits/generate`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    }
+  );
+  return (await res.json()) as DatasetUploadResponse;
+}
+
+export async function uploadSplits(
+  dataset_id: string,
+  train: File,
+  val: File,
+  test: File
+): Promise<DatasetUploadResponse> {
+  const form = new FormData();
+  form.append("train", train);
+  form.append("val", val);
+  form.append("test", test);
+
+  const res = await apiFetch(
+    `${API_BASE}/datasets/${encodeURIComponent(dataset_id)}/splits/upload`,
+    {
+      method: "POST",
+      body: form,
+    }
+  );
+  return (await res.json()) as DatasetUploadResponse;
+}
+
+export async function uploadSplitsNewDataset(
+  train: File,
+  val: File,
+  test: File
+): Promise<DatasetUploadResponse> {
+  const form = new FormData();
+  form.append("train", train);
+  form.append("val", val);
+  form.append("test", test);
+
+  const res = await apiFetch(`${API_BASE}/datasets/splits/upload`, {
+    method: "POST",
+    body: form,
+  });
+  return (await res.json()) as DatasetUploadResponse;
+}
+
+export function splitDownloadUrl(dataset_id: string, split: "train" | "val" | "test"): string {
+  return `${API_BASE}/datasets/${encodeURIComponent(dataset_id)}/splits/${split}`;
 }
 
 export async function createRun(body: CreateRunReq): Promise<CreateRunRes> {
@@ -140,6 +264,13 @@ export async function createRun(body: CreateRunReq): Promise<CreateRunRes> {
 export async function getRun(run_id: string): Promise<RunStatus> {
   const res = await apiFetch(`${API_BASE}/runs/${encodeURIComponent(run_id)}`);
   return (await res.json()) as RunStatus;
+}
+
+export async function getRunLogs(run_id: string, tail = 50): Promise<RunLogsRes> {
+  const res = await apiFetch(
+    `${API_BASE}/runs/${encodeURIComponent(run_id)}/logs?tail=${tail}`
+  );
+  return (await res.json()) as RunLogsRes;
 }
 
 export async function pollRunUntilDone(
@@ -174,6 +305,11 @@ export function artifactUrl(run_id: string, artifact_path: string): string {
   const rid = encodeURIComponent(run_id);
   const ap = encodeArtifactPath(artifact_path);
   return `${API_BASE}/runs/${rid}/artifacts/${ap}`;
+}
+
+export function artifactsZipUrl(run_id: string): string {
+  const rid = encodeURIComponent(run_id);
+  return `${API_BASE}/runs/${rid}/artifacts.zip`;
 }
 
 export async function fetchArtifactBlob(

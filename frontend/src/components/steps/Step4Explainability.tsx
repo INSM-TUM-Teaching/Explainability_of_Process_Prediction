@@ -82,7 +82,7 @@ export default function Step4Explainability({
       {/* Header */}
       <div>
         <h2 className="text-2xl font-semibold">Select Explainability Method</h2>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-brand-600">
           Methods are filtered automatically based on the selected model type.
         </p>
       </div>
@@ -103,7 +103,7 @@ export default function Step4Explainability({
                 key={opt.value}
                 className={[
                   "border rounded-xl p-6 bg-white cursor-pointer transition",
-                  selected ? "border-blue-500 ring-1 ring-blue-200" : "hover:border-gray-300",
+                  selected ? "border-brand-500 ring-1 ring-brand-200" : "hover:border-gray-300",
                 ].join(" ")}
                 onClick={() => onSelect(opt.value)}
                 role="button"
@@ -121,11 +121,11 @@ export default function Step4Explainability({
                   <div
                     className={[
                       "h-5 w-5 rounded-full border flex items-center justify-center mt-1",
-                      selected ? "border-blue-600" : "border-gray-300",
+                      selected ? "border-brand-600" : "border-gray-300",
                     ].join(" ")}
                     aria-hidden="true"
                   >
-                    {selected && <div className="h-3 w-3 rounded-full bg-blue-600" />}
+                    {selected && <div className="h-3 w-3 rounded-full bg-brand-600" />}
                   </div>
                 </div>
               </div>
@@ -136,7 +136,7 @@ export default function Step4Explainability({
 
       {/* Info */}
       <Card title="Note">
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-gray-700">
+        <div className="bg-brand-50 border border-brand-200 rounded-lg p-4 text-sm text-gray-700">
           <ul className="list-disc ml-5 space-y-1">
             <li>Transformer models: LIME, SHAP, both, or none</li>
             <li>GNN models: Gradient-Based, GraphLIME, both, or none</li>

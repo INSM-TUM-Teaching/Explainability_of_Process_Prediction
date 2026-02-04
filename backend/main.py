@@ -5,14 +5,18 @@ import uuid
 import json
 import shutil
 import subprocess
+import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
+import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from collections import deque
+import re
 
 # -----------------------------------------------------------------------------
 # App
@@ -53,7 +57,7 @@ RUNS_DIR = os.path.join(STORAGE_DIR, "runs")
 for d in (STORAGE_DIR, UPLOAD_DIR, DATASETS_DIR, RUNS_DIR):
     os.makedirs(d, exist_ok=True)
 
-MAX_UPLOAD_MB = 100
+MAX_UPLOAD_MB = 400
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 # Use the same Python interpreter that runs uvicorn (your backend/.venv)
@@ -165,9 +169,18 @@ def detect_and_standardize_columns(
 class DatasetUploadResponse(BaseModel):
     dataset_id: str
     stored_path: str
+    raw_path: Optional[str] = None
+    preprocessed_path: Optional[str] = None
+    split_dataset_path: Optional[str] = None
+    split_paths: Optional[Dict[str, str]] = None
+    split_source: Optional[str] = None  # generated | uploaded
+    split_config: Optional[Dict[str, float]] = None
+    is_preprocessed: bool = False
+    preprocessed_at: Optional[str] = None
     num_events: int
     num_cases: int
     columns: List[str]
+    column_types: Dict[str, str] = Field(default_factory=dict)
     detected_mapping: Dict[str, str]
     preview: List[Dict[str, Any]]
 
@@ -175,9 +188,19 @@ class DatasetUploadResponse(BaseModel):
 class DatasetMeta(BaseModel):
     dataset_id: str
     stored_path: str
+    raw_path: Optional[str] = None
+    preprocessed_path: Optional[str] = None
+    split_dataset_path: Optional[str] = None
+    split_paths: Optional[Dict[str, str]] = None
+    split_source: Optional[str] = None
+    split_config: Optional[Dict[str, float]] = None
+    is_preprocessed: bool = False
+    preprocessed_at: Optional[str] = None
+    preprocessing_options: Optional[Dict[str, bool]] = None
     num_events: int
     num_cases: int
     columns: List[str]
+    column_types: Dict[str, str] = Field(default_factory=dict)
     detected_mapping: Dict[str, str]
     created_at: str
 
@@ -193,10 +216,11 @@ class ColumnMapping(BaseModel):
 class RunCreateRequest(BaseModel):
     dataset_id: str
     model_type: str = Field(..., description="transformer | gnn")
-    task: str = Field(..., description="next_activity | event_time | remaining_time | unified (gnn)")
+    task: str = Field(..., description="next_activity | custom_activity | event_time | remaining_time | unified (gnn)")
     config: Dict[str, Any] = Field(default_factory=dict)
     split: Dict[str, float] = Field(default_factory=lambda: {"test_size": 0.2, "val_split": 0.5})
     explainability: Optional[Any] = None
+    target_column: Optional[str] = None
     mapping_mode: Optional[str] = Field(
         default=None, description="auto | manual (optional; defaults to auto)"
     )
@@ -219,6 +243,21 @@ class RunStatus(BaseModel):
     error: Optional[str] = None
 
 
+class PreprocessOptions(BaseModel):
+    sort_and_normalize_timestamps: bool = True
+    check_millisecond_order: bool = True
+    impute_categorical: bool = True
+    impute_numeric_neighbors: bool = True
+    drop_missing_timestamps: bool = True
+    fill_remaining_missing: bool = True
+    remove_duplicates: bool = True
+
+
+class SplitConfig(BaseModel):
+    test_size: float = 0.2
+    val_split: float = 0.5
+
+
 # -----------------------------------------------------------------------------
 # Dataset helpers
 # -----------------------------------------------------------------------------
@@ -239,6 +278,60 @@ def _load_dataset_meta(dataset_id: str) -> DatasetMeta:
     if not os.path.exists(meta_path):
         raise HTTPException(status_code=404, detail="Dataset not found")
     return DatasetMeta(**_read_json(meta_path))
+
+
+def _detect_case_column(df: pd.DataFrame) -> Optional[str]:
+    case_patterns = ["case:id", "case:concept:name", "CaseID", "case_id", "caseid", "Case ID", "Case_ID"]
+    for col in df.columns:
+        if col in case_patterns:
+            return col
+    return None
+
+
+def _infer_column_types(df: pd.DataFrame) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for col in df.columns:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            out[col] = "numerical"
+        else:
+            out[col] = "categorical"
+    return out
+
+
+def _write_split_files(
+    df: pd.DataFrame,
+    ds_dir: str,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+) -> Tuple[str, Dict[str, str]]:
+    splits_dir = os.path.join(ds_dir, "splits")
+    os.makedirs(splits_dir, exist_ok=True)
+
+    train_path = os.path.join(splits_dir, "train.csv")
+    val_path = os.path.join(splits_dir, "val.csv")
+    test_path = os.path.join(splits_dir, "test.csv")
+
+    train_df.to_csv(train_path, index=False)
+    val_df.to_csv(val_path, index=False)
+    test_df.to_csv(test_path, index=False)
+
+    split_df = pd.concat(
+        [
+            train_df.assign(__split="train"),
+            val_df.assign(__split="val"),
+            test_df.assign(__split="test"),
+        ],
+        ignore_index=True,
+    )
+    split_dataset_path = os.path.join(ds_dir, "dataset_with_splits.csv")
+    split_df.to_csv(split_dataset_path, index=False)
+
+    return split_dataset_path, {
+        "train": train_path,
+        "val": val_path,
+        "test": test_path,
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -276,7 +369,7 @@ def health():
 
 
 @app.post("/datasets/upload", response_model=DatasetUploadResponse)
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(file: UploadFile = File(...), preprocessed: bool = False):
     """
     Upload a CSV or XES dataset. Stores it on disk, converts XES→CSV when needed,
     parses it, detects column mapping, and writes metadata to backend/storage/datasets/<dataset_id>/meta.json
@@ -285,6 +378,8 @@ async def upload_dataset(file: UploadFile = File(...)):
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     if ext not in {"csv", "xes"}:
         raise HTTPException(status_code=400, detail="Only CSV or XES files are supported.")
+    if preprocessed and ext != "csv":
+        raise HTTPException(status_code=400, detail="Preprocessed uploads must be CSV.")
 
     dataset_id = str(uuid.uuid4())
     ds_dir = _dataset_dir(dataset_id)
@@ -340,28 +435,8 @@ async def upload_dataset(file: UploadFile = File(...)):
         shutil.rmtree(ds_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=f"Failed to parse dataset: {str(e)}")
 
-    # Preprocess the CSV (clean, deduplicate, handle missing values)
-    if PREPROCESSOR_AVAILABLE:
-        try:
-            print(f"[Preprocessing] Cleaning dataset: {stored_path}")
-            df = preprocess_event_log(stored_path, stored_path)
-            print(f"[Preprocessing] Complete. Events: {len(df):,}")
-        except Exception as e:
-            print(f"[WARNING] Preprocessing failed: {e}")
-            print("[WARNING] Continuing with raw CSV...")
-            # If preprocessing fails, reload the raw CSV
-            df = pd.read_csv(stored_path)
-    else:
-        print("[WARNING] Preprocessor not available - skipping data cleaning")
-        df = pd.read_csv(stored_path)
-
-    # Save preprocessed CSV with ORIGINAL column names (no auto-detection)
-    # Column mapping will happen later when user selects Auto-Detect or Manual
-    try:
-        df.to_csv(stored_path, index=False)
-    except Exception as e:
-        shutil.rmtree(ds_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Failed to write preprocessed dataset: {str(e)}")
+    # Read raw CSV (no preprocessing on upload)
+    df = pd.read_csv(stored_path)
 
     num_events = int(len(df))
     
@@ -379,27 +454,441 @@ async def upload_dataset(file: UploadFile = File(...)):
         num_cases = 0  # Unknown until column mapping
 
     preview_rows = df.head(20).to_dict(orient="records")
+    column_types = _infer_column_types(df)
+
+    preprocessed_at = _utc_now() if preprocessed else None
 
     meta = DatasetMeta(
         dataset_id=dataset_id,
         stored_path=stored_path,
+        raw_path=stored_path,
+        preprocessed_path=None,
+        split_dataset_path=None,
+        split_paths=None,
+        split_source=None,
+        split_config=None,
+        is_preprocessed=False,
+        preprocessed_at=preprocessed_at,
+        preprocessing_options=None,
         num_events=num_events,
         num_cases=num_cases,
         columns=list(df.columns),
-        detected_mapping={},  # No auto-detection - user will choose later
+        column_types=column_types,
+        detected_mapping={},  # No auto-detection
         created_at=_utc_now(),
     )
+    if preprocessed:
+        meta.preprocessed_path = stored_path
+        meta.is_preprocessed = True
     _write_json(_dataset_meta_path(dataset_id), meta.model_dump())
 
     return DatasetUploadResponse(
         dataset_id=dataset_id,
         stored_path=stored_path,
+        raw_path=stored_path,
+        preprocessed_path=meta.preprocessed_path,
+        split_dataset_path=None,
+        split_paths=None,
+        split_source=None,
+        split_config=None,
+        is_preprocessed=meta.is_preprocessed,
+        preprocessed_at=preprocessed_at,
         num_events=num_events,
         num_cases=num_cases,
         columns=list(df.columns),
+        column_types=column_types,
         detected_mapping={},  # No auto-detection - user will choose later
         preview=preview_rows,
     )
+
+
+@app.post("/datasets/{dataset_id}/preprocess", response_model=DatasetUploadResponse)
+def preprocess_dataset(dataset_id: str, options: PreprocessOptions):
+    """
+    Run preprocessing on the raw dataset with user-selected options.
+    """
+    if not PREPROCESSOR_AVAILABLE:
+        raise HTTPException(status_code=500, detail="Preprocessor not available on server.")
+
+    meta = _load_dataset_meta(dataset_id)
+    raw_path = meta.raw_path or meta.stored_path
+    if not raw_path or not os.path.exists(raw_path):
+        raise HTTPException(status_code=404, detail="Raw dataset file not found.")
+
+    ds_dir = _dataset_dir(dataset_id)
+    preprocessed_path = meta.preprocessed_path or os.path.join(ds_dir, "dataset_preprocessed.csv")
+
+    try:
+        print(f"[Preprocessing] Cleaning dataset: {raw_path}")
+        df = preprocess_event_log(raw_path, preprocessed_path, options.model_dump())
+        print(f"[Preprocessing] Complete. Events: {len(df):,}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Preprocessing failed: {str(e)}")
+
+    num_events = int(len(df))
+
+    case_col = None
+    case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
+    for col in df.columns:
+        if col in case_patterns:
+            case_col = col
+            break
+
+    if case_col:
+        num_cases = int(df[case_col].nunique())
+    else:
+        num_cases = 0
+
+    preview_rows = df.head(20).to_dict(orient="records")
+    column_types = _infer_column_types(df)
+    processed_at = _utc_now()
+
+    updated_meta = DatasetMeta(
+        dataset_id=dataset_id,
+        stored_path=preprocessed_path,
+        raw_path=raw_path,
+        preprocessed_path=preprocessed_path,
+        split_dataset_path=meta.split_dataset_path,
+        split_paths=meta.split_paths,
+        split_source=meta.split_source,
+        split_config=meta.split_config,
+        is_preprocessed=True,
+        preprocessed_at=processed_at,
+        preprocessing_options=options.model_dump(),
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(df.columns),
+        column_types=column_types,
+        detected_mapping=meta.detected_mapping,
+        created_at=meta.created_at,
+    )
+    _write_json(_dataset_meta_path(dataset_id), updated_meta.model_dump())
+
+    return DatasetUploadResponse(
+        dataset_id=dataset_id,
+        stored_path=preprocessed_path,
+        raw_path=raw_path,
+        preprocessed_path=preprocessed_path,
+        split_dataset_path=meta.split_dataset_path,
+        split_paths=meta.split_paths,
+        split_source=meta.split_source,
+        split_config=meta.split_config,
+        is_preprocessed=True,
+        preprocessed_at=processed_at,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(df.columns),
+        column_types=column_types,
+        detected_mapping=meta.detected_mapping,
+        preview=preview_rows,
+    )
+
+
+def _validate_split_config(cfg: SplitConfig) -> None:
+    if cfg.test_size <= 0 or cfg.test_size >= 1:
+        raise HTTPException(status_code=400, detail="test_size must be between 0 and 1.")
+    if cfg.val_split <= 0 or cfg.val_split >= 1:
+        raise HTTPException(status_code=400, detail="val_split must be between 0 and 1.")
+
+
+def _compute_split_frames(df: pd.DataFrame, cfg: SplitConfig) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    case_col = _detect_case_column(df)
+    rng = np.random.RandomState(42)
+
+    if case_col:
+        cases = df[case_col].dropna().unique()
+        rng.shuffle(cases)
+        n_cases = len(cases)
+        n_test = max(1, int(n_cases * cfg.test_size)) if n_cases > 0 else 0
+        n_remaining = max(0, n_cases - n_test)
+        n_val = max(1, int(n_remaining * cfg.val_split)) if n_remaining > 0 else 0
+
+        test_cases = set(cases[:n_test])
+        val_cases = set(cases[n_test:n_test + n_val])
+        train_cases = set(cases[n_test + n_val:])
+
+        train_df = df[df[case_col].isin(train_cases)].copy()
+        val_df = df[df[case_col].isin(val_cases)].copy()
+        test_df = df[df[case_col].isin(test_cases)].copy()
+    else:
+        idx = np.arange(len(df))
+        rng.shuffle(idx)
+        n_total = len(idx)
+        n_test = int(n_total * cfg.test_size)
+        n_remaining = max(0, n_total - n_test)
+        n_val = int(n_remaining * cfg.val_split)
+
+        test_idx = idx[:n_test]
+        val_idx = idx[n_test:n_test + n_val]
+        train_idx = idx[n_test + n_val:]
+
+        train_df = df.iloc[train_idx].copy()
+        val_df = df.iloc[val_idx].copy()
+        test_df = df.iloc[test_idx].copy()
+
+    return train_df, val_df, test_df
+
+
+async def _save_upload_csv(file: UploadFile, out_path: str) -> pd.DataFrame:
+    filename = file.filename or ""
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are supported for splits.")
+
+    size = 0
+    try:
+        with open(out_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Max allowed is {MAX_UPLOAD_MB} MB.",
+                    )
+                out.write(chunk)
+    finally:
+        await file.close()
+
+    try:
+        return pd.read_csv(out_path)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+
+
+@app.post("/datasets/{dataset_id}/splits/generate", response_model=DatasetUploadResponse)
+def generate_splits(dataset_id: str, cfg: SplitConfig):
+    _validate_split_config(cfg)
+
+    meta = _load_dataset_meta(dataset_id)
+    source_path = meta.preprocessed_path or meta.raw_path or meta.stored_path
+    if not source_path or not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail="Dataset file not found.")
+
+    df = pd.read_csv(source_path)
+    if df.empty:
+        raise HTTPException(status_code=400, detail="Dataset is empty; cannot generate splits.")
+
+    train_df, val_df, test_df = _compute_split_frames(df, cfg)
+    split_dataset_path, split_paths = _write_split_files(df, _dataset_dir(dataset_id), train_df, val_df, test_df)
+
+    num_events = int(len(df))
+    case_col = _detect_case_column(df)
+    num_cases = int(df[case_col].nunique()) if case_col else 0
+
+    split_df = pd.read_csv(split_dataset_path)
+    preview_rows = split_df.head(20).to_dict(orient="records")
+    column_types = _infer_column_types(split_df)
+
+    updated_meta = DatasetMeta(
+        dataset_id=dataset_id,
+        stored_path=split_dataset_path,
+        raw_path=meta.raw_path,
+        preprocessed_path=meta.preprocessed_path,
+        split_dataset_path=split_dataset_path,
+        split_paths=split_paths,
+        split_source="generated",
+        split_config={"test_size": cfg.test_size, "val_split": cfg.val_split},
+        is_preprocessed=meta.is_preprocessed,
+        preprocessed_at=meta.preprocessed_at,
+        preprocessing_options=meta.preprocessing_options,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(split_df.columns),
+        column_types=column_types,
+        detected_mapping=meta.detected_mapping,
+        created_at=meta.created_at,
+    )
+    _write_json(_dataset_meta_path(dataset_id), updated_meta.model_dump())
+
+    return DatasetUploadResponse(
+        dataset_id=dataset_id,
+        stored_path=split_dataset_path,
+        raw_path=meta.raw_path,
+        preprocessed_path=meta.preprocessed_path,
+        split_dataset_path=split_dataset_path,
+        split_paths=split_paths,
+        split_source="generated",
+        split_config={"test_size": cfg.test_size, "val_split": cfg.val_split},
+        is_preprocessed=meta.is_preprocessed,
+        preprocessed_at=meta.preprocessed_at,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(split_df.columns),
+        column_types=column_types,
+        detected_mapping=meta.detected_mapping,
+        preview=preview_rows,
+    )
+
+
+@app.post("/datasets/{dataset_id}/splits/upload", response_model=DatasetUploadResponse)
+async def upload_splits(dataset_id: str, train: UploadFile = File(...), val: UploadFile = File(...), test: UploadFile = File(...)):
+    meta = _load_dataset_meta(dataset_id)
+    ds_dir = _dataset_dir(dataset_id)
+    splits_dir = os.path.join(ds_dir, "splits")
+    os.makedirs(splits_dir, exist_ok=True)
+
+    train_path = os.path.join(splits_dir, "train.csv")
+    val_path = os.path.join(splits_dir, "val.csv")
+    test_path = os.path.join(splits_dir, "test.csv")
+
+    train_df = await _save_upload_csv(train, train_path)
+    val_df = await _save_upload_csv(val, val_path)
+    test_df = await _save_upload_csv(test, test_path)
+
+    if list(train_df.columns) != list(val_df.columns) or list(train_df.columns) != list(test_df.columns):
+        raise HTTPException(status_code=400, detail="Train/val/test columns must match.")
+
+    split_dataset_path, split_paths = _write_split_files(train_df, ds_dir, train_df, val_df, test_df)
+
+    combined_df = pd.read_csv(split_dataset_path)
+    num_events = int(len(combined_df))
+    case_col = _detect_case_column(combined_df)
+    num_cases = int(combined_df[case_col].nunique()) if case_col else 0
+
+    preview_rows = combined_df.head(20).to_dict(orient="records")
+    column_types = _infer_column_types(combined_df)
+
+    updated_meta = DatasetMeta(
+        dataset_id=dataset_id,
+        stored_path=split_dataset_path,
+        raw_path=meta.raw_path,
+        preprocessed_path=meta.preprocessed_path,
+        split_dataset_path=split_dataset_path,
+        split_paths=split_paths,
+        split_source="uploaded",
+        split_config=meta.split_config,
+        is_preprocessed=meta.is_preprocessed,
+        preprocessed_at=meta.preprocessed_at,
+        preprocessing_options=meta.preprocessing_options,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(combined_df.columns),
+        column_types=column_types,
+        detected_mapping=meta.detected_mapping,
+        created_at=meta.created_at,
+    )
+    _write_json(_dataset_meta_path(dataset_id), updated_meta.model_dump())
+
+    return DatasetUploadResponse(
+        dataset_id=dataset_id,
+        stored_path=split_dataset_path,
+        raw_path=meta.raw_path,
+        preprocessed_path=meta.preprocessed_path,
+        split_dataset_path=split_dataset_path,
+        split_paths=split_paths,
+        split_source="uploaded",
+        split_config=meta.split_config,
+        is_preprocessed=meta.is_preprocessed,
+        preprocessed_at=meta.preprocessed_at,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(combined_df.columns),
+        column_types=column_types,
+        detected_mapping=meta.detected_mapping,
+        preview=preview_rows,
+    )
+
+
+@app.post("/datasets/splits/upload", response_model=DatasetUploadResponse)
+async def upload_splits_new_dataset(train: UploadFile = File(...), val: UploadFile = File(...), test: UploadFile = File(...)):
+    dataset_id = str(uuid.uuid4())
+    ds_dir = _dataset_dir(dataset_id)
+    os.makedirs(ds_dir, exist_ok=True)
+
+    splits_dir = os.path.join(ds_dir, "splits")
+    os.makedirs(splits_dir, exist_ok=True)
+
+    train_path = os.path.join(splits_dir, "train.csv")
+    val_path = os.path.join(splits_dir, "val.csv")
+    test_path = os.path.join(splits_dir, "test.csv")
+
+    train_df = await _save_upload_csv(train, train_path)
+    val_df = await _save_upload_csv(val, val_path)
+    test_df = await _save_upload_csv(test, test_path)
+
+    if list(train_df.columns) != list(val_df.columns) or list(train_df.columns) != list(test_df.columns):
+        raise HTTPException(status_code=400, detail="Train/val/test columns must match.")
+
+    split_dataset_path, split_paths = _write_split_files(train_df, ds_dir, train_df, val_df, test_df)
+
+    combined_df = pd.read_csv(split_dataset_path)
+    num_events = int(len(combined_df))
+    case_col = _detect_case_column(combined_df)
+    num_cases = int(combined_df[case_col].nunique()) if case_col else 0
+
+    preview_rows = combined_df.head(20).to_dict(orient="records")
+    column_types = _infer_column_types(combined_df)
+    created_at = _utc_now()
+
+    meta = DatasetMeta(
+        dataset_id=dataset_id,
+        stored_path=split_dataset_path,
+        raw_path=None,
+        preprocessed_path=split_dataset_path,
+        split_dataset_path=split_dataset_path,
+        split_paths=split_paths,
+        split_source="uploaded",
+        split_config=None,
+        is_preprocessed=True,
+        preprocessed_at=created_at,
+        preprocessing_options=None,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(combined_df.columns),
+        column_types=column_types,
+        detected_mapping={},
+        created_at=created_at,
+    )
+    _write_json(_dataset_meta_path(dataset_id), meta.model_dump())
+
+    return DatasetUploadResponse(
+        dataset_id=dataset_id,
+        stored_path=split_dataset_path,
+        raw_path=None,
+        preprocessed_path=split_dataset_path,
+        split_dataset_path=split_dataset_path,
+        split_paths=split_paths,
+        split_source="uploaded",
+        split_config=None,
+        is_preprocessed=True,
+        preprocessed_at=created_at,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(combined_df.columns),
+        column_types=column_types,
+        detected_mapping={},
+        preview=preview_rows,
+    )
+
+
+@app.get("/datasets/{dataset_id}/splits/{split_name}")
+def download_split(dataset_id: str, split_name: str):
+    if split_name not in {"train", "val", "test"}:
+        raise HTTPException(status_code=400, detail="Invalid split name.")
+
+    meta = _load_dataset_meta(dataset_id)
+    if not meta.split_paths or split_name not in meta.split_paths:
+        raise HTTPException(status_code=404, detail="Split not available.")
+
+    path = meta.split_paths[split_name]
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Split file not found.")
+
+    return FileResponse(path, filename=f"{split_name}.csv")
+
+
+@app.get("/datasets/{dataset_id}/preprocessed")
+def download_preprocessed_dataset(dataset_id: str):
+    """
+    Download the preprocessed dataset CSV (if available).
+    """
+    meta = _load_dataset_meta(dataset_id)
+    if not meta.preprocessed_path or not os.path.exists(meta.preprocessed_path):
+        raise HTTPException(status_code=404, detail="Preprocessed dataset not available.")
+
+    return FileResponse(meta.preprocessed_path, filename="dataset_preprocessed.csv")
 
 
 @app.get("/datasets/{dataset_id}", response_model=DatasetMeta)
@@ -433,6 +922,7 @@ def create_run(req: RunCreateRequest):
         "config": req.config,
         "split": req.split,
         "explainability": req.explainability,
+        "target_column": req.target_column,
         "mapping_mode": req.mapping_mode,
         "column_mapping": req.column_mapping.model_dump() if req.column_mapping else None,
         "created_at": _utc_now(),
@@ -477,6 +967,27 @@ def get_run(run_id: str):
     return RunStatus(**status)
 
 
+@app.get("/runs/{run_id}/logs")
+def get_run_logs(run_id: str, tail: int = 50):
+    """
+    Fetch last N lines from the run logs.
+    """
+    rdir = _run_dir(run_id)
+    log_path = os.path.join(rdir, "logs.txt")
+    if not os.path.exists(log_path):
+        raise HTTPException(status_code=404, detail="Run logs not found")
+
+    tail = max(1, min(int(tail), 500))
+    ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+    lines = deque(maxlen=tail)
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            clean = ansi_re.sub("", line).replace("\r", "").rstrip("\n")
+            lines.append(clean)
+
+    return {"run_id": run_id, "lines": list(lines)}
+
+
 @app.get("/runs/{run_id}/artifacts")
 def list_artifacts(run_id: str):
     """
@@ -517,3 +1028,27 @@ def get_artifact(run_id: str, artifact_path: str):
         raise HTTPException(status_code=404, detail="Artifact not found")
 
     return FileResponse(full)
+
+
+@app.get("/runs/{run_id}/artifacts.zip")
+def download_artifacts_zip(run_id: str):
+    """
+    Download all artifacts as a ZIP archive.
+    """
+    rdir = _run_dir(run_id)
+    if not os.path.exists(rdir):
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    artifacts_dir = _run_artifacts_dir(run_id)
+    if not os.path.exists(artifacts_dir):
+        raise HTTPException(status_code=404, detail="Artifacts not found")
+
+    zip_path = os.path.join(rdir, "artifacts.zip")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(artifacts_dir):
+            for f in files:
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, artifacts_dir)
+                zf.write(full, arcname=rel)
+
+    return FileResponse(zip_path, filename=f"run_{run_id}_artifacts.zip")

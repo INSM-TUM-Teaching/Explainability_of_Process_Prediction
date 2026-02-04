@@ -1,0 +1,36 @@
+{
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "results": [
+    {
+      "name": "pipeline_transformer:next_activity",
+      "success": true,
+      "details": {
+        "model_type": "transformer",
+        "task": "next_activity",
+        "dataset_id": "15e12add-92ce-4ccf-b2cb-f842ee40a179",
+        "run_id": "f6ce7e0e-fefa-439b-8ad1-c9bf4d60d2c2",
+        "final_status": {
+          "run_id": "f6ce7e0e-fefa-439b-8ad1-c9bf4d60d2c2",
+          "status": "succeeded",
+          "created_at": "2026-01-21T06:04:21.077942Z",
+          "updated_at": "2026-01-21T06:04:53.355751Z",
+          "started_at": "2026-01-21T06:04:21.178701Z",
+          "finished_at": "2026-01-21T06:04:53.355751Z",
+          "pid": 3100,
+          "error": null
+        },
+        "artifacts": [
+          "metrics.json",
+          "next_activity_predictions.csv",
+          "next_activity_training_history.png",
+          "next_activity_transformer.keras",
+          "summary.json"
+        ],
+        "artifacts_zip": "tests\\test_reports\\artifacts_f6ce7e0e-fefa-439b-8ad1-c9bf4d60d2c2.zip"
+      }
+    }
+  ],
+  "generated_at": "2026-01-21T07:04:55.494274"
+}

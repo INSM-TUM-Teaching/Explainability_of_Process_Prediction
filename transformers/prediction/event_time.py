@@ -33,7 +33,9 @@ class EventTimePredictor:
         if len(available_cols) != len(required_cols):
             raise ValueError(f"Missing required columns. Expected: {required_cols}, Found: {available_cols}")
         
-        df = df[required_cols].copy()
+        split_col = "__split" if "__split" in df.columns else None
+        select_cols = required_cols + ([split_col] if split_col else [])
+        df = df[select_cols].copy()
         
         df['time:timestamp'] = pd.to_datetime(df['time:timestamp'])
         
@@ -42,55 +44,99 @@ class EventTimePredictor:
         self.label_encoder.fit(df['concept:name'])
         df['activity_encoded'] = self.label_encoder.transform(df['concept:name'])
         
-        grouped = df.groupby('case:concept:name')
-        
-        sequences = []
-        temporal_features = []
-        next_event_times = []
-        
-        for case_id, group in grouped:
-            activities = group['activity_encoded'].values
-            timestamps = group['time:timestamp'].values
-            fvt1_vals = group['fvt1'].values
-            fvt2_vals = group['fvt2'].values
-            fvt3_vals = group['fvt3'].values
+        def build_samples(sub_df):
+            grouped = sub_df.groupby('case:concept:name')
+            sequences = []
+            temporal_features = []
+            next_event_times = []
+            time_sequences = []
+
+            for case_id, group in grouped:
+                activities = group['activity_encoded'].values
+                timestamps = group['time:timestamp'].values
+                fvt1_vals = group['fvt1'].values
+                fvt2_vals = group['fvt2'].values
+                fvt3_vals = group['fvt3'].values
+                case_start = timestamps[0]
+
+                for i in range(1, len(activities)):
+                    seq = activities[:i]
+                    temp_feat = [fvt1_vals[i], fvt2_vals[i], fvt3_vals[i]]
+                    time_to_next = (timestamps[i] - timestamps[i-1]).astype('timedelta64[s]').astype(float) / 86400
+                    time_seq = ((timestamps[:i] - case_start).astype('timedelta64[s]').astype(float) / 86400)
+
+                    sequences.append(seq)
+                    temporal_features.append(temp_feat)
+                    next_event_times.append(time_to_next)
+                    time_sequences.append(time_seq)
+
+            return sequences, np.array(temporal_features), np.array(next_event_times), time_sequences
+
+        if split_col:
+            split_values = set(df[split_col].dropna().unique().tolist())
+            if not {"train", "val", "test"}.issubset(split_values):
+                raise ValueError("Split column must include train, val, and test values.")
+
+            train_df = df[df[split_col] == "train"].drop(columns=[split_col])
+            val_df = df[df[split_col] == "val"].drop(columns=[split_col])
+            test_df = df[df[split_col] == "test"].drop(columns=[split_col])
+
+            seq_train, X_temp_train, y_train, time_train = build_samples(train_df)
+            seq_val, X_temp_val, y_val, time_val = build_samples(val_df)
+            seq_test, X_temp_test, y_test, time_test = build_samples(test_df)
+
+            X_seq_train = keras.preprocessing.sequence.pad_sequences(
+                seq_train, maxlen=self.max_len, padding='pre', value=0
+            ) + 1
+            X_seq_val = keras.preprocessing.sequence.pad_sequences(
+                seq_val, maxlen=self.max_len, padding='pre', value=0
+            ) + 1
+            X_seq_test = keras.preprocessing.sequence.pad_sequences(
+                seq_test, maxlen=self.max_len, padding='pre', value=0
+            ) + 1
+            X_time_train = keras.preprocessing.sequence.pad_sequences(
+                time_train, maxlen=self.max_len, padding='pre', value=0
+            )
+            X_time_val = keras.preprocessing.sequence.pad_sequences(
+                time_val, maxlen=self.max_len, padding='pre', value=0
+            )
+            X_time_test = keras.preprocessing.sequence.pad_sequences(
+                time_test, maxlen=self.max_len, padding='pre', value=0
+            )
+
+            X_temp_train_scaled = self.scaler.fit_transform(X_temp_train)
+            X_temp_val_scaled = self.scaler.transform(X_temp_val) if len(X_temp_val) else X_temp_val
+            X_temp_test_scaled = self.scaler.transform(X_temp_test) if len(X_temp_test) else X_temp_test
+        else:
+            sequences, X_temp, y_event_time, time_seq = build_samples(df)
+            print(f"Total training samples: {len(sequences):,}")
+            print(f"Example sequence length range: {min(map(len, sequences))} to {max(map(len, sequences))}")
+
+            X_seq = keras.preprocessing.sequence.pad_sequences(
+                sequences, maxlen=self.max_len, padding='pre', value=0
+            ) + 1
+            X_time = keras.preprocessing.sequence.pad_sequences(
+                time_seq, maxlen=self.max_len, padding='pre', value=0
+            )
+
+            X_temp_scaled = self.scaler.fit_transform(X_temp)
+
+            X_seq_train, X_seq_temp, X_temp_train_scaled, X_temp_temp, X_time_train, X_time_temp, y_train, y_temp = train_test_split(
+                X_seq, X_temp_scaled, X_time, y_event_time, test_size=test_size, random_state=42
+            )
             
-            for i in range(1, len(activities)):
-                seq = activities[:i]
-                temp_feat = [fvt1_vals[i], fvt2_vals[i], fvt3_vals[i]]
-                time_to_next = (timestamps[i] - timestamps[i-1]).astype('timedelta64[s]').astype(float) / 86400
-                
-                sequences.append(seq)
-                temporal_features.append(temp_feat)
-                next_event_times.append(time_to_next)
-        
-        print(f"Total training samples: {len(sequences):,}")
-        print(f"Example sequence length range: {min(map(len, sequences))} to {max(map(len, sequences))}")
-        
-        X_seq = keras.preprocessing.sequence.pad_sequences(
-            sequences, maxlen=self.max_len, padding='pre', value=0
-        )
-        
-        X_seq = X_seq + 1
-        X_temp = np.array(temporal_features)
-        y_event_time = np.array(next_event_times)
-        
-        X_temp_scaled = self.scaler.fit_transform(X_temp)
-        
+            X_seq_val, X_seq_test, X_temp_val_scaled, X_temp_test_scaled, X_time_val, X_time_test, y_val, y_test = train_test_split(
+                X_seq_temp, X_temp_temp, X_time_temp, y_temp, test_size=val_split, random_state=42
+            )
+
+            X_temp_train_scaled = X_temp_train_scaled
+
         self.vocab_size = len(self.label_encoder.classes_) + 2
         
-        print(f"\nSequence shape: {X_seq.shape}")
-        print(f"Temporal features shape: {X_temp_scaled.shape}")
-        print(f"Event time targets shape: {y_event_time.shape}")
+        print(f"\nSequence shape: {X_seq_train.shape}")
+        print(f"Temporal features shape: {X_temp_train_scaled.shape}")
+        print(f"Event time targets shape: {y_train.shape}")
         print(f"Vocabulary size: {self.vocab_size}")
-
-        X_seq_train, X_seq_temp, X_temp_train, X_temp_temp, y_train, y_temp = train_test_split(
-            X_seq, X_temp_scaled, y_event_time, test_size=test_size, random_state=42
-        )
-        
-        X_seq_val, X_seq_test, X_temp_val, X_temp_test, y_val, y_test = train_test_split(
-            X_seq_temp, X_temp_temp, y_temp, test_size=val_split, random_state=42
-        )
         
         # ==================== NEW: Extract Timestamps for Explainability ====================
         print("\nExtracting timestamps for explainability...")
@@ -151,10 +197,10 @@ class EventTimePredictor:
         print(f"Test: {len(X_seq_test):,} samples")
         
         return {
-            'X_seq_train': X_seq_train, 'X_temp_train': X_temp_train, 'y_train': y_train,
-            'X_seq_val': X_seq_val, 'X_temp_val': X_temp_val, 'y_val': y_val,
-            'X_seq_test': X_seq_test, 'X_temp_test': X_temp_test, 'y_test': y_test,
-            'timestamps_test': timestamps_test  # NEW: Add timestamps for explainability
+            'X_seq_train': X_seq_train, 'X_temp_train': X_temp_train_scaled, 'y_train': y_train,
+            'X_seq_val': X_seq_val, 'X_temp_val': X_temp_val_scaled, 'y_val': y_val,
+            'X_seq_test': X_seq_test, 'X_temp_test': X_temp_test_scaled, 'y_test': y_test,
+            'X_time_train': X_time_train, 'X_time_val': X_time_val, 'X_time_test': X_time_test
         }
     
     def _calculate_temporal_features(self, df):

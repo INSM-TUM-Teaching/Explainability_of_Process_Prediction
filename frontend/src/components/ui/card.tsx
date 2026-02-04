@@ -12,7 +12,7 @@ export default function Card({
   children,
 }: CardProps) {
   return (
-    <div className="bg-white border rounded-lg p-6 shadow-sm">
+    <div className="bg-white border border-brand-100 rounded-lg p-6 shadow-sm">
       {title && (
         <h3 className="text-lg font-semibold mb-1">
           {title}

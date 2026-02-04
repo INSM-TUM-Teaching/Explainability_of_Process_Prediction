@@ -77,45 +77,70 @@ class GNNPredictor:
         from torch_geometric.data import HeteroData
         
         print("\nPreparing data for GNN...")
+        split_col = "__split" if "__split" in df.columns else None
+        if split_col:
+            df = df.copy()
         
         trace_cols = []
         grouped = df.groupby("CaseID")
         for col in df.columns:
-            if col in ["CaseID", "Activity", "Resource", "Timestamp"]:
+            if col in ["CaseID", "Activity", "Resource", "Timestamp", "__split"]:
                 continue
             if grouped[col].nunique().max() == 1:
                 trace_cols.append(col)
         
         print(f"Detected trace attributes: {trace_cols}")
         
-        rows = []
-        for case_id, group in df.groupby("CaseID"):
-            group = group.sort_values("Timestamp").reset_index(drop=True)
-            trace_len = len(group)
-            trace_attrs = {c: group[c].iloc[0] for c in trace_cols}
-            
-            for k in range(1, trace_len):
-                label_next_activity = group.iloc[k]["Activity"]
-                prefix = group.iloc[:k]
-                
-                for pos, (_, ev) in enumerate(prefix.iterrows(), start=1):
-                    row = {
-                        "CaseID": case_id,
-                        "prefix_id": k,
-                        "prefix_pos": pos,
-                        "prefix_length": k,
-                        "Activity": ev["Activity"],
-                        "Resource": ev["Resource"] if "Resource" in ev else "Unknown",
-                        "Timestamp": ev["Timestamp"],
-                        "next_activity": label_next_activity,
-                    }
-                    row.update(trace_attrs)
-                    rows.append(row)
-        
-        prefix_df = pd.DataFrame(rows)
-        print(f"Generated {len(prefix_df):,} prefix rows")
-        
-        prefix_df["__ts_log"] = np.log1p(prefix_df["Timestamp"].astype("int64") // 1_000_000_000).astype("float32")
+        def build_prefix_df(input_df):
+            rows = []
+            total_cases = input_df["CaseID"].nunique()
+            processed_cases = 0
+            for case_id, group in input_df.groupby("CaseID"):
+                processed_cases += 1
+                group = group.sort_values("Timestamp").reset_index(drop=True)
+                trace_len = len(group)
+                trace_attrs = {c: group[c].iloc[0] for c in trace_cols if c in group.columns}
+
+                if trace_len <= 1:
+                    continue
+
+                activities = group["Activity"].to_numpy()
+                timestamps = group["Timestamp"].to_numpy()
+                resources = group["Resource"].to_numpy() if "Resource" in group.columns else None
+
+                for k in range(1, trace_len):
+                    label_next_activity = activities[k]
+                    for pos in range(k):
+                        row = {
+                            "CaseID": case_id,
+                            "prefix_id": k,
+                            "prefix_pos": pos + 1,
+                            "prefix_length": k,
+                            "Activity": activities[pos],
+                            "Resource": resources[pos] if resources is not None else "Unknown",
+                            "Timestamp": timestamps[pos],
+                            "next_activity": label_next_activity,
+                        }
+                        if trace_attrs:
+                            row.update(trace_attrs)
+                        rows.append(row)
+
+                if processed_cases % 200 == 0:
+                    print(
+                        f"[GNN] Prefix build progress: "
+                        f"{processed_cases}/{total_cases} cases, "
+                        f"{len(rows):,} prefix rows"
+                    )
+
+            prefix_df = pd.DataFrame(rows)
+            print(f"Generated {len(prefix_df):,} prefix rows")
+            prefix_df["__ts_log"] = np.log1p(
+                prefix_df["Timestamp"].astype("int64") // 1_000_000_000
+            ).astype("float32")
+            return prefix_df
+
+        base_df = df.drop(columns=[split_col]) if split_col else df
+        prefix_df = build_prefix_df(base_df)
         
         vocabs = {}
         all_activities = set(prefix_df["Activity"].unique().tolist()) | set(prefix_df["next_activity"].unique().tolist())
@@ -135,98 +160,122 @@ class GNNPredictor:
         self.vocabs = vocabs
         print(f"Vocabularies: Activities={len(vocabs['Activity'])}, Resources={len(vocabs['Resource'])}")
         
-        groups = prefix_df.groupby(["CaseID", "prefix_id"])
-        graphs = []
-        
-        print(f"Building {groups.ngroups:,} graphs...")
-        for (_, _), p in tqdm(groups, desc="Building graphs", ncols=100):
-            p = p.sort_values("prefix_pos")
+        def build_graphs(prefix_df):
+            groups = prefix_df.groupby(["CaseID", "prefix_id"])
+            graphs = []
             
-            data = HeteroData()
-            k = len(p)
-            
-            act_map = vocabs["Activity"]
-            res_map = vocabs["Resource"]
-            
-            act_ids = np.array([act_map[a] for a in p["Activity"]])
-            data["activity"].x = F.one_hot(torch.tensor(act_ids, dtype=torch.long), num_classes=len(act_map)).float()
-            
-            res_ids = np.array([res_map[r] for r in p["Resource"]])
-            data["resource"].x = F.one_hot(torch.tensor(res_ids, dtype=torch.long), num_classes=len(res_map)).float()
-            
-            data["time"].x = torch.tensor(p["__ts_log"].to_numpy(), dtype=torch.float32).unsqueeze(1)
-            
-            trace_features = []
-            first = p.iloc[0]
-            for col in trace_attributes:
-                if col not in p.columns:
-                    continue
-                val = first[col]
-                if col in vocabs:
-                    idx = vocabs[col].get(val, 0)
-                    trace_features.append(F.one_hot(torch.tensor(idx), num_classes=len(vocabs[col])).float())
+            print(f"Building {groups.ngroups:,} graphs...")
+            for (_, _), p in tqdm(groups, desc="Building graphs", ncols=100):
+                p = p.sort_values("prefix_pos")
+                
+                data = HeteroData()
+                k = len(p)
+                
+                act_map = vocabs["Activity"]
+                res_map = vocabs["Resource"]
+                
+                act_ids = np.array([act_map[a] for a in p["Activity"]])
+                data["activity"].x = F.one_hot(torch.tensor(act_ids, dtype=torch.long), num_classes=len(act_map)).float()
+                data["activity"].num_nodes = k
+                
+                res_ids = np.array([res_map[r] for r in p["Resource"]])
+                data["resource"].x = F.one_hot(torch.tensor(res_ids, dtype=torch.long), num_classes=len(res_map)).float()
+                data["resource"].num_nodes = k
+                
+                data["time"].x = torch.tensor(p["__ts_log"].to_numpy(), dtype=torch.float32).unsqueeze(1)
+                data["time"].num_nodes = k
+                
+                trace_features = []
+                first = p.iloc[0]
+                for col in trace_attributes:
+                    if col not in p.columns:
+                        continue
+                    val = first[col]
+                    if col in vocabs:
+                        idx = vocabs[col].get(val, 0)
+                        trace_features.append(F.one_hot(torch.tensor(idx), num_classes=len(vocabs[col])).float())
+                    else:
+                        try:
+                            trace_features.append(torch.tensor([np.log1p(float(val))], dtype=torch.float32))
+                        except:
+                            trace_features.append(torch.zeros(1))
+                
+                if not trace_features:
+                    trace_features = [torch.zeros(1)]
+                data["trace"].x = torch.cat(trace_features).unsqueeze(0)
+                data["trace"].num_nodes = 1
+                
+                idx = torch.arange(k)
+                if k > 1:
+                    dfr = torch.stack([idx[:-1], idx[1:]])
                 else:
-                    try:
-                        trace_features.append(torch.tensor([np.log1p(float(val))], dtype=torch.float32))
-                    except:
-                        trace_features.append(torch.zeros(1))
+                    dfr = torch.empty((2, 0), dtype=torch.long)
+                
+                data["activity", "next", "activity"].edge_index = dfr
+                data["resource", "next", "resource"].edge_index = dfr.clone()
+                data["time", "next", "time"].edge_index = dfr.clone()
+                
+                same_ev = torch.stack([idx, idx])
+                data["activity", "same_event", "resource"].edge_index = same_ev
+                data["resource", "same_event", "activity"].edge_index = same_ev.clone()
+                data["activity", "same_time", "time"].edge_index = same_ev.clone()
+                data["time", "same_time", "activity"].edge_index = same_ev.clone()
+                
+                trace_src = torch.zeros(k, dtype=torch.long)
+                data["activity", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
+                data["resource", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
+                data["time", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
+                
+                next_act_name = p.iloc[0]["next_activity"]
+                if next_act_name not in act_map:
+                    print(f"Warning: Activity '{next_act_name}' not in vocabulary. Skipping graph.")
+                    continue
+                next_act = act_map[next_act_name]
+                data.y_activity = torch.tensor([next_act], dtype=torch.long)
+                
+                if k > 1:
+                    t_next = p.iloc[1]["Timestamp"].timestamp()
+                else:
+                    t_next = p.iloc[0]["Timestamp"].timestamp()
+                data.y_timestamp = torch.tensor([np.log1p(t_next)], dtype=torch.float32)
+                
+                t_end = p.iloc[-1]["Timestamp"].timestamp()
+                t_now = p.iloc[0]["Timestamp"].timestamp()
+                remaining = max(0, t_end - t_now)
+                data.y_remaining_time = torch.tensor([np.log1p(remaining)], dtype=torch.float32)
+                
+                graphs.append(data)
             
-            if not trace_features:
-                trace_features = [torch.zeros(1)]
-            data["trace"].x = torch.cat(trace_features).unsqueeze(0)
-            
-            idx = torch.arange(k)
-            if k > 1:
-                dfr = torch.stack([idx[:-1], idx[1:]])
-            else:
-                dfr = torch.empty((2, 0), dtype=torch.long)
-            
-            data["activity", "next", "activity"].edge_index = dfr
-            data["resource", "next", "resource"].edge_index = dfr.clone()
-            data["time", "next", "time"].edge_index = dfr.clone()
-            
-            same_ev = torch.stack([idx, idx])
-            data["activity", "same_event", "resource"].edge_index = same_ev
-            data["resource", "same_event", "activity"].edge_index = same_ev.clone()
-            data["activity", "same_time", "time"].edge_index = same_ev.clone()
-            data["time", "same_time", "activity"].edge_index = same_ev.clone()
-            
-            trace_src = torch.zeros(k, dtype=torch.long)
-            data["activity", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
-            data["resource", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
-            data["time", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
-            
-            next_act_name = p.iloc[0]["next_activity"]
-            if next_act_name not in act_map:
-                print(f"Warning: Activity '{next_act_name}' not in vocabulary. Skipping graph.")
-                continue
-            next_act = act_map[next_act_name]
-            data.y_activity = torch.tensor([next_act], dtype=torch.long)
-            
-            if k > 1:
-                t_next = p.iloc[1]["Timestamp"].timestamp()
-            else:
-                t_next = p.iloc[0]["Timestamp"].timestamp()
-            data.y_timestamp = torch.tensor([np.log1p(t_next)], dtype=torch.float32)
-            
-            t_end = p.iloc[-1]["Timestamp"].timestamp()
-            t_now = p.iloc[0]["Timestamp"].timestamp()
-            remaining = max(0, t_end - t_now)
-            data.y_remaining_time = torch.tensor([np.log1p(remaining)], dtype=torch.float32)
-            
-            graphs.append(data)
+            return graphs
         
+        if split_col:
+            split_values = set(df[split_col].dropna().unique().tolist())
+            if not {"train", "val", "test"}.issubset(split_values):
+                raise ValueError("Split column must include train, val, and test values.")
+
+            train_df = df[df[split_col] == "train"].drop(columns=[split_col])
+            val_df = df[df[split_col] == "val"].drop(columns=[split_col])
+            test_df = df[df[split_col] == "test"].drop(columns=[split_col])
+
+            train_graphs = build_graphs(build_prefix_df(train_df))
+            val_graphs = build_graphs(build_prefix_df(val_df))
+            test_graphs = build_graphs(build_prefix_df(test_df))
+            graphs = train_graphs + val_graphs + test_graphs
+        else:
+            graphs = build_graphs(prefix_df)
+
         print(f"[OK] Built {len(graphs):,} graphs")
         
-        n_total = len(graphs)
-        n_test = int(n_total * test_size)
-        n_train_val = n_total - n_test
-        n_val = int(n_train_val * val_split)
-        n_train = n_train_val - n_val
-        
-        train_graphs = graphs[:n_train]
-        val_graphs = graphs[n_train:n_train + n_val]
-        test_graphs = graphs[n_train + n_val:]
+        if not split_col:
+            n_total = len(graphs)
+            n_test = int(n_total * test_size)
+            n_train_val = n_total - n_test
+            n_val = int(n_train_val * val_split)
+            n_train = n_train_val - n_val
+            
+            train_graphs = graphs[:n_train]
+            val_graphs = graphs[n_train:n_train + n_val]
+            test_graphs = graphs[n_train + n_val:]
         
         print(f"Split: Train={len(train_graphs)}, Val={len(val_graphs)}, Test={len(test_graphs)}")
         
@@ -304,11 +353,11 @@ class GNNPredictor:
 
         return train_loader, val_loader, test_loader
 
-    def train_epoch(self, loader):
+    def train_epoch(self, loader, log_every=200):
         self.model.train()
         total_loss = 0.0
 
-        for batch in loader:
+        for batch_idx, batch in enumerate(loader, 1):
             batch = batch.to(self.device)
             act_logits, time_pred, rem_pred = self.model(batch)
             loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch)
@@ -317,16 +366,19 @@ class GNNPredictor:
             loss.backward()
             self.optimizer.step()
             total_loss += loss.item()
+            if log_every and batch_idx % log_every == 0:
+                print(f"  [Train] batch {batch_idx}/{len(loader)} loss={loss.item():.4f}")
 
         return total_loss / len(loader)
 
-    def evaluate(self, loader):
+    def evaluate(self, loader, max_batches=None):
         self.model.eval()
         correct = 0
         total = 0
         mae_time = 0.0
         mae_rem = 0.0
         total_loss = 0.0
+        batches = 0
 
         with torch.no_grad():
             for batch in loader:
@@ -334,6 +386,7 @@ class GNNPredictor:
                 act_logits, time_pred, rem_pred = self.model(batch)
                 loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch)
                 total_loss += loss.item()
+                batches += 1
 
                 y_act = batch.y_activity.view(-1)
                 pred = act_logits.argmax(dim=1)
@@ -344,15 +397,17 @@ class GNNPredictor:
                 y_rem = batch.y_remaining_time.view(-1)
                 mae_time += torch.abs(time_pred - y_time).mean().item()
                 mae_rem += torch.abs(rem_pred - y_rem).mean().item()
+                if max_batches is not None and batches >= max_batches:
+                    break
 
         return {
-            'accuracy': correct / total,
-            'mae_time': mae_time / len(loader),
-            'mae_rem': mae_rem / len(loader),
-            'loss': total_loss / len(loader),
+            'accuracy': correct / total if total else 0.0,
+            'mae_time': mae_time / max(batches, 1),
+            'mae_rem': mae_rem / max(batches, 1),
+            'loss': total_loss / max(batches, 1),
         }
 
-    def train(self, data, epochs=50, batch_size=64, patience=10, num_workers=0):
+    def train(self, data, epochs=50, batch_size=64, patience=10, num_workers=0, log_every=200, train_eval_batches=25):
         print(f"\nTraining GNN for {epochs} epochs...")
         print(f"Batch size: {batch_size}")
         print(f"Learning rate: {self.lr}")
@@ -369,8 +424,8 @@ class GNNPredictor:
         patience_counter = 0
 
         for epoch in range(1, epochs + 1):
-            train_loss = self.train_epoch(train_loader)
-            train_metrics = self.evaluate(train_loader)
+            train_loss = self.train_epoch(train_loader, log_every=log_every)
+            train_metrics = self.evaluate(train_loader, max_batches=train_eval_batches)
             val_metrics = self.evaluate(val_loader)
 
             self.history['train_loss'].append(train_loss)
