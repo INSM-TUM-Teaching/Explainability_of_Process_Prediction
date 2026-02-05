@@ -96,6 +96,17 @@ def detect_and_standardize_columns(df, verbose=False):
     return df, column_mapping, column_mapping.keys()
 
 
+def _safe_rename_columns(df, rename_map):
+    rename_map = {k: v for k, v in rename_map.items() if k in df.columns}
+    for src, tgt in rename_map.items():
+        if tgt in df.columns and tgt != src and tgt not in rename_map.keys():
+            df = df.drop(columns=[tgt])
+    df = df.rename(columns=rename_map)
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()]
+    return df
+
+
 def default_transformer_config():
     return {
         'max_len': 16,
@@ -128,6 +139,7 @@ def run_next_activity_prediction(
     config,
     explainability_method=None,
     target_column=None,
+    skip_auto_mapping=False,
 ):
     if not TENSORFLOW_AVAILABLE:
         raise RuntimeError("TensorFlow not available. Transformer runs cannot execute.")
@@ -142,7 +154,12 @@ def run_next_activity_prediction(
         print("\n[DEBUG 1] RAW CSV: Activity column not found")
         print("Columns:", list(df.columns))
     
-    df, _, _ = detect_and_standardize_columns(df, verbose=False)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
 
     target_series = None
     if target_column:
@@ -160,7 +177,7 @@ def run_next_activity_prediction(
         print("[DEBUG 2] ERROR: Activity column missing after standardization")
         print("Columns:", list(df.columns))
 
-    df = df.rename(columns={
+    df = _safe_rename_columns(df, {
         'CaseID': 'case:id',
         'Activity': 'concept:name',
         'Timestamp': 'time:timestamp'
@@ -225,14 +242,27 @@ def run_next_activity_prediction(
     return metrics
 
 
-def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method=None):
+def run_event_time_prediction(
+    dataset_path,
+    output_dir,
+    test_size,
+    val_split,
+    config,
+    explainability_method=None,
+    skip_auto_mapping=False,
+):
     if not TENSORFLOW_AVAILABLE:
         raise RuntimeError("TensorFlow not available. Transformer runs cannot execute.")
 
     df = pd.read_csv(dataset_path)
-    df, _, _ = detect_and_standardize_columns(df, verbose=False)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
 
-    df = df.rename(columns={
+    df = _safe_rename_columns(df, {
         'CaseID': 'case:concept:name',
         'Activity': 'concept:name',
         'Timestamp': 'time:timestamp'
@@ -284,14 +314,27 @@ def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, co
     return metrics
 
 
-def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method=None):
+def run_remaining_time_prediction(
+    dataset_path,
+    output_dir,
+    test_size,
+    val_split,
+    config,
+    explainability_method=None,
+    skip_auto_mapping=False,
+):
     if not TENSORFLOW_AVAILABLE:
         raise RuntimeError("TensorFlow not available. Transformer runs cannot execute.")
 
     df = pd.read_csv(dataset_path)
-    df, _, _ = detect_and_standardize_columns(df, verbose=False)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
 
-    df = df.rename(columns={
+    df = _safe_rename_columns(df, {
         'CaseID': 'case:concept:name',
         'Activity': 'concept:name',
         'Timestamp': 'time:timestamp'
@@ -352,12 +395,18 @@ def run_gnn_unified_prediction(
     explainability_method=None,
     task='unified',
     target_column=None,
+    skip_auto_mapping=False,
 ):
     if not PYTORCH_AVAILABLE:
         raise RuntimeError("PyTorch not available. GNN runs cannot execute.")
 
     df = pd.read_csv(dataset_path)
-    df, _, _ = detect_and_standardize_columns(df, verbose=False)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
     if target_column:
         if target_column not in df.columns:
             raise RuntimeError(f"Target column not found: {target_column}")

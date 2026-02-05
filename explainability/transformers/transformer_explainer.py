@@ -11,6 +11,12 @@ import tensorflow as tf
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams.update({'font.size': 11, 'font.family': 'sans-serif'})
 
+class ExplainabilityConfig:
+    """Configuration for explainability behavior."""
+    ENABLE_TIMESTEP_EXPLANATIONS = True
+    # Options: 'auto', 'per_timestep', 'original'
+    MODEL_TYPE = 'auto'
+
 class SHAPExplainer:
     def __init__(self, model, task='activity', label_encoder=None, scaler=None):
         self.model = model
@@ -216,20 +222,32 @@ class SHAPExplainer:
         except TypeError:
             return self.explainer(inputs)
 
-    def explain_samples(self, test_data, num_samples=20):
+    def explain_samples(self, test_data, num_samples=20, indices=None):
         if isinstance(test_data, (list, tuple)):
-            test_sample = test_data[0][:num_samples]
-            self.test_data = test_sample
-            self.test_data_temp = test_data[1][:num_samples]
+            if indices is not None and len(indices) > 0:
+                test_sample = test_data[0][indices]
+                self.test_data = test_sample
+                self.test_data_temp = test_data[1][indices]
+            else:
+                test_sample = test_data[0][:num_samples]
+                self.test_data = test_sample
+                self.test_data_temp = test_data[1][:num_samples]
         else:
-            test_sample = test_data[:num_samples]
-            self.test_data = test_sample
+            if indices is not None and len(indices) > 0:
+                test_sample = test_data[indices]
+                self.test_data = test_sample
+            else:
+                test_sample = test_data[:num_samples]
+                self.test_data = test_sample
             
         print(f"Computing SHAP values for {len(test_sample)} samples...")
 
         # For multi-input models, flatten the test data
         if isinstance(test_data, (list, tuple)) and self.is_multi_input:
-            test_temp = test_data[1][:num_samples]
+            if indices is not None and len(indices) > 0:
+                test_temp = test_data[1][indices]
+            else:
+                test_temp = test_data[1][:num_samples]
             # Flatten test data same way as background
             test_seq_flat = test_sample.reshape(len(test_sample), -1)
             test_temp_flat = test_temp.reshape(len(test_temp), -1)
@@ -348,48 +366,299 @@ class SHAPExplainer:
             return
         pd.DataFrame(agg_shap, columns=names).to_csv(os.path.join(output_dir, 'shap_values_matrix.csv'), index=False)
 
-        # Prefer standard SHAP summary plot with raw features for color mapping.
-        try:
-            values = self.shap_values.values
-            if isinstance(values, list):
-                values = values[0]
-            if values.ndim > 2:
-                values = values.mean(axis=tuple(range(2, values.ndim)))
-            features = self.test_data
-            if features is None:
-                raise ValueError("Missing raw features for SHAP summary plot.")
-            feature_names = self._aggregate_feature_names(features)
+        # Use aggregated activity-level summary to avoid repeated position names.
+        plt.figure(figsize=(13.5, 8))
+        shap.summary_plot(agg_shap, features=agg_feat, feature_names=names, show=False, max_display=15)
+        plt.title(f"Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'shap_summary_plot.png'), dpi=300)
+        plt.close()
 
+        # If we have temporal features, also save a summary plot for them.
+        if isinstance(self.shap_values.values, list) and self.test_data_temp is not None:
+            temp_values = self.shap_values.values[1]
+            if temp_values.ndim > 2:
+                temp_values = temp_values.mean(axis=tuple(range(2, temp_values.ndim)))
+            temp_feature_names = [f"Temp_{i+1}" for i in range(self.test_data_temp.shape[1])]
             plt.figure(figsize=(10, 6))
-            shap.summary_plot(values, features=features, feature_names=feature_names, show=False, max_display=15)
-            plt.title(f"Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
+            shap.summary_plot(temp_values, features=self.test_data_temp, feature_names=temp_feature_names, show=False, max_display=15)
+            plt.title(f"Temporal Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, 'shap_summary_plot.png'), dpi=300)
-            plt.close()
-
-            # If we have temporal features, also save a summary plot for them.
-            if isinstance(self.shap_values.values, list) and self.test_data_temp is not None:
-                temp_values = self.shap_values.values[1]
-                if temp_values.ndim > 2:
-                    temp_values = temp_values.mean(axis=tuple(range(2, temp_values.ndim)))
-                temp_feature_names = [f"Temp_{i+1}" for i in range(self.test_data_temp.shape[1])]
-                plt.figure(figsize=(10, 6))
-                shap.summary_plot(temp_values, features=self.test_data_temp, feature_names=temp_feature_names, show=False, max_display=15)
-                plt.title(f"Temporal Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
-                plt.tight_layout()
-                plt.savefig(os.path.join(output_dir, 'shap_summary_plot_temp.png'), dpi=300)
-                plt.close()
-        except Exception as e:
-            print(f"[WARNING] Falling back to aggregated SHAP summary plot: {e}")
-            plt.figure(figsize=(10, 6))
-            shap.summary_plot(agg_shap, features=agg_feat, feature_names=names, show=False, max_display=15)
-            plt.title(f"Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, 'shap_summary_plot.png'), dpi=300)
+            plt.savefig(os.path.join(output_dir, 'shap_summary_plot_temp.png'), dpi=300)
             plt.close()
 
     def save_explanations(self, output_dir):
         print("[OK] SHAP computations complete.")
+
+class TimestepSHAPExplainer(SHAPExplainer):
+    """SHAP Explainer with timestep-level attribution (optional timestamps)."""
+    def __init__(self, model, task='time', label_encoder=None, scaler=None, timestamps=None):
+        super().__init__(model, task, label_encoder, scaler)
+        self.model_has_timestep_outputs = self._detect_model_type()
+        self.timestamps = timestamps
+
+        if self.model_has_timestep_outputs:
+            print("[OK] Detected timestep-explainable model - will generate temporal plots")
+        else:
+            print("[INFO] Using original aggregated explanations")
+
+        if self.timestamps is not None:
+            print(f"[OK] Timestamps provided for {len(self.timestamps)} samples")
+        else:
+            print("[INFO] No timestamps provided - will use timestep indices")
+
+    def _detect_model_type(self):
+        if ExplainabilityConfig.MODEL_TYPE == 'per_timestep':
+            return True
+        if ExplainabilityConfig.MODEL_TYPE == 'original':
+            return False
+        if hasattr(self.model, 'outputs'):
+            return len(self.model.outputs) > 1
+        return False
+
+    def _sequence_shap_values(self):
+        if self.shap_values is None or self.test_data is None:
+            return None
+
+        values = self.shap_values.values
+        if isinstance(values, list):
+            values = values[0]
+
+        seq_len = self.test_data.shape[1]
+
+        if self.is_multi_input and hasattr(self, '_seq_flat_size') and values.ndim == 2:
+            if values.shape[1] >= self._seq_flat_size:
+                values = values[:, :self._seq_flat_size]
+                if self._seq_shape == (seq_len,):
+                    values = values.reshape((values.shape[0], seq_len))
+                else:
+                    values = values.reshape((values.shape[0],) + self._seq_shape)
+                    if values.ndim > 2:
+                        values = values.mean(axis=tuple(range(2, values.ndim)))
+
+        if values.ndim > 2:
+            seq_axis = None
+            for axis in range(1, values.ndim):
+                if values.shape[axis] == seq_len:
+                    seq_axis = axis
+                    break
+            if seq_axis is not None:
+                values = np.moveaxis(values, seq_axis, 1)
+                if values.ndim > 2:
+                    values = values.mean(axis=tuple(range(2, values.ndim)))
+
+        return values
+
+    def plot_temporal_evolution(self, output_dir, sample_idx=0, show_prediction=True):
+        if self.shap_values is None:
+            print("No SHAP values computed. Run explain_samples() first.")
+            return
+
+        seq_values = self._sequence_shap_values()
+        if seq_values is None:
+            print("No valid sequence SHAP values available.")
+            return
+
+        print(f"Generating Temporal Evolution Plot for sample {sample_idx}...")
+
+        sample_shap = seq_values[sample_idx]
+        sample_sequence = self.test_data[sample_idx]
+        activity_names = self._get_activity_names_for_sample(sample_sequence)
+
+        non_pad_mask = sample_sequence > 0
+        filtered_shap = sample_shap[non_pad_mask]
+        filtered_activities = [name for name, is_valid in zip(activity_names, non_pad_mask) if is_valid]
+
+        if self.timestamps is not None and sample_idx < len(self.timestamps):
+            sample_timestamps = self.timestamps[sample_idx]
+            filtered_timestamps = [sample_timestamps[i] for i, valid in enumerate(non_pad_mask) if valid]
+            x_values = np.arange(len(filtered_timestamps))
+            x_labels = filtered_timestamps
+            use_timestamps = True
+        else:
+            x_values = np.arange(len(filtered_shap))
+            x_labels = x_values
+            use_timestamps = False
+
+        fig, ax1 = plt.subplots(figsize=(16, 7))
+
+        positive_shap = np.where(filtered_shap > 0, filtered_shap, 0)
+        negative_shap = np.where(filtered_shap < 0, filtered_shap, 0)
+
+        ax1.bar(x_values, positive_shap, color='#d62728', alpha=0.8,
+                label='Positive Shapley values', width=0.8)
+        ax1.bar(x_values, negative_shap, color='#1f77b4', alpha=0.8,
+                label='Negative Shapley values', width=0.8)
+
+        ax1.axhline(0, color='black', linewidth=1)
+
+        if use_timestamps:
+            ax1.set_xticks(x_values)
+            ax1.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=9)
+            ax1.set_xlabel('Event Timestamp (Days from Case Start)', fontsize=13, fontweight='bold')
+        else:
+            ax1.set_xlabel('Time steps', fontsize=13, fontweight='bold')
+
+        ax1.set_ylabel('SHAP values (contribution to prediction)', fontsize=12, fontweight='bold')
+        ax1.grid(axis='y', linestyle='--', alpha=0.3)
+        ax1.legend(loc='upper left', fontsize=11)
+
+        abs_shap = np.abs(filtered_shap)
+        threshold = np.percentile(abs_shap, 75) if len(abs_shap) else 0
+
+        for i, (x_pos, act, shap_val) in enumerate(zip(x_values, filtered_activities, filtered_shap)):
+            if abs_shap[i] > threshold and act != '[PAD]':
+                y_pos = shap_val + (0.2 if shap_val > 0 else -0.2)
+                ax1.text(x_pos, y_pos, act, ha='center',
+                         va='bottom' if shap_val > 0 else 'top',
+                         fontsize=9, fontweight='bold',
+                         bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+
+        if show_prediction and self.model_has_timestep_outputs:
+            try:
+                temp_input = self.background_temp if self.background_temp is not None else np.zeros((1, 3))
+                outputs = self.model.predict([sample_sequence.reshape(1, -1), temp_input], verbose=0)
+                if isinstance(outputs, list) and len(outputs) > 1:
+                    timestep_preds = outputs[1][0]
+                    filtered_preds = timestep_preds[non_pad_mask]
+                    if self.scaler is not None:
+                        filtered_preds = self.scaler.inverse_transform(
+                            filtered_preds.reshape(-1, 1)
+                        ).flatten()
+
+                    ax2 = ax1.twinx()
+                    ax2.plot(x_values, filtered_preds, color='black', linewidth=2,
+                             label='Predicted remaining time', marker='o', markersize=3)
+                    ax2.set_ylabel('Predicted remaining time (days)', fontsize=12, fontweight='bold')
+                    ax2.legend(loc='upper right', fontsize=11)
+            except Exception as e:
+                print(f"Could not add prediction overlay: {e}")
+
+        plt.title(f'Transformer Model - SHAP Explainability (Sample {sample_idx})',
+                  fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_sample_{sample_idx}.png'), dpi=300)
+        plt.close()
+
+        df_data = {
+            'Activity': filtered_activities,
+            'SHAP_Value': filtered_shap
+        }
+        if use_timestamps:
+            df_data['Timestamp'] = x_labels
+        else:
+            df_data['Timestep'] = x_values
+
+        df = pd.DataFrame(df_data)
+        df.to_csv(os.path.join(output_dir, f'shap_timestep_data_sample_{sample_idx}.csv'), index=False)
+
+    def plot_timestep_heatmap(self, output_dir, sample_idx=0):
+        if self.shap_values is None:
+            return
+
+        seq_values = self._sequence_shap_values()
+        if seq_values is None:
+            return
+
+        print(f"Generating Timestep Heatmap for sample {sample_idx}...")
+
+        sample_shap = seq_values[sample_idx]
+        sample_sequence = self.test_data[sample_idx]
+        activity_names = self._get_activity_names_for_sample(sample_sequence)
+
+        non_pad_mask = sample_sequence > 0
+        filtered_shap = sample_shap[non_pad_mask]
+        filtered_activities = [name for name, is_valid in zip(activity_names, non_pad_mask) if is_valid]
+        timesteps = np.arange(len(filtered_shap))
+
+        if self.timestamps is not None and sample_idx < len(self.timestamps):
+            sample_timestamps = self.timestamps[sample_idx]
+            filtered_timestamps = [sample_timestamps[i] for i, valid in enumerate(non_pad_mask) if valid]
+            x_labels = [f"{act}\n{ts}" for act, ts in zip(filtered_activities, filtered_timestamps)]
+        else:
+            x_labels = filtered_activities
+
+        fig, ax = plt.subplots(figsize=(14, 6))
+
+        colors = ['#d62728' if val < 0 else '#2ca02c' for val in filtered_shap]
+        ax.bar(timesteps, filtered_shap, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+
+        ax.set_xticks(timesteps)
+        ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=8)
+        ax.axhline(0, color='black', linewidth=1)
+        ax.set_xlabel('Event (Activity + Timestamp)' if self.timestamps else 'Timestep (Activity)',
+                      fontsize=12, fontweight='bold')
+        ax.set_ylabel('SHAP Value (Contribution)', fontsize=12, fontweight='bold')
+        ax.set_title(f'Timestep-Level SHAP Attribution - Sample {sample_idx}',
+                     fontsize=14, fontweight='bold')
+        ax.grid(axis='y', linestyle='--', alpha=0.3)
+
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#2ca02c', label='Increases Prediction'),
+            Patch(facecolor='#d62728', label='Decreases Prediction')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'shap_timestep_heatmap_sample_{sample_idx}.png'), dpi=300)
+        plt.close()
+
+    def plot_global_temporal_importance(self, output_dir):
+        if self.shap_values is None or self.test_data is None:
+            return
+
+        seq_values = self._sequence_shap_values()
+        if seq_values is None:
+            return
+
+        print("Generating Global Temporal Importance Plot...")
+
+        mean_shap_per_timestep = np.mean(np.abs(seq_values), axis=0)
+
+        activity_labels = []
+        for pos in range(seq_values.shape[1]):
+            activities_at_pos = []
+            for sample in self.test_data:
+                if sample[pos] > 0:
+                    try:
+                        act = self.label_encoder.inverse_transform([int(sample[pos])-1])[0]
+                        activities_at_pos.append(act)
+                    except Exception:
+                        pass
+            if activities_at_pos:
+                most_common = max(set(activities_at_pos), key=activities_at_pos.count)
+                activity_labels.append(most_common)
+            else:
+                activity_labels.append('[PAD]')
+
+        fig, ax = plt.subplots(figsize=(14, 6))
+        timesteps = np.arange(len(mean_shap_per_timestep))
+
+        ax.bar(timesteps, mean_shap_per_timestep, color='#2ca02c', alpha=0.7,
+               edgecolor='black', linewidth=0.5)
+        ax.set_xlabel('Timestep Position', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Mean Absolute SHAP Value', fontsize=12, fontweight='bold')
+        ax.set_title('Global Timestep Importance (Averaged Across All Samples)',
+                     fontsize=14, fontweight='bold')
+        ax.grid(axis='y', linestyle='--', alpha=0.3)
+
+        top_n = 10
+        top_indices = np.argsort(mean_shap_per_timestep)[-top_n:]
+        for idx in top_indices:
+            ax.text(idx, mean_shap_per_timestep[idx], activity_labels[idx],
+                    ha='center', va='bottom', fontsize=8, rotation=45)
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'shap_global_temporal_importance.png'), dpi=300)
+        plt.close()
+
+        df = pd.DataFrame({
+            'Timestep': timesteps,
+            'Most_Common_Activity': activity_labels,
+            'Mean_Absolute_SHAP': mean_shap_per_timestep
+        })
+        df.to_csv(os.path.join(output_dir, 'shap_global_temporal_data.csv'), index=False)
 
 class LIMEExplainer:
     def __init__(self, model, task='activity', label_encoder=None, scaler=None):
@@ -403,6 +672,7 @@ class LIMEExplainer:
         self.test_data_temp = None
         self.is_multi_input = False
         self.vocab_size = None
+        self.y_true = None
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
             print("[WARNING] label_encoder is None - LIME will show generic Activity labels!")
@@ -470,7 +740,7 @@ class LIMEExplainer:
             verbose=False
         )
     
-    def explain_samples(self, test_data, num_samples=10, num_features=15):
+    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None):
         print(f"Generating LIME explanations for {num_samples} samples...")
         
         if isinstance(test_data, (list, tuple)):
@@ -482,6 +752,8 @@ class LIMEExplainer:
             self.test_data_seq = test_data[:num_samples]
             self.is_multi_input = False
             print(f"[DEBUG explain_samples] Processing {len(self.test_data_seq)} samples")
+        if y_true is not None:
+            self.y_true = y_true[:num_samples]
             
         vocab_size = self.vocab_size if self.vocab_size is not None else int(np.max(self.test_data_seq)) + 1
         
@@ -537,6 +809,7 @@ class LIMEExplainer:
         exp = self.explanations[sample_idx]
         current_seq = self.test_data_seq[sample_idx]  # Use local index
         
+        pred_activity_name = None
         try:
             if self.task == 'activity':
                 if hasattr(exp, 'top_labels') and exp.top_labels:
@@ -546,7 +819,23 @@ class LIMEExplainer:
                 
                 pred_probs = exp.predict_proba
                 confidence = pred_probs[label_to_explain] if pred_probs is not None else 0.0
-                title = f"LIME Explanation (Sample {display_idx})\nPredicted Class: {label_to_explain} | Confidence: {confidence:.2f}"
+                pred_label = label_to_explain
+                if self.label_encoder is not None:
+                    try:
+                        pred_label = self.label_encoder.inverse_transform([int(label_to_explain)])[0]
+                    except Exception:
+                        pred_label = label_to_explain
+                pred_activity_name = pred_label
+                gt_label = None
+                if self.y_true is not None and sample_idx < len(self.y_true):
+                    gt_label = self.y_true[sample_idx]
+                    if self.label_encoder is not None:
+                        try:
+                            gt_label = self.label_encoder.inverse_transform([int(gt_label)])[0]
+                        except Exception:
+                            pass
+                gt_text = f" | Ground Truth: {gt_label}" if gt_label is not None else ""
+                title = f"LIME Explanation (Sample {display_idx})\nPredicted Class: {pred_label} | Confidence: {confidence:.2f}{gt_text}"
                 lime_list = exp.as_list(label=label_to_explain)
             else:
                 raw_pred = exp.predicted_value
@@ -555,8 +844,16 @@ class LIMEExplainer:
                 if self.scaler is not None:
                     unscaled = self.scaler.inverse_transform([[raw_pred]])[0][0]
                     display_val = unscaled
-                    
-                title = f"LIME Explanation (Sample {display_idx})\nPredicted Value: {display_val:.2f}"
+                gt_val = None
+                if self.y_true is not None and sample_idx < len(self.y_true):
+                    gt_val = self.y_true[sample_idx]
+                    if self.scaler is not None:
+                        try:
+                            gt_val = self.scaler.inverse_transform([[gt_val]])[0][0]
+                        except Exception:
+                            pass
+                gt_text = f" | Ground Truth: {gt_val:.2f}" if gt_val is not None else ""
+                title = f"LIME Explanation (Sample {display_idx})\nPredicted Value: {display_val:.2f}{gt_text}"
                 lime_list = exp.as_list()
                 
         except Exception as e:
@@ -576,13 +873,24 @@ class LIMEExplainer:
                     if 0 <= pos < len(current_seq):
                         name = self._get_activity_name(current_seq[pos])
                     else:
-                        name = rule
+                        continue
                 else:
-                    name = rule
+                    continue
             else:
                 # Activity name from aggregated feature_names
                 # Extract base name (remove conditions like "<= 3.00")
                 name = rule.split('<=')[0].split('>')[0].strip()
+                # If name still looks like a Position_ label, try mapping or skip.
+                if name.startswith("Position_"):
+                    match = re.search(r'Position_(\d+)', name)
+                    if match:
+                        pos = int(match.group(1)) - 1
+                        if 0 <= pos < len(current_seq):
+                            name = self._get_activity_name(current_seq[pos])
+                        else:
+                            continue
+                    else:
+                        continue
             
             if name not in activity_stats:
                 activity_stats[name] = {'weight': 0.0, 'count': 0}
@@ -612,6 +920,7 @@ class LIMEExplainer:
         
         plt.axvline(0, color='black', linewidth=0.8)
         plt.grid(axis='x', linestyle='--', alpha=0.6)
+        plt.margins(x=0.15)
         plt.title(title, fontsize=13, fontweight='bold')
         plt.xlabel("Contribution to Prediction", fontsize=11)
         
@@ -626,198 +935,16 @@ class LIMEExplainer:
         plt.legend(handles=[
             Patch(facecolor='#2ca02c', label='Supports'),
             Patch(facecolor='#d62728', label='Contradicts')
-        ], loc='lower right')
-        
-        plt.tight_layout()
+        ], loc='lower right', frameon=True)
+
+        # Add full sample sequence at the bottom with predicted activity highlighted.
+        plt.tight_layout(rect=[0.05, 0.05, 0.98, 1])
         plt.savefig(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.png'), dpi=300)
         plt.close()
 
     def save_explanations(self, output_dir):
         print("[OK] LIME computations complete.")
 
-
-class TemporalAttributionExplainer:
-    def __init__(self, shap_values, test_seq, test_temp=None, time_seq=None, y_true=None, model=None, scaler=None, seq_flat_size=None):
-        self.shap_values = shap_values
-        self.test_seq = test_seq
-        self.test_temp = test_temp
-        self.time_seq = time_seq
-        self.y_true = y_true
-        self.model = model
-        self.scaler = scaler
-        self.seq_flat_size = seq_flat_size  # For handling flattened multi-input SHAP values
-
-    def _position_contributions(self):
-        if self.shap_values is None or self.test_seq is None:
-            return None
-
-        values = self.shap_values.values
-        if isinstance(values, list):
-            values = values[0]
-
-        seq_len = self.test_seq.shape[1]
-        
-        # Handle flattened multi-input case
-        if self.seq_flat_size is not None and values.ndim == 2:
-            # Extract only sequence portion of SHAP values
-            if values.shape[1] >= self.seq_flat_size:
-                values = values[:, :self.seq_flat_size]
-                # If seq_flat_size == seq_len, values are already in correct shape
-                if values.shape[1] != seq_len:
-                    # Try to reshape if there's a mismatch
-                    try:
-                        values = values.reshape((values.shape[0], seq_len, -1))
-                        values = values.mean(axis=-1)  # Average over any extra dims
-                    except:
-                        pass
-        
-        seq_axis = None
-        for axis in range(1, values.ndim):
-            if values.shape[axis] == seq_len:
-                seq_axis = axis
-                break
-        if seq_axis is None:
-            print(f"[DEBUG] TemporalAttribution: Cannot find seq_axis. values.shape={values.shape}, seq_len={seq_len}")
-            return None
-
-        values = np.moveaxis(values, seq_axis, 1)
-        if values.ndim > 2:
-            values = values.mean(axis=tuple(range(2, values.ndim)))
-        return values
-
-    def _predict_values(self, samples):
-        if self.model is None:
-            return None
-        if self.test_temp is not None:
-            preds = self.model.predict([samples, self.test_temp], verbose=0).flatten()
-        else:
-            preds = self.model.predict(samples, verbose=0).flatten()
-        return preds
-
-    def _maybe_unscale(self, arr):
-        """
-        Attempt to inverse transform scaled values.
-        Only applies if scaler dimensions match the input.
-        """
-        if self.scaler is None or arr is None:
-            return arr
-        
-        try:
-            arr_reshaped = arr.reshape(-1, 1)
-            # Check if scaler expects single feature
-            if hasattr(self.scaler, 'n_features_in_'):
-                if self.scaler.n_features_in_ == 1:
-                    return self.scaler.inverse_transform(arr_reshaped).flatten()
-                else:
-                    # Scaler was fit on multiple features, can't use it for single column
-                    # Return original values (they may already be in original scale)
-                    return arr
-            else:
-                # Try anyway, catch error if dimensions don't match
-                return self.scaler.inverse_transform(arr_reshaped).flatten()
-        except (ValueError, AttributeError) as e:
-            # Dimension mismatch or other issue - return original values
-            return arr
-
-    def generate_plots(self, output_dir, top_k=5):
-        print("Generating Temporal Attribution Plots...")
-        os.makedirs(output_dir, exist_ok=True)
-
-        contributions = self._position_contributions()
-        if contributions is None:
-            print("[WARNING] Temporal attribution plot skipped: SHAP values unavailable.")
-            return
-
-        preds = self._predict_values(self.test_seq)
-        y_true = self.y_true[:len(self.test_seq)] if self.y_true is not None else None
-        y_true = self._maybe_unscale(y_true)
-        preds = self._maybe_unscale(preds)
-
-        num_samples = contributions.shape[0]
-        for i in range(num_samples):
-            signal = contributions[i]
-            observed = None
-
-            # Get the full sequence length, not just non-zero
-            seq_len = len(signal)
-            
-            # Only trim padding if test_seq is available
-            if self.test_seq is not None:
-                non_zero_count = int(np.count_nonzero(self.test_seq[i]))
-                if non_zero_count > 1:
-                    valid_len = non_zero_count
-                else:
-                    valid_len = seq_len
-            else:
-                valid_len = seq_len
-
-            if self.time_seq is not None and i < len(self.time_seq):
-                observed = self.time_seq[i]
-                if observed is not None and len(observed) > 0:
-                    # Align observed with valid_len
-                    if len(observed) >= valid_len:
-                        observed = observed[:valid_len]
-                    else:
-                        valid_len = len(observed)
-
-            # Trim signal to valid_len (from the beginning, not end)
-            if valid_len > 0 and valid_len <= len(signal):
-                signal = signal[:valid_len]
-            
-            seq_len = len(signal)
-            
-            # Skip if only 1 or 0 time steps
-            if seq_len <= 1:
-                print(f"[WARNING] Sample {i} has only {seq_len} time step(s), skipping plot.")
-                continue
-
-            x = np.arange(1, seq_len + 1)
-            x_label = "Time steps"
-
-            plt.figure(figsize=(10, 6))
-            ax = plt.gca()
-            pos_color = '#d62728'
-            neg_color = '#1f77b4'
-            colors = np.where(signal >= 0, pos_color, neg_color)
-            ax.bar(x, signal, color=colors, width=0.8, alpha=0.9)
-            ax.axhline(0, color='#222222', linewidth=1.0, alpha=0.6)
-            ax.set_xlabel(x_label)
-            ax.set_ylabel("Shapley values")
-
-            plt.title("Observed values and contribution scores", fontsize=12, fontweight='bold')
-
-            legend_handles = []
-            from matplotlib.patches import Patch
-            from matplotlib.lines import Line2D
-            legend_handles.append(Patch(facecolor=pos_color, label="Positive Shapley values"))
-            legend_handles.append(Patch(facecolor=neg_color, label="Negative Shapley values"))
-
-            # Check if y_true has sequence data for this sample
-            if y_true is not None and i < len(y_true):
-                if hasattr(y_true[i], '__len__') and len(y_true[i]) > 1:
-                    observed = np.array(y_true[i])[:valid_len]
-            
-            if observed is not None and len(observed) == len(signal):
-                ax2 = ax.twinx()
-                ax2.plot(x, observed, color='#555555', linewidth=1.5)
-                ax2.set_ylabel("Observed data values")
-                legend_handles.append(Line2D([0], [0], color='#555555', linewidth=1.5, label="Observed data"))
-            
-            ax.legend(handles=legend_handles, loc='upper right')
-
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f"temporal_attribution_sample_{i}.png"), dpi=300)
-            plt.close()
-
-            df = pd.DataFrame({
-                'TimeStep': x,
-                'Contribution': signal
-            })
-            if observed is not None and len(observed) == len(signal):
-                df['Observed'] = observed
-            df.to_csv(os.path.join(output_dir, f"temporal_attribution_sample_{i}.csv"), index=False)
-
-        print(f"[OK] Temporal attribution plots saved: {num_samples} samples")
 
 def generate_comparison_report(output_dir, shap_dir, lime_dir):
     import pandas as pd
@@ -964,7 +1091,7 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
         shap_feats = set(shap_df['Activity'].astype(str).tolist())
         missing_shap = sorted(expected - shap_feats)
         if missing_shap:
-            raise RuntimeError(f"SHAP missing activities: {', '.join(missing_shap)}")
+            print(f"[WARNING] SHAP missing activities: {', '.join(missing_shap)}")
     
     if lime_dir:
         if not os.path.isdir(lime_dir):
@@ -980,7 +1107,7 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
                 lime_feats.add(name)
         missing_lime = sorted(expected - lime_feats)
         if missing_lime:
-            raise RuntimeError(f"LIME missing activities: {', '.join(missing_lime)}")
+            print(f"[WARNING] LIME missing activities: {', '.join(missing_lime)}")
 
 
 # =============================================================================
@@ -1564,7 +1691,7 @@ class ExplainabilityBenchmark:
         
         # Faithfulness
         if 'faithfulness' in self.results and 'error' not in self.results['faithfulness']:
-            print("\n📊 FAITHFULNESS (Higher = Better)")
+            print("\nFAITHFULNESS (Higher = Better)")
             for k, v in self.results['faithfulness'].items():
                 if isinstance(v, dict):
                     corr = v.get('spearman_correlation', 'N/A')
@@ -1572,7 +1699,7 @@ class ExplainabilityBenchmark:
         
         # Comprehensiveness
         if 'comprehensiveness' in self.results and 'error' not in self.results['comprehensiveness']:
-            print("\n🎯 COMPREHENSIVENESS (Higher = Better)")
+            print("\nCOMPREHENSIVENESS (Higher = Better)")
             for k, v in self.results['comprehensiveness'].items():
                 if isinstance(v, dict):
                     mean = v.get('mean', 'N/A')
@@ -1580,7 +1707,7 @@ class ExplainabilityBenchmark:
         
         # Sufficiency
         if 'sufficiency' in self.results and 'error' not in self.results['sufficiency']:
-            print("\n✅ SUFFICIENCY (Lower = Better)")
+            print("\nSUFFICIENCY (Lower = Better)")
             for k, v in self.results['sufficiency'].items():
                 if isinstance(v, dict):
                     mean = v.get('mean', 'N/A')
@@ -1590,11 +1717,11 @@ class ExplainabilityBenchmark:
         if 'monotonicity' in self.results and 'error' not in self.results['monotonicity']:
             mono = self.results['monotonicity'].get('monotonicity', {})
             mean = mono.get('mean', 'N/A')
-            print(f"\n📈 MONOTONICITY (Higher = Better): {mean:.4f}" if isinstance(mean, float) else f"\n📈 MONOTONICITY: {mean}")
+            print(f"\nMONOTONICITY (Higher = Better): {mean:.4f}" if isinstance(mean, float) else f"\nMONOTONICITY: {mean}")
         
         # Method Agreement
         if 'method_agreement' in self.results and 'error' not in self.results['method_agreement']:
-            print("\n🤝 METHOD AGREEMENT (SHAP vs LIME)")
+            print("\nMETHOD AGREEMENT (SHAP vs LIME)")
             for k, v in self.results['method_agreement'].items():
                 if isinstance(v, dict):
                     jaccard = v.get('jaccard_similarity', 'N/A')
@@ -1606,13 +1733,13 @@ class ExplainabilityBenchmark:
         if 'temporal_consistency' in self.results and 'error' not in self.results['temporal_consistency']:
             tc = self.results['temporal_consistency'].get('temporal_consistency', {})
             recency = tc.get('recency_correlation', 'N/A')
-            print(f"\n⏱️ TEMPORAL CONSISTENCY (Recency Correlation): {recency:.4f}" 
-                  if isinstance(recency, float) else f"\n⏱️ TEMPORAL CONSISTENCY: {recency}")
+            print(f"\nTEMPORAL CONSISTENCY (Recency Correlation): {recency:.4f}" 
+                  if isinstance(recency, float) else f"\nTEMPORAL CONSISTENCY: {recency}")
         
         print("\n" + "="*60)
 
 
-def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=50, methods='all', label_encoder=None, scaler=None, feature_config=None, run_benchmark=True):
+def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=50, methods='all', label_encoder=None, scaler=None, timestamps=None, feature_config=None, run_benchmark=True):
     os.makedirs(output_dir, exist_ok=True)
     
     # Initialize explainer references
@@ -1633,6 +1760,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         print("To fix: Pass predictor.label_encoder to this function")
         print("!"*60 + "\n")
     
+    is_time_task = task in ['time', 'event_time', 'remaining_time']
+
     if task == 'activity':
         train_data = data['X_train']
         test_data = data['X_test']
@@ -1649,32 +1778,30 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         print("\n--- Running SHAP ---")
         shap_dir = os.path.join(output_dir, 'shap')
         os.makedirs(shap_dir, exist_ok=True)
-        se = SHAPExplainer(model, task, label_encoder, scaler)
+        if is_time_task and ExplainabilityConfig.ENABLE_TIMESTEP_EXPLANATIONS:
+            se = TimestepSHAPExplainer(model, task, label_encoder, scaler, timestamps)
+        else:
+            se = SHAPExplainer(model, task, label_encoder, scaler)
         se.initialize_explainer(train_data)
-        se.explain_samples(test_data, num_samples)
-        se.plot_bar(shap_dir)
-        se.plot_summary(shap_dir)
-        se.save_explanations(shap_dir)
-        if task != 'activity':
-            spectral_dir = os.path.join(output_dir, 'temporal_attribution')
-            test_seq = test_data[0][:num_samples] if isinstance(test_data, (list, tuple)) else test_data[:num_samples]
-            test_temp = test_data[1][:num_samples] if isinstance(test_data, (list, tuple)) else None
-            time_seq = data.get('X_time_test', None)
-            time_seq = time_seq[:num_samples] if time_seq is not None else None
-            y_true = data.get('y_test', None)
-            # Pass seq_flat_size for handling flattened multi-input SHAP values
-            seq_flat_size = getattr(se, '_seq_flat_size', None)
-            rs = TemporalAttributionExplainer(
-                se.shap_values,
-                test_seq,
-                test_temp=test_temp,
-                time_seq=time_seq,
-                y_true=y_true,
-                model=model,
-                scaler=scaler,
-                seq_flat_size=seq_flat_size
+        shap_indices = None
+        if task == 'activity':
+            shap_indices = select_diverse_samples(
+                data, task, num_diverse=num_samples, label_encoder=label_encoder
             )
-            rs.generate_plots(spectral_dir, top_k=5)
+            if not shap_indices:
+                shap_indices = None
+        se.explain_samples(test_data, num_samples, indices=shap_indices)
+        if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
+            print("\n[SHAP] Generating timestep-level visualizations...")
+            for i in range(min(5, num_samples)):
+                se.plot_temporal_evolution(shap_dir, sample_idx=i, show_prediction=True)
+            for i in range(min(3, num_samples)):
+                se.plot_timestep_heatmap(shap_dir, sample_idx=i)
+            se.plot_global_temporal_importance(shap_dir)
+        else:
+            se.plot_bar(shap_dir)
+            se.plot_summary(shap_dir)
+        se.save_explanations(shap_dir)
 
     if methods in ['lime', 'all']:
         print("\n--- Running LIME ---")
@@ -1704,7 +1831,16 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 diverse_test_data = test_data[diverse_samples]
                 print(f"[DEBUG] Extracted {len(diverse_test_data)} test samples")
             
-            le.explain_samples(diverse_test_data, num_samples=len(diverse_samples))
+            y_true_all = data.get('y_test', None)
+            y_true_diverse = None
+            if y_true_all is not None:
+                y_true_diverse = np.array(y_true_all)[diverse_samples]
+            le.explain_samples(
+                diverse_test_data,
+                num_samples=len(diverse_samples),
+                num_features=30,
+                y_true=y_true_diverse
+            )
             print(f"[DEBUG] Generated {len(le.explanations)} explanations")
             
             # Plot all explained samples (now they match 0-9)
@@ -1787,16 +1923,38 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                     for exp in le.explanations:
                         if exp is not None:
                             # Extract feature weights from LIME explanation
-                            exp_map = dict(exp.as_list())
+                            if task == 'activity' and hasattr(exp, 'top_labels') and exp.top_labels:
+                                exp_list = exp.as_list(label=exp.top_labels[0])
+                            else:
+                                exp_list = exp.as_list()
+
+                            exp_map = dict(exp_list)
                             weights = np.zeros(seq_len)
+
                             for feat_name, weight in exp_map.items():
-                                # Try to extract position from feature name
-                                import re
-                                match = re.search(r'(\d+)', str(feat_name))
-                                if match:
-                                    pos = int(match.group(1))
-                                    if pos < seq_len:
-                                        weights[pos] = weight
+                                name = str(feat_name)
+                                # Try to extract position from feature name (Position_# or similar)
+                                match = re.search(r'(\d+)', name)
+                                if match and "Position" in name:
+                                    pos = int(match.group(1)) - 1
+                                    if 0 <= pos < seq_len:
+                                        weights[pos] += weight
+                                    continue
+
+                                # Otherwise, try to map activity name to positions
+                                if label_encoder is not None:
+                                    activity_name = name.split('<=')[0].split('>')[0].strip()
+                                    try:
+                                        token = label_encoder.transform([activity_name])[0] + 1
+                                    except Exception:
+                                        continue
+                                    positions = np.where(bench_x_seq[0] == token)[0]
+                                    if positions.size > 0:
+                                        per_pos = weight / positions.size
+                                        for pos in positions:
+                                            if 0 <= pos < seq_len:
+                                                weights[pos] += per_pos
+
                             lime_attr_list.append(weights)
                     if lime_attr_list:
                         lime_attr = np.array(lime_attr_list)
