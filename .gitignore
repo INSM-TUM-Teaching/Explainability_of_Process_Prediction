@@ -22,6 +22,10 @@ env/
 # OS / IDE
 # ----------------------------
 .DS_Store
+.tmp/
+
+# Local-only helper for GCS bucket CORS setup
+cors.json
 .idea/
 .vscode/
 .python-version

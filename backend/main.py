@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -17,11 +17,19 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from collections import deque
 import re
+import importlib.util
+import importlib.metadata
 
 # -----------------------------------------------------------------------------
 # App
 # -----------------------------------------------------------------------------
-app = FastAPI(title="PPM Backend", version="0.1.0")
+app = FastAPI(
+    title="PPM Backend",
+    version="0.1.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 # Allow the Vite frontend to call the API during development
 app.add_middleware(
@@ -42,12 +50,14 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)  # allow importing project-level modules
 
 # Import preprocessing utilities
+# Note: some optional deps (e.g., pm4py) can fail at import time in certain runtimes.
+# We treat any failure as "preprocessor unavailable" and surface a clear error in the API.
 try:
     from conv_and_viz.preprocessor_csv import preprocess_event_log
     PREPROCESSOR_AVAILABLE = True
-except ImportError:
+except Exception as e:
     PREPROCESSOR_AVAILABLE = False
-    print("[WARNING] Preprocessor not available - skipping data cleaning")
+    print(f"[WARNING] Preprocessor not available - skipping data cleaning: {e}")
 
 STORAGE_DIR = os.path.join(BACKEND_DIR, "storage")
 UPLOAD_DIR = os.path.join(STORAGE_DIR, "uploads")
@@ -59,6 +69,9 @@ for d in (STORAGE_DIR, UPLOAD_DIR, DATASETS_DIR, RUNS_DIR):
 
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "400"))
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
+# If set, large uploads can be handled via signed URLs to GCS.
+UPLOAD_BUCKET = os.getenv("UPLOAD_BUCKET")  # e.g. "ppm-uploads-explainability-bedf8"
 
 # Use the same Python interpreter that runs uvicorn (your backend/.venv)
 PYTHON_EXEC = sys.executable
@@ -211,6 +224,121 @@ class ColumnMapping(BaseModel):
     activity: str
     timestamp: str
     resource: Optional[str] = None
+
+
+# -----------------------------------------------------------------------------
+# Upload helpers
+# -----------------------------------------------------------------------------
+def _build_dataset_response(meta: DatasetMeta, preview_rows: List[Dict[str, Any]]) -> DatasetUploadResponse:
+    return DatasetUploadResponse(
+        dataset_id=meta.dataset_id,
+        stored_path=meta.stored_path,
+        raw_path=meta.raw_path,
+        preprocessed_path=meta.preprocessed_path,
+        split_dataset_path=meta.split_dataset_path,
+        split_paths=meta.split_paths,
+        split_source=meta.split_source,
+        split_config=meta.split_config,
+        is_preprocessed=meta.is_preprocessed,
+        preprocessed_at=meta.preprocessed_at,
+        num_events=meta.num_events,
+        num_cases=meta.num_cases,
+        columns=meta.columns,
+        column_types=meta.column_types,
+        detected_mapping=meta.detected_mapping,
+        preview=preview_rows,
+    )
+
+
+def _ingest_dataset_from_disk(
+    *,
+    dataset_id: str,
+    filename: str,
+    preprocessed: bool,
+) -> DatasetUploadResponse:
+    """
+    Common ingestion path for datasets that already exist on disk:
+      - CSV stored at backend/storage/datasets/<id>/dataset.csv
+      - XES stored at backend/storage/datasets/<id>/dataset.xes (converted to CSV)
+    """
+    ds_dir = _dataset_dir(dataset_id)
+    stored_path = _dataset_file_path(dataset_id)  # final normalized CSV path
+
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in {"csv", "xes"}:
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="Only CSV or XES files are supported.")
+    if preprocessed and ext != "csv":
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="Preprocessed uploads must be CSV.")
+
+    raw_path = stored_path if ext == "csv" else os.path.join(ds_dir, "dataset.xes")
+
+    # Parse / convert
+    try:
+        if ext == "csv":
+            df = pd.read_csv(stored_path)
+        else:
+            try:
+                from backend.xes_to_csv import convert_xes_to_csv
+            except Exception:
+                shutil.rmtree(ds_dir, ignore_errors=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail="XES support requires pm4py; install backend dependencies.",
+                )
+
+            try:
+                csv_path, df, _ = convert_xes_to_csv(raw_path, ds_dir)
+            except Exception as e:
+                shutil.rmtree(ds_dir, ignore_errors=True)
+                raise HTTPException(status_code=400, detail=f"Failed to convert XES: {str(e)}")
+
+            # Normalize to dataset.csv for downstream code
+            if os.path.abspath(csv_path) != os.path.abspath(stored_path):
+                shutil.copyfile(csv_path, stored_path)
+    except HTTPException:
+        raise
+    except Exception as e:
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Failed to parse dataset: {str(e)}")
+
+    df = pd.read_csv(stored_path)
+    num_events = int(len(df))
+
+    case_col = None
+    case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
+    for col in df.columns:
+        if col in case_patterns:
+            case_col = col
+            break
+
+    num_cases = int(df[case_col].nunique()) if case_col else 0
+    preview_rows = df.head(20).to_dict(orient="records")
+    column_types = _infer_column_types(df)
+    preprocessed_at = _utc_now() if preprocessed else None
+
+    meta = DatasetMeta(
+        dataset_id=dataset_id,
+        stored_path=stored_path,
+        raw_path=stored_path,
+        preprocessed_path=(stored_path if preprocessed else None),
+        split_dataset_path=None,
+        split_paths=None,
+        split_source=None,
+        split_config=None,
+        is_preprocessed=bool(preprocessed),
+        preprocessed_at=preprocessed_at,
+        preprocessing_options=None,
+        num_events=num_events,
+        num_cases=num_cases,
+        columns=list(df.columns),
+        column_types=column_types,
+        detected_mapping={},  # No auto-detection - user will choose later
+        created_at=_utc_now(),
+    )
+    _write_json(_dataset_meta_path(dataset_id), meta.model_dump())
+    return _build_dataset_response(meta, preview_rows)
 
 
 class RunCreateRequest(BaseModel):
@@ -368,6 +496,194 @@ def health():
     return {"ok": True, "service": "ppm-backend"}
 
 
+@app.get("/api/version")
+def version():
+    """
+    Lightweight endpoint to verify which Cloud Run revision is currently serving traffic.
+    """
+    # IMPORTANT: keep this endpoint fast. Importing large ML libraries (e.g. tensorflow/torch)
+    # can take a long time and may exceed Cloud Run request timeouts. We only check whether
+    # the package is installed using metadata/spec checks (no import side effects).
+    def _pkg_info(mod: str, dist: str | None = None) -> Dict[str, Any]:
+        present = importlib.util.find_spec(mod) is not None
+        out: Dict[str, Any] = {"present": present}
+        if not present:
+            return out
+        try:
+            out["version"] = importlib.metadata.version(dist or mod)
+        except Exception:
+            # Not all import names match distribution names; version is best-effort.
+            pass
+        return out
+
+    return {
+        "service": os.getenv("K_SERVICE"),
+        "revision": os.getenv("K_REVISION"),
+        "configuration": os.getenv("K_CONFIGURATION"),
+        "max_upload_mb": MAX_UPLOAD_MB,
+        "upload_bucket": UPLOAD_BUCKET,
+        "docs_url": "/api/docs",
+        "deps": {
+            "torch": _pkg_info("torch", "torch"),
+            "torch_geometric": _pkg_info("torch_geometric", "torch-geometric"),
+            "tensorflow": _pkg_info("tensorflow", "tensorflow"),
+            "sklearn": _pkg_info("sklearn", "scikit-learn"),
+            "shap": _pkg_info("shap", "shap"),
+            "lime": _pkg_info("lime", "lime"),
+        },
+    }
+
+
+class SignedUploadResponse(BaseModel):
+    bucket: str
+    object_name: str
+    upload_url: str
+    expires_in_seconds: int
+
+
+class IngestGcsRequest(BaseModel):
+    bucket: str
+    object_name: str
+    filename: str
+    preprocessed: bool = False
+
+
+@app.post("/api/uploads/signed-url", response_model=SignedUploadResponse)
+def create_signed_upload_url(filename: str, content_type: str = "application/octet-stream"):
+    """
+    Returns a V4 signed URL for uploading a file directly to Cloud Storage via HTTP PUT.
+    This avoids Cloud Run request body limits for large uploads.
+    """
+    if not UPLOAD_BUCKET:
+        raise HTTPException(status_code=501, detail="UPLOAD_BUCKET is not configured on the backend.")
+    try:
+        from google.cloud import storage  # type: ignore
+        import google.auth  # type: ignore
+        from google.auth import impersonated_credentials  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"google-cloud-storage not installed: {e}")
+
+    def _service_account_email() -> str:
+        # Prefer explicit override.
+        for key in ("SIGNED_URL_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_EMAIL"):
+            v = os.getenv(key)
+            if v:
+                return v
+
+        # Cloud Run has a metadata server that can return the default SA email.
+        # https://cloud.google.com/run/docs/securing/service-identity#accessing_identity
+        import urllib.request
+
+        req = urllib.request.Request(
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email",
+            headers={"Metadata-Flavor": "Google"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return resp.read().decode("utf-8").strip()
+        except Exception:
+            # Last resort: if metadata is unavailable, fail with a clear message.
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Unable to determine service account email for signed URL generation. "
+                    "Set SIGNED_URL_SERVICE_ACCOUNT env var."
+                ),
+            )
+
+    safe_name = os.path.basename(filename or "upload.bin")
+    object_name = f"uploads/{uuid.uuid4()}/{safe_name}"
+    expires = 15 * 60
+
+    # Cloud Run default credentials do not include a private key, so we must sign via IAM
+    # (impersonated credentials / signBlob). This requires:
+    #  - iamcredentials.googleapis.com enabled
+    #  - roles/iam.serviceAccountTokenCreator on the runtime SA
+    sa_email = _service_account_email()
+    source_creds, _ = google.auth.default()
+    signing_creds = impersonated_credentials.Credentials(
+        source_credentials=source_creds,
+        target_principal=sa_email,
+        target_scopes=["https://www.googleapis.com/auth/devstorage.read_write"],
+        lifetime=expires,
+    )
+
+    client = storage.Client(credentials=source_creds)
+    bucket = client.bucket(UPLOAD_BUCKET)
+    blob = bucket.blob(object_name)
+    try:
+        upload_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=expires),
+            method="PUT",
+            content_type=content_type,
+            credentials=signing_creds,
+            service_account_email=sa_email,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Failed to generate signed URL via IAM. "
+                f"Ensure iamcredentials.googleapis.com is enabled and the service account "
+                f"has roles/iam.serviceAccountTokenCreator. Error: {e}"
+            ),
+        )
+
+    return SignedUploadResponse(
+        bucket=UPLOAD_BUCKET,
+        object_name=object_name,
+        upload_url=upload_url,
+        expires_in_seconds=expires,
+    )
+
+
+@app.post("/api/datasets/ingest-gcs", response_model=DatasetUploadResponse)
+def ingest_dataset_from_gcs(req: IngestGcsRequest):
+    """
+    Ingest a dataset that has been uploaded to Cloud Storage (typically using a signed URL).
+    Downloads the object to local storage and then uses the normal ingestion path.
+    """
+    try:
+        from google.cloud import storage  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"google-cloud-storage not installed: {e}")
+
+    filename = req.filename or "dataset.csv"
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in {"csv", "xes"}:
+        raise HTTPException(status_code=400, detail="Only CSV or XES files are supported.")
+    if req.preprocessed and ext != "csv":
+        raise HTTPException(status_code=400, detail="Preprocessed uploads must be CSV.")
+
+    dataset_id = str(uuid.uuid4())
+    ds_dir = _dataset_dir(dataset_id)
+    os.makedirs(ds_dir, exist_ok=True)
+
+    stored_path = _dataset_file_path(dataset_id)  # final normalized CSV path
+    raw_path = stored_path if ext == "csv" else os.path.join(ds_dir, "dataset.xes")
+
+    client = storage.Client()
+    blob = client.bucket(req.bucket).blob(req.object_name)
+    try:
+        blob.reload()
+    except Exception as e:
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=404, detail=f"GCS object not found: {e}")
+
+    if blob.size is not None and blob.size > MAX_UPLOAD_BYTES:
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=413, detail=f"File too large. Max allowed is {MAX_UPLOAD_MB} MB.")
+
+    try:
+        blob.download_to_filename(raw_path)
+    except Exception as e:
+        shutil.rmtree(ds_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Failed to download from GCS: {e}")
+
+    return _ingest_dataset_from_disk(dataset_id=dataset_id, filename=filename, preprocessed=req.preprocessed)
+
+
 @app.post("/api/datasets/upload", response_model=DatasetUploadResponse)
 async def upload_dataset(file: UploadFile = File(...), preprocessed: bool = False):
     """
@@ -406,100 +722,7 @@ async def upload_dataset(file: UploadFile = File(...), preprocessed: bool = Fals
     finally:
         await file.close()
 
-    # Parse / convert
-    try:
-        if ext == "csv":
-            df = pd.read_csv(stored_path)
-        else:
-            try:
-                from backend.xes_to_csv import convert_xes_to_csv
-            except Exception:
-                shutil.rmtree(ds_dir, ignore_errors=True)
-                raise HTTPException(
-                    status_code=500,
-                    detail="XES support requires pm4py; install backend dependencies.",
-                )
-
-            try:
-                csv_path, df, _ = convert_xes_to_csv(raw_path, ds_dir)
-            except Exception as e:
-                shutil.rmtree(ds_dir, ignore_errors=True)
-                raise HTTPException(status_code=400, detail=f"Failed to convert XES: {str(e)}")
-
-            # Normalize to dataset.csv for downstream code
-            if os.path.abspath(csv_path) != os.path.abspath(stored_path):
-                shutil.copyfile(csv_path, stored_path)
-    except HTTPException:
-        raise
-    except Exception as e:
-        shutil.rmtree(ds_dir, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"Failed to parse dataset: {str(e)}")
-
-    # Read raw CSV (no preprocessing on upload)
-    df = pd.read_csv(stored_path)
-
-    num_events = int(len(df))
-    
-    # Try to detect CaseID for num_cases, but don't rename columns
-    case_col = None
-    case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
-    for col in df.columns:
-        if col in case_patterns:
-            case_col = col
-            break
-    
-    if case_col:
-        num_cases = int(df[case_col].nunique())
-    else:
-        num_cases = 0  # Unknown until column mapping
-
-    preview_rows = df.head(20).to_dict(orient="records")
-    column_types = _infer_column_types(df)
-
-    preprocessed_at = _utc_now() if preprocessed else None
-
-    meta = DatasetMeta(
-        dataset_id=dataset_id,
-        stored_path=stored_path,
-        raw_path=stored_path,
-        preprocessed_path=None,
-        split_dataset_path=None,
-        split_paths=None,
-        split_source=None,
-        split_config=None,
-        is_preprocessed=False,
-        preprocessed_at=preprocessed_at,
-        preprocessing_options=None,
-        num_events=num_events,
-        num_cases=num_cases,
-        columns=list(df.columns),
-        column_types=column_types,
-        detected_mapping={},  # No auto-detection
-        created_at=_utc_now(),
-    )
-    if preprocessed:
-        meta.preprocessed_path = stored_path
-        meta.is_preprocessed = True
-    _write_json(_dataset_meta_path(dataset_id), meta.model_dump())
-
-    return DatasetUploadResponse(
-        dataset_id=dataset_id,
-        stored_path=stored_path,
-        raw_path=stored_path,
-        preprocessed_path=meta.preprocessed_path,
-        split_dataset_path=None,
-        split_paths=None,
-        split_source=None,
-        split_config=None,
-        is_preprocessed=meta.is_preprocessed,
-        preprocessed_at=preprocessed_at,
-        num_events=num_events,
-        num_cases=num_cases,
-        columns=list(df.columns),
-        column_types=column_types,
-        detected_mapping={},  # No auto-detection - user will choose later
-        preview=preview_rows,
-    )
+    return _ingest_dataset_from_disk(dataset_id=dataset_id, filename=filename, preprocessed=preprocessed)
 
 
 @app.post("/api/datasets/{dataset_id}/preprocess", response_model=DatasetUploadResponse)

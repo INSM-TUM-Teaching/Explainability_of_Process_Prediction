@@ -5,6 +5,16 @@ const RAW_API_BASE =
 
 export const API_BASE = RAW_API_BASE.replace(/\/+$/, ""); // trim trailing slashes
 
+export type VersionRes = {
+  service?: string;
+  revision?: string;
+  configuration?: string;
+  max_upload_mb?: number;
+  upload_bucket?: string | null;
+  docs_url?: string;
+  deps?: Record<string, boolean>;
+};
+
 // -----------------------------
 // JSON-safe types (no `any`)
 // -----------------------------
@@ -126,6 +136,51 @@ async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
   }
 
   return res;
+}
+
+export async function fetchVersion(): Promise<VersionRes> {
+  const res = await apiFetch(`${API_BASE}/version`);
+  return (await res.json()) as VersionRes;
+}
+
+export type SignedUploadRes = {
+  bucket: string;
+  object_name: string;
+  upload_url: string;
+  expires_in_seconds: number;
+};
+
+export async function createSignedUploadUrl(params: {
+  filename: string;
+  content_type?: string;
+}): Promise<SignedUploadRes> {
+  const q = new URLSearchParams({
+    filename: params.filename,
+    content_type: params.content_type ?? "application/octet-stream",
+  });
+  const res = await apiFetch(`${API_BASE}/uploads/signed-url?${q.toString()}`, {
+    method: "POST",
+  });
+  return (await res.json()) as SignedUploadRes;
+}
+
+export async function ingestDatasetFromGcs(params: {
+  bucket: string;
+  object_name: string;
+  filename: string;
+  preprocessed?: boolean;
+}): Promise<DatasetUploadResponse> {
+  const res = await apiFetch(`${API_BASE}/datasets/ingest-gcs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      bucket: params.bucket,
+      object_name: params.object_name,
+      filename: params.filename,
+      preprocessed: Boolean(params.preprocessed),
+    }),
+  });
+  return (await res.json()) as DatasetUploadResponse;
 }
 
 function encodeArtifactPath(path: string): string {

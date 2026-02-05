@@ -1,0 +1,46 @@
+substitutions:
+  _IMAGE: europe-west1-docker.pkg.dev/explainability-bedf8/cloud-run-source-deploy/ppm-backend:cached
+
+steps:
+  # Best-effort pull to seed Docker layer cache (ok if missing).
+  - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -lc
+      - |
+        docker pull "${_IMAGE}" || true
+
+  # Build using cache (do NOT use --no-cache).
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - "${_IMAGE}"
+      - --cache-from
+      - "${_IMAGE}"
+      - .
+
+images:
+  - "${_IMAGE}"
+
+timeout: "3600s"
+
+options:
+  machineType: "E2_HIGHCPU_8"
+  diskSizeGb: 100
+
+# Optional: deploy to Cloud Run as part of the build (one-command redeploy)
+# Requires Cloud Build SA to have Cloud Run Admin + Service Account User.
+  # - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  #   entrypoint: gcloud
+  #   args:
+  #     - run
+  #     - deploy
+  #     - "${_SERVICE}"
+  #     - --image
+  #     - "${_IMAGE}"
+  #     - --region
+  #     - "${_REGION}"
+  #     - --platform
+  #     - managed
+  #     - --allow-unauthenticated

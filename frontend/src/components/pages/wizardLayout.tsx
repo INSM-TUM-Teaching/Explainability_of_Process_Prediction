@@ -541,7 +541,7 @@ export default function WizardLayout() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [pipelineStatus, runId]);
+  }, [pipelineStatus, runId, autoDownloadedRunId]);
 
   /* -------------------- RENDER -------------------- */
   const showResults = viewMode === "results";

@@ -1,24 +1,40 @@
+**
+
+!.dockerignore
+!Dockerfile
+
+# Backend runtime code
+!backend/**
+!conv_and_viz/**
+!explainability/**
+!gnns/**
+!transformers/**
+!utils/**
+!ppm_pipeline.py
+
+# Keep dependency manifest
+!backend/requirements.txt
+
+# Always exclude local/large artifacts even if they live under allowed paths
+backend/.venv/
+backend/storage/
+backend/__pycache__/
+backend/**/__pycache__/
 **/__pycache__/
 **/*.pyc
 **/.DS_Store
+
+# VCS / IDE
 .git/
 .idea/
 .vscode/
 
-# Python virtualenvs
-venv*/
-**/.venv/
-backend/.venv/
-venv_bpm/
-venv_gnn/
-
-# Frontend dev deps/builds
-frontend/node_modules/
-frontend/.vite/
-
-# Large / generated artifacts
+# Frontend and other large folders (not needed for backend image)
+frontend/
 BPI_Models/
 results/
 comprehensive_test_results/
-backend/storage/
 temp_processing/
+venv*/
+venv_bpm/
+venv_gnn/

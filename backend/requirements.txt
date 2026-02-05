@@ -4,3 +4,26 @@ pandas>=2.0.0
 python-multipart>=0.0.9
 # Optional: XES upload conversion
 pm4py==2.7.6
+
+# -----------------------------
+# ML runtime (Cloud Run)
+# -----------------------------
+# Required for GNN runs (see gnns/prediction/*)
+torch==2.9.1
+torch-geometric==2.7.0
+
+# Required for Transformer runs (see transformers/prediction/*)
+tensorflow==2.20.0
+scikit-learn==1.7.2
+
+# Common runtime utilities used by the pipeline
+matplotlib==3.10.7
+tqdm==4.67.1
+
+# Explainability (optional in UI, but supported in hosted backend)
+shap==0.49.1
+lime==0.2.0.1
+
+# Large file upload support (signed URLs)
+google-cloud-storage>=2.16.0
+google-auth>=2.0.0

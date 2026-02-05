@@ -3,6 +3,9 @@ import Card from "../ui/card";
 import UploadDropzone from "../ui/UploadDropZone";
 import type { DatasetUploadResponse, SplitConfig } from "../../lib/api";
 import {
+  fetchVersion,
+  createSignedUploadUrl,
+  ingestDatasetFromGcs,
   generateSplits,
   preprocessedDatasetUrl,
   preprocessDataset,
@@ -24,8 +27,6 @@ type Step1UploadProps = {
   onClear?: () => void;
 };
 
-const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB ?? 400);
-const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 const MIN_SPLIT_PCT = 1;
 const TRAIN_COLOR = "#1E3F7C";
 const VALID_COLOR = "#3F6DBE";
@@ -60,6 +61,14 @@ export default function Step1Upload({
   onDatasetUpdate,
   onClear,
 }: Step1UploadProps) {
+  const DEFAULT_MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB ?? 400);
+  const DIRECT_UPLOAD_MAX_MB = Number(import.meta.env.VITE_DIRECT_UPLOAD_MAX_MB ?? 25);
+
+  const [maxUploadMB, setMaxUploadMB] = useState(DEFAULT_MAX_UPLOAD_MB);
+  const [supportsGcsLargeUploads, setSupportsGcsLargeUploads] = useState(false);
+  const maxUploadBytes = maxUploadMB * 1024 * 1024;
+  const directUploadMaxBytes = DIRECT_UPLOAD_MAX_MB * 1024 * 1024;
+
   const [isUploading, setIsUploading] = useState(false);
   const [isPreprocessing, setIsPreprocessing] = useState(false);
   const [isGeneratingSplits, setIsGeneratingSplits] = useState(false);
@@ -86,6 +95,26 @@ export default function Step1Upload({
   const [testSplit, setTestSplit] = useState<File | null>(null);
   const [dragHandle, setDragHandle] = useState<"train" | "val" | null>(null);
   const sliderRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchVersion()
+      .then((v) => {
+        const serverMax = Number(v.max_upload_mb);
+        if (!cancelled && Number.isFinite(serverMax) && serverMax > 0) {
+          setMaxUploadMB(serverMax);
+        }
+        if (!cancelled) {
+          setSupportsGcsLargeUploads(Boolean(v.upload_bucket));
+        }
+      })
+      .catch(() => {
+        // ignore; keep local default
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const calcPercentsFromSplit = (cfg: SplitConfig) => {
     const testPct = Math.round(cfg.test_size * 100);
@@ -125,7 +154,6 @@ export default function Step1Upload({
       Math.min(nextValEnd, 100 - MIN_SPLIT_PCT)
     );
 
-    const nextTrainPct = clampedTrain;
     const nextValPct = clampedVal - clampedTrain;
     const nextTestPct = 100 - clampedVal;
 
@@ -214,8 +242,8 @@ export default function Step1Upload({
       return;
     }
 
-    if (file.size > MAX_UPLOAD_BYTES) {
-      setError(`File too large. Max allowed size is ${MAX_UPLOAD_MB} MB.`);
+    if (file.size > maxUploadBytes) {
+      setError(`File too large. Max allowed size is ${maxUploadMB} MB.`);
       return;
     }
 
@@ -231,7 +259,40 @@ export default function Step1Upload({
 
     setIsUploading(true);
     try {
-      const resp = await uploadDataset(file, { preprocessed: mode === "preprocessed" });
+      const shouldUseGcs = file.size > directUploadMaxBytes;
+      if (shouldUseGcs && !supportsGcsLargeUploads) {
+        throw new Error(
+          `Large uploads are not enabled on the hosted backend. Please upload a smaller file (<= ${DIRECT_UPLOAD_MAX_MB} MB) or configure Cloud Storage uploads.`
+        );
+      }
+
+      const resp = shouldUseGcs
+        ? await (async () => {
+            const signed = await createSignedUploadUrl({
+              filename: file.name,
+              content_type: file.type || "application/octet-stream",
+            });
+
+            const putRes = await fetch(signed.upload_url, {
+              method: "PUT",
+              headers: { "Content-Type": file.type || "application/octet-stream" },
+              body: file,
+            });
+            if (!putRes.ok) {
+              const t = await putRes.text().catch(() => "");
+              throw new Error(
+                `Cloud upload failed (${putRes.status})${t ? ` — ${t}` : ""}`
+              );
+            }
+
+            return ingestDatasetFromGcs({
+              bucket: signed.bucket,
+              object_name: signed.object_name,
+              filename: file.name,
+              preprocessed: mode === "preprocessed",
+            });
+          })()
+        : await uploadDataset(file, { preprocessed: mode === "preprocessed" });
       onUploaded(file, resp);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Upload failed.";
@@ -775,7 +836,12 @@ export default function Step1Upload({
       <Card title="Dataset Requirements">
         <div className="bg-brand-50 border border-brand-200 rounded-lg p-4">
           <ul className="text-sm text-gray-700 list-disc ml-5 space-y-1">
-            <li>File size: Maximum {MAX_UPLOAD_MB} MB</li>
+            <li>File size: Maximum {maxUploadMB} MB</li>
+            {supportsGcsLargeUploads && (
+              <li>
+                Large files ({DIRECT_UPLOAD_MAX_MB}MB+) are uploaded via Cloud Storage to bypass Cloud Run limits.
+              </li>
+            )}
             <li>Formats: CSV or XES (preprocessed and splits must be CSV)</li>
             <li>Required columns: Case ID, Activity, Timestamp</li>
           </ul>
