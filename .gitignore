@@ -68,3 +68,9 @@ cors.json
 
 # Local temp dir
 .tmp/
+
+# Local Firebase state
+.firebase/
+
+# Generated preprocessing artifacts
+temp_processing/
