@@ -2,23 +2,25 @@
 
 PPMX (Predictive Process Monitoring Explainer) is a tool for Predictive Process Monitoring (PPM) which provides fast and easy No Code solution for process prediction and explainability to black box models like Transformer and Graph Neural Networks (GNNs) with explainability and benchmarking. It is designed for experimentation on event logs, and allows users to train models, inspect results, and compare explainability methods in a single workflow.
 
+**PPMX Architecture**
+![PPMX Architecture](frontend/src/assets/ppmx_software_architecture_updated.png)
+
 **Key Features**
 - No-code workflow for training and explainability.
 - Transformer and GNN support for next activity, event time, and remaining time.
 - Explainability and benchmarking in one pipeline.
 - Frontend dashboard powered by a FastAPI backend.
 
-**Architecture**
-![PPMX Architecture](frontend/src/assets/ppmx_software_architecture_updated.png)
 
-**System Structure**
-This diagram summarizes the frontend-backend structure and the APIs used across the system.
-![System Structure](frontend/src/assets/system_structure.png)
 
 **Tech Stack**
 - Frontend: Vite + React + TypeScript
 - Backend: FastAPI + Python
 - ML: TensorFlow, PyTorch, PyTorch Geometric
+
+**PPMX System Structure and APIs**
+This diagram summarizes the frontend-backend structure and the APIs used across the system.
+![System Structure](frontend/src/assets/system_structure.png)
 
 **Requirements**
 - Python 3.10+ recommended
