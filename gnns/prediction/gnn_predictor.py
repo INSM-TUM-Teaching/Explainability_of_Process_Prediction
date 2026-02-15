@@ -19,6 +19,13 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
 
 
+def _signed_log1p(value):
+    v = float(value)
+    if not np.isfinite(v):
+        raise ValueError("Non-finite trace value")
+    return np.sign(v) * np.log1p(abs(v))
+
+
 class GraphFolderDataset(Dataset):
 
     def __init__(self, folder: str):
@@ -196,8 +203,8 @@ class GNNPredictor:
                         trace_features.append(F.one_hot(torch.tensor(idx), num_classes=len(vocabs[col])).float())
                     else:
                         try:
-                            trace_features.append(torch.tensor([np.log1p(float(val))], dtype=torch.float32))
-                        except:
+                            trace_features.append(torch.tensor([_signed_log1p(val)], dtype=torch.float32))
+                        except Exception:
                             trace_features.append(torch.zeros(1))
                 
                 if not trace_features:

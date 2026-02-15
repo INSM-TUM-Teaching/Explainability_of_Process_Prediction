@@ -14,7 +14,7 @@ from ppm_pipeline import (
     run_gnn_unified_prediction,
 )
 
-DEFAULT_RESULTS_DIR = "automated_batch_results"
+DEFAULT_RESULTS_DIR = "automated_batch_results_v2"
 DEFAULT_DATASET_DIR = os.path.join("BPI_dataset", "BPI_logs_preprocessed_csv")
 DEFAULT_TEST_SIZE = 0.1
 # val_split is a fraction of the remaining (train+val) set.
@@ -136,6 +136,31 @@ class BatchRunner:
             specs = self.build_run_specs(dataset_name)
             for spec in specs:
                 run_index += 1
+                if run_index == 14:
+                    description = f"{spec['dataset_name']} | {spec['model'].upper()} | {spec['task']}"
+                    safe_name = description.replace(" ", "_").replace("|", "-")
+                    run_dir = os.path.join(self.output_dir, f"run_{run_index:03d}_{safe_name}")
+                    os.makedirs(run_dir, exist_ok=True)
+                    self.log("\n" + "-" * 80)
+                    self.log(f"RUN {run_index}/{total_runs}: {description}")
+                    self.log("-" * 80)
+                    self.log("[SKIP] Run 14 skipped by configuration.")
+                    with open(os.path.join(run_dir, "SKIPPED.txt"), "w", encoding="utf-8") as f:
+                        f.write("Skipped by configuration: run_index == 14\n")
+                    result = {
+                        "run": run_index,
+                        "dataset": spec["dataset_name"],
+                        "model": spec["model"],
+                        "task": spec["task"],
+                        "output_dir": run_dir,
+                        "success": False,
+                        "duration_s": 0.0,
+                        "missing_images": [],
+                        "metrics": {},
+                        "skipped": True,
+                    }
+                    self.results.append(result)
+                    continue
                 self.run_single(spec, run_index, total_runs)
 
         summary_path = os.path.join(self.output_dir, "batch_summary.json")
@@ -247,6 +272,10 @@ class BatchRunner:
                 f.write(str(exc) + "\n\n")
                 f.write("Traceback:\n")
                 f.write(traceback.format_exc())
+
+            raw_err_path = os.path.join(run_dir, "ERROR_MESSAGE.txt")
+            with open(raw_err_path, "w", encoding="utf-8") as f:
+                f.write(str(exc))
 
             self.log(f"[X] Error log saved: {err_path}")
 

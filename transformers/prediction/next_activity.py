@@ -49,6 +49,10 @@ class NextActivityPredictor:
             'concept:name': 'activity',
             'time:timestamp': 'timestamp',
         })
+        if process_data.columns.duplicated().any():
+            dupes = process_data.columns[process_data.columns.duplicated()].unique().tolist()
+            print(f"[WARN] Dropping duplicate columns: {dupes}")
+            process_data = process_data.loc[:, ~process_data.columns.duplicated()]
         process_data['timestamp'] = pd.to_datetime(process_data['timestamp'])
         process_data = process_data.sort_values(['case_id', 'timestamp']).reset_index(drop=True)
         sequences_all, next_activities_all, metadata = self._create_sequences_with_prefixes(
