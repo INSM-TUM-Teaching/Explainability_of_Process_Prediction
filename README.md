@@ -9,8 +9,7 @@ PPMX (Predictive Process Monitoring Explainer) is a tool for Predictive Process 
 - No-code workflow for training and explainability.
 - Transformer and GNN support for next activity, event time, and remaining time.
 - Explainability and benchmarking in one pipeline.
-- Frontend dashboard powered by a FastAPI backend.
-
+- Frontend dashboard powered by a FastAPI backend
 
 
 **Tech Stack**
