@@ -142,6 +142,59 @@ class EventTimePredictor:
         print(f"Event time targets shape: {y_train.shape}")
         print(f"Vocabulary size: {self.vocab_size}")
         
+        # ==================== NEW: Extract Timestamps for Explainability ====================
+        print("\nExtracting timestamps for explainability...")
+        
+        def extract_timestamps_for_sequences(df_data, max_length):
+            """Extract timestamp labels for each sequence"""
+            all_timestamps = []
+            
+            for case_id, group in df_data.groupby('case:concept:name'):
+                group = group.sort_values('time:timestamp').reset_index(drop=True)
+                timestamps = group['time:timestamp'].values
+                
+                # Calculate relative time from case start
+                start_time = timestamps[0]
+                
+                # Create prefix sequences (same as training data generation)
+                for i in range(1, len(timestamps)):
+                    # Get timestamps for prefix up to position i
+                    prefix_timestamps = timestamps[:i]
+                    
+                    # Calculate days from start for each timestamp
+                    timestamp_labels = []
+                    for j, ts in enumerate(prefix_timestamps):
+                        days_diff = (ts - start_time).astype('timedelta64[s]').astype(float) / 86400
+                        if days_diff == 0:
+                            timestamp_labels.append("Day 0")
+                        else:
+                            timestamp_labels.append(f"Day {days_diff:.1f}")
+                    
+                    # Pad to max_length (prepend padding like sequences)
+                    if len(timestamp_labels) < max_length:
+                        padded = ['[PAD]'] * (max_length - len(timestamp_labels)) + timestamp_labels
+                    else:
+                        padded = timestamp_labels[-max_length:]
+                    
+                    all_timestamps.append(padded)
+            
+            return all_timestamps
+        
+        # Extract timestamps for all data
+        all_timestamps = extract_timestamps_for_sequences(df, self.max_len)
+        
+        # Split timestamps same way as sequences
+        timestamps_train, timestamps_temp = train_test_split(
+            all_timestamps, test_size=test_size, random_state=42
+        )
+        
+        timestamps_val, timestamps_test = train_test_split(
+            timestamps_temp, test_size=val_split, random_state=42
+        )
+        
+        print(f"Extracted timestamps for {len(timestamps_test)} test samples")
+        # ==================== END: Timestamp Extraction ====================
+        
         print(f"\nDataset splits:")
         print(f"Train: {len(X_seq_train):,} samples")
         print(f"Validation: {len(X_seq_val):,} samples")
@@ -172,8 +225,16 @@ class EventTimePredictor:
         print("Temporal features created.")
         return df
     
-    def build_model(self):
+    def build_model(self, use_timestep_explainability=True):
+        """
+        Build Event Time Prediction Model.
+        
+        Args:
+            use_timestep_explainability: If True (default), enables timestep-level 
+                                        explanations for SHAP/LIME
+        """
         print("\nBuilding Event Time Prediction Model...")
+        print(f"Timestep explainability: {'ENABLED' if use_timestep_explainability else 'DISABLED'}")
         
         self.model = build_time_prediction_model(
             vocab_size=self.vocab_size,
@@ -181,14 +242,25 @@ class EventTimePredictor:
             d_model=self.d_model,
             num_heads=self.num_heads,
             num_blocks=self.num_blocks,
-            dropout_rate=self.dropout_rate
+            dropout_rate=self.dropout_rate,
+            use_timestep_explainability=use_timestep_explainability
         )
 
-        self.model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
-            loss='mae',
-            metrics=['mae']
-        )
+        # Handle compilation based on model type
+        if len(self.model.outputs) > 1:
+            print("Model type: Timestep-explainable (2 outputs)")
+            self.model.compile(
+                optimizer=keras.optimizers.Adam(learning_rate=0.001),
+                loss=['mae', None],
+                metrics={'time_output': ['mae']}
+            )
+        else:
+            print("Model type: Original (1 output)")
+            self.model.compile(
+                optimizer=keras.optimizers.Adam(learning_rate=0.001),
+                loss='mae',
+                metrics=['mae']
+            )
         
         print("\nModel Summary:")
         self.model.summary()
@@ -203,15 +275,29 @@ class EventTimePredictor:
             verbose=1
         )
         
-        self.history = self.model.fit(
-            [data['X_seq_train'], data['X_temp_train']], 
-            data['y_train'],
-            validation_data=([data['X_seq_val'], data['X_temp_val']], data['y_val']),
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=[early_stopping],
-            verbose=1
-        )
+        if len(self.model.outputs) > 1:
+            self.history = self.model.fit(
+                [data['X_seq_train'], data['X_temp_train']], 
+                [data['y_train'], None],
+                validation_data=(
+                    [data['X_seq_val'], data['X_temp_val']], 
+                    [data['y_val'], None]
+                ),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=[early_stopping],
+                verbose=1
+            )
+        else:
+            self.history = self.model.fit(
+                [data['X_seq_train'], data['X_temp_train']], 
+                data['y_train'],
+                validation_data=([data['X_seq_val'], data['X_temp_val']], data['y_val']),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=[early_stopping],
+                verbose=1
+            )
         
         print("\nTraining completed!")
         return self.history
@@ -219,11 +305,20 @@ class EventTimePredictor:
     def evaluate(self, data):
         print("\nEvaluating on test set...")
         
-        test_loss, test_mae = self.model.evaluate(
-            [data['X_seq_test'], data['X_temp_test']], 
-            data['y_test'], 
-            verbose=0
-        )
+        if len(self.model.outputs) > 1:
+            results = self.model.evaluate(
+                [data['X_seq_test'], data['X_temp_test']], 
+                [data['y_test'], None],
+                verbose=0
+            )
+            test_loss = results[1] if len(results) > 1 else results[0]
+            test_mae = results[2] if len(results) > 2 else results[-1]
+        else:
+            test_loss, test_mae = self.model.evaluate(
+                [data['X_seq_test'], data['X_temp_test']], 
+                data['y_test'], 
+                verbose=0
+            )
         
         print(f"Test MAE: {test_mae:.4f} days")
         print(f"Test Loss: {test_loss:.4f}")
@@ -236,19 +331,30 @@ class EventTimePredictor:
     def predict(self, data):
         print("\nGenerating predictions...")
         
-        y_pred = self.model.predict(
+        outputs = self.model.predict(
             [data['X_seq_test'], data['X_temp_test']], 
             verbose=0
-        ).flatten()
+        )
         
-        print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
-        
-        return y_pred
+        if isinstance(outputs, list) and len(outputs) > 1:
+            y_pred = outputs[0].flatten()
+            timestep_preds = outputs[1]
+            print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
+            print(f"  - Final predictions shape: {y_pred.shape}")
+            print(f"  - Timestep predictions shape: {timestep_preds.shape}")
+            return y_pred, timestep_preds
+        else:
+            y_pred = outputs.flatten() if hasattr(outputs, 'flatten') else outputs
+            print(f"Predictions generated for {len(data['X_seq_test']):,} test samples.")
+            return y_pred, None
     
     def save_results(self, data, y_pred, output_dir):
         print("\nSaving results...")
         
         os.makedirs(output_dir, exist_ok=True)
+        
+        if isinstance(y_pred, tuple):
+            y_pred = y_pred[0]
         
         results = pd.DataFrame({
             'actual_event_time_days': data['y_test'],
@@ -265,6 +371,9 @@ class EventTimePredictor:
         print("\nPlotting predictions...")
         
         os.makedirs(output_dir, exist_ok=True)
+        
+        if isinstance(y_pred, tuple):
+            y_pred = y_pred[0]
         
         plt.figure(figsize=(10, 6))
         plt.scatter(data['y_test'], y_pred, alpha=0.5, s=10)
@@ -294,9 +403,19 @@ class EventTimePredictor:
         
         os.makedirs(output_dir, exist_ok=True)
         
+        if 'loss' in self.history.history:
+            train_loss_key = 'loss'
+            val_loss_key = 'val_loss'
+        elif 'time_output_loss' in self.history.history:
+            train_loss_key = 'time_output_loss'
+            val_loss_key = 'val_time_output_loss'
+        else:
+            print("Could not find loss keys in history")
+            return
+        
         plt.figure(figsize=(10, 6))
-        plt.plot(self.history.history["loss"], label="Training Loss", linewidth=2)
-        plt.plot(self.history.history["val_loss"], label="Validation Loss", linewidth=2)
+        plt.plot(self.history.history[train_loss_key], label="Training Loss", linewidth=2)
+        plt.plot(self.history.history[val_loss_key], label="Validation Loss", linewidth=2)
         plt.title("Event Time Prediction - Loss Over Time", fontsize=14)
         plt.xlabel("Epoch", fontsize=12)
         plt.ylabel("Loss (MAE)", fontsize=12)
@@ -310,9 +429,9 @@ class EventTimePredictor:
         print(f"Training history plot saved to: {output_path}")
         
         print("\nTraining metrics:")
-        print(f"Final training loss: {self.history.history['loss'][-1]:.4f}")
-        print(f"Final validation loss: {self.history.history['val_loss'][-1]:.4f}")
-        print(f"Best validation loss: {min(self.history.history['val_loss']):.4f}")
+        print(f"Final training loss: {self.history.history[train_loss_key][-1]:.4f}")
+        print(f"Final validation loss: {self.history.history[val_loss_key][-1]:.4f}")
+        print(f"Best validation loss: {min(self.history.history[val_loss_key]):.4f}")
     
     def save_model(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
