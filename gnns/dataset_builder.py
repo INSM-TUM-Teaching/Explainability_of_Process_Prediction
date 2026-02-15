@@ -77,6 +77,13 @@ def build_dfr_edges(k: int):
     return torch.stack([idx[:-1], idx[1:]])
 
 
+def _signed_log1p(value):
+    v = float(value)
+    if not np.isfinite(v):
+        raise ValueError("Non-finite trace value")
+    return np.sign(v) * np.log1p(abs(v))
+
+
 def build_graph(prefix: pd.DataFrame, vocabs, trace_attributes):
     data = HeteroData()
     k = len(prefix)
@@ -119,8 +126,8 @@ def build_graph(prefix: pd.DataFrame, vocabs, trace_attributes):
             )
         else:
             try:
-                trace_features.append(torch.tensor([np.log1p(float(val))], dtype=torch.float32))
-            except:
+                trace_features.append(torch.tensor([_signed_log1p(val)], dtype=torch.float32))
+            except Exception:
                 trace_features.append(torch.zeros(1))
 
     if not trace_features:

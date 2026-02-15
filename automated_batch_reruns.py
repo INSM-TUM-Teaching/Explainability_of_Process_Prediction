@@ -1,9 +1,11 @@
 import argparse
 import json
 import os
+import sys
 import time
 import traceback
 from datetime import datetime
+from contextlib import contextmanager
 
 from ppm_pipeline import (
     default_transformer_config,
@@ -23,6 +25,52 @@ DEFAULT_VAL_SPLIT = 1.0 / 9.0
 
 def _now_tag():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+class _TeeStream:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+            stream.flush()
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+@contextmanager
+def _capture_output(path):
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    with open(path, "w", encoding="utf-8") as f:
+        sys.stdout = _TeeStream(original_stdout, f)
+        sys.stderr = _TeeStream(original_stderr, f)
+        try:
+            yield f
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+
+
+def _normalize_run_ids(values):
+    if not values:
+        return None
+    tokens = []
+    for value in values:
+        for token in str(value).split(","):
+            token = token.strip()
+            if token:
+                tokens.append(token)
+    run_ids = []
+    for token in tokens:
+        try:
+            run_ids.append(int(token))
+        except ValueError as exc:
+            raise ValueError(f"Invalid run id: {token}") from exc
+    return sorted(set(run_ids))
 
 
 def _dir_has_png(path):
@@ -108,11 +156,19 @@ class RerunBatchRunner:
         with open(self.universal_error_log, "a", encoding="utf-8") as f:
             f.write(message + "\n")
 
-    def load_failed_runs(self):
+    def load_failed_runs(self, run_ids=None):
         if not os.path.exists(self.summary_path):
             raise FileNotFoundError(f"Summary not found: {self.summary_path}")
         with open(self.summary_path, "r", encoding="utf-8") as f:
             rows = json.load(f)
+
+        if run_ids:
+            selected = [row for row in rows if row.get("run") in run_ids]
+            if not selected:
+                self.log("[X] No matching runs found for the requested run IDs.")
+            else:
+                self.log(f"Selected {len(selected)} runs by ID: {', '.join(map(str, run_ids))}")
+            return selected
 
         failed = [row for row in rows if not row.get("success", False)]
         if not failed:
@@ -157,12 +213,13 @@ class RerunBatchRunner:
                 "dataset_name": dataset_name,
                 "dataset_path": dataset_path,
                 "runner": runner,
+                "source_run": row.get("run"),
             })
 
         return specs
 
-    def run_all(self):
-        failed_rows = self.load_failed_runs()
+    def run_all(self, run_ids=None):
+        failed_rows = self.load_failed_runs(run_ids)
         specs = self.build_run_specs(failed_rows)
         if not specs:
             self.log("[OK] No runnable failed runs found.")
@@ -185,6 +242,7 @@ class RerunBatchRunner:
         dataset_name = spec["dataset_name"]
         model = spec["model"]
         task = spec["task"]
+        source_run = spec.get("source_run")
         description = f"{dataset_name} | {model.upper()} | {task}"
 
         safe_name = description.replace(" ", "_").replace("|", "-")
@@ -202,6 +260,7 @@ class RerunBatchRunner:
 
         result = {
             "rerun": run_index,
+            "source_run": source_run,
             "dataset": dataset_name,
             "model": model,
             "task": task,
@@ -212,60 +271,77 @@ class RerunBatchRunner:
             "metrics": {},
         }
 
-        try:
-            if model == "transformer":
-                metrics = spec["runner"](
-                    spec["dataset_path"],
-                    run_dir,
-                    test_size,
-                    val_split,
-                    config,
-                    explainability_method=explainability,
-                )
-            else:
-                metrics = spec["runner"](
-                    spec["dataset_path"],
-                    run_dir,
-                    test_size,
-                    val_split,
-                    config,
-                    explainability_method=explainability,
-                    task=task,
-                )
+        error_capture_path = os.path.join(run_dir, "error.txt")
+        with _capture_output(error_capture_path) as error_log:
+            error_log.write("=" * 80 + "\n")
+            error_log.write("RERUN OUTPUT CAPTURE\n")
+            error_log.write("=" * 80 + "\n\n")
+            error_log.write(f"Rerun: {run_index}/{total_runs}\n")
+            if source_run is not None:
+                error_log.write(f"Source run: {source_run}\n")
+            error_log.write(f"Description: {description}\n")
+            error_log.write(f"Dataset: {spec['dataset_path']}\n")
+            error_log.write(f"Model: {model}\n")
+            error_log.write(f"Task: {task}\n\n")
+            error_log.flush()
 
-            missing = check_required_images(run_dir, model=model, task=task)
-            result["missing_images"] = missing
-            if missing:
-                missing_path = os.path.join(run_dir, "MISSING_IMAGES.txt")
-                with open(missing_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(missing))
-                self.log(f"[X] Missing images ({len(missing)}). See: {missing_path}")
-            else:
-                self.log("[OK] All required images found.")
+            try:
+                if model == "transformer":
+                    metrics = spec["runner"](
+                        spec["dataset_path"],
+                        run_dir,
+                        test_size,
+                        val_split,
+                        config,
+                        explainability_method=explainability,
+                    )
+                else:
+                    metrics = spec["runner"](
+                        spec["dataset_path"],
+                        run_dir,
+                        test_size,
+                        val_split,
+                        config,
+                        explainability_method=explainability,
+                        task=task,
+                    )
 
-            result["success"] = len(missing) == 0
-            result["metrics"] = metrics or {}
+                missing = check_required_images(run_dir, model=model, task=task)
+                result["missing_images"] = missing
+                if missing:
+                    missing_path = os.path.join(run_dir, "MISSING_IMAGES.txt")
+                    with open(missing_path, "w", encoding="utf-8") as f:
+                        f.write("\n".join(missing))
+                    self.log(f"[X] Missing images ({len(missing)}). See: {missing_path}")
+                else:
+                    self.log("[OK] All required images found.")
 
-        except Exception as exc:
-            err_path = os.path.join(run_dir, "ERROR_LOG.txt")
-            err_msg = f"[ERROR] {description} failed: {exc}"
-            self.log(err_msg)
-            self.log_universal_error(err_msg)
-            with open(err_path, "w", encoding="utf-8") as f:
-                f.write("=" * 80 + "\n")
-                f.write("RERUN ERROR\n")
-                f.write("=" * 80 + "\n\n")
-                f.write(f"Rerun: {run_index}/{total_runs}\n")
-                f.write(f"Description: {description}\n")
-                f.write(f"Dataset: {spec['dataset_path']}\n")
-                f.write(f"Model: {model}\n")
-                f.write(f"Task: {task}\n\n")
-                f.write("Exception:\n")
-                f.write(str(exc) + "\n\n")
-                f.write("Traceback:\n")
-                f.write(traceback.format_exc())
+                result["success"] = len(missing) == 0
+                result["metrics"] = metrics or {}
 
-            self.log(f"[X] Error log saved: {err_path}")
+            except Exception as exc:
+                err_path = os.path.join(run_dir, "ERROR_LOG.txt")
+                err_msg = f"[ERROR] {description} failed: {exc}"
+                self.log(err_msg)
+                self.log_universal_error(err_msg)
+                with open(err_path, "w", encoding="utf-8") as f:
+                    f.write("=" * 80 + "\n")
+                    f.write("RERUN ERROR\n")
+                    f.write("=" * 80 + "\n\n")
+                    f.write(f"Rerun: {run_index}/{total_runs}\n")
+                    if source_run is not None:
+                        f.write(f"Source run: {source_run}\n")
+                    f.write(f"Description: {description}\n")
+                    f.write(f"Dataset: {spec['dataset_path']}\n")
+                    f.write(f"Model: {model}\n")
+                    f.write(f"Task: {task}\n\n")
+                    f.write("Exception:\n")
+                    f.write(str(exc) + "\n\n")
+                    f.write("Traceback:\n")
+                    f.write(traceback.format_exc())
+
+                traceback.print_exc()
+                self.log(f"[X] Error log saved: {err_path}")
 
         result["duration_s"] = round(time.time() - start, 2)
         self.results.append(result)
@@ -276,10 +352,20 @@ def main():
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR, help="Path to folder with preprocessed CSVs.")
     parser.add_argument("--output-dir", default=DEFAULT_RESULTS_DIR, help="Output folder for reruns.")
     parser.add_argument("--summary", default=DEFAULT_SUMMARY_PATH, help="Path to batch_summary.json")
+    parser.add_argument(
+        "--run-ids",
+        nargs="+",
+        help="Specific run IDs from batch_summary.json to rerun (e.g., --run-ids 34 35 36 or --run-ids 34,35,36).",
+    )
     args = parser.parse_args()
 
+    try:
+        run_ids = _normalize_run_ids(args.run_ids)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     runner = RerunBatchRunner(args.dataset_dir, args.output_dir, args.summary)
-    runner.run_all()
+    runner.run_all(run_ids)
 
 
 if __name__ == "__main__":

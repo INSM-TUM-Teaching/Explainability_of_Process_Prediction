@@ -38,6 +38,10 @@ class RemainingTimePredictor:
         split_col = "__split" if "__split" in df.columns else None
         select_cols = required_cols + ([split_col] if split_col else [])
         df = df[select_cols].copy()
+        if df.columns.duplicated().any():
+            dupes = df.columns[df.columns.duplicated()].unique().tolist()
+            print(f"[WARN] Dropping duplicate columns: {dupes}")
+            df = df.loc[:, ~df.columns.duplicated()]
         
         df['time:timestamp'] = pd.to_datetime(df['time:timestamp'])
         

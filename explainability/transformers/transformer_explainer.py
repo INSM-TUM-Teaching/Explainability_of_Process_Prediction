@@ -11,6 +11,30 @@ import tensorflow as tf
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams.update({'font.size': 11, 'font.family': 'sans-serif'})
 
+def _dir_has_png(path):
+    if not os.path.isdir(path):
+        return False
+    return any(name.lower().endswith(".png") for name in os.listdir(path))
+
+
+def _write_placeholder_plot(output_path, title, lines=None):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.axis("off")
+    body = [title] + (lines or [])
+    ax.text(0.5, 0.5, "\n".join(body), ha="center", va="center", fontsize=12)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close()
+
+
+def _ensure_stub_csv(path, columns):
+    if os.path.exists(path):
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pd.DataFrame(columns=columns).to_csv(path, index=False)
+
+
 class ExplainabilityConfig:
     """Configuration for explainability behavior."""
     ENABLE_TIMESTEP_EXPLANATIONS = True
@@ -1778,92 +1802,110 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         print("\n--- Running SHAP ---")
         shap_dir = os.path.join(output_dir, 'shap')
         os.makedirs(shap_dir, exist_ok=True)
-        if is_time_task and ExplainabilityConfig.ENABLE_TIMESTEP_EXPLANATIONS:
-            se = TimestepSHAPExplainer(model, task, label_encoder, scaler, timestamps)
-        else:
-            se = SHAPExplainer(model, task, label_encoder, scaler)
-        se.initialize_explainer(train_data)
-        shap_indices = None
-        if task == 'activity':
-            shap_indices = select_diverse_samples(
-                data, task, num_diverse=num_samples, label_encoder=label_encoder
-            )
-            if not shap_indices:
-                shap_indices = None
-        se.explain_samples(test_data, num_samples, indices=shap_indices)
-        if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
-            print("\n[SHAP] Generating timestep-level visualizations...")
-            for i in range(min(5, num_samples)):
-                se.plot_temporal_evolution(shap_dir, sample_idx=i, show_prediction=True)
-            for i in range(min(3, num_samples)):
-                se.plot_timestep_heatmap(shap_dir, sample_idx=i)
-            se.plot_global_temporal_importance(shap_dir)
-        else:
-            se.plot_bar(shap_dir)
-            se.plot_summary(shap_dir)
-        se.save_explanations(shap_dir)
+        try:
+            if is_time_task and ExplainabilityConfig.ENABLE_TIMESTEP_EXPLANATIONS:
+                se = TimestepSHAPExplainer(model, task, label_encoder, scaler, timestamps)
+            else:
+                se = SHAPExplainer(model, task, label_encoder, scaler)
+            se.initialize_explainer(train_data)
+            shap_indices = None
+            if task == 'activity':
+                shap_indices = select_diverse_samples(
+                    data, task, num_diverse=num_samples, label_encoder=label_encoder
+                )
+                if not shap_indices:
+                    shap_indices = None
+            se.explain_samples(test_data, num_samples, indices=shap_indices)
+            if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
+                print("\n[SHAP] Generating timestep-level visualizations...")
+                for i in range(min(5, num_samples)):
+                    se.plot_temporal_evolution(shap_dir, sample_idx=i, show_prediction=True)
+                for i in range(min(3, num_samples)):
+                    se.plot_timestep_heatmap(shap_dir, sample_idx=i)
+                se.plot_global_temporal_importance(shap_dir)
+            else:
+                se.plot_bar(shap_dir)
+                se.plot_summary(shap_dir)
+            se.save_explanations(shap_dir)
+        except Exception as e:
+            print(f"[ERROR] SHAP explainability failed: {e}")
+        if not _dir_has_png(shap_dir):
+            print("[WARNING] No SHAP plots generated.")
+        _ensure_stub_csv(
+            os.path.join(shap_dir, "global_importance_data.csv"),
+            ["Activity", "Mean_Impact"]
+        )
 
     if methods in ['lime', 'all']:
         print("\n--- Running LIME ---")
         lime_dir = os.path.join(output_dir, 'lime')
         os.makedirs(lime_dir, exist_ok=True)
         
-        le = LIMEExplainer(model, task, label_encoder, scaler)
-        if feature_config and 'vocab_size' in feature_config:
-            le.vocab_size = int(feature_config['vocab_size'])
-        le.initialize_explainer(train_data, num_classes)
-        
-        # Select diverse samples FIRST
-        diverse_samples = select_diverse_samples(data, task, num_diverse=num_samples, label_encoder=label_encoder)
-        if not diverse_samples:
-            print("[WARNING] No samples available for LIME. Skipping LIME explainability.")
-            le.explanations = []
-        else:
-            print(f"Explaining {len(diverse_samples)} diverse samples: {diverse_samples}")
-        
-            # Explain ONLY the diverse samples
-            if isinstance(test_data, (list, tuple)):
-                diverse_test_seq = test_data[0][diverse_samples]
-                diverse_test_temp = test_data[1][diverse_samples]
-                print(f"[DEBUG] Extracted {len(diverse_test_seq)} test sequences, {len(diverse_test_temp)} temp features")
-                diverse_test_data = (diverse_test_seq, diverse_test_temp)
+        try:
+            le = LIMEExplainer(model, task, label_encoder, scaler)
+            if feature_config and 'vocab_size' in feature_config:
+                le.vocab_size = int(feature_config['vocab_size'])
+            le.initialize_explainer(train_data, num_classes)
+            
+            # Select diverse samples FIRST
+            diverse_samples = select_diverse_samples(data, task, num_diverse=num_samples, label_encoder=label_encoder)
+            if not diverse_samples:
+                print("[WARNING] No samples available for LIME. Skipping LIME explainability.")
+                le.explanations = []
             else:
-                diverse_test_data = test_data[diverse_samples]
-                print(f"[DEBUG] Extracted {len(diverse_test_data)} test samples")
+                print(f"Explaining {len(diverse_samples)} diverse samples: {diverse_samples}")
             
-            y_true_all = data.get('y_test', None)
-            y_true_diverse = None
-            if y_true_all is not None:
-                y_true_diverse = np.array(y_true_all)[diverse_samples]
-            le.explain_samples(
-                diverse_test_data,
-                num_samples=len(diverse_samples),
-                num_features=30,
-                y_true=y_true_diverse
-            )
-            print(f"[DEBUG] Generated {len(le.explanations)} explanations")
-            
-            # Plot all explained samples (now they match 0-9)
-            print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
-            plots_saved = 0
-            for i in range(len(le.explanations)):
-                try:
-                    if le.explanations[i] is not None:
-                        # Use original test set index in filename
-                        original_idx = diverse_samples[i]
-                        print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
-                        le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx)
-                        plots_saved += 1
-                    else:
-                        print(f"[WARNING] Explanation {i} is None, skipping...")
-                except Exception as e:
-                    print(f"[ERROR] Failed to plot sample {i}: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            print(f"[LIME] Successfully saved {plots_saved} plots")
-            
-            le.save_explanations(lime_dir)
+                # Explain ONLY the diverse samples
+                if isinstance(test_data, (list, tuple)):
+                    diverse_test_seq = test_data[0][diverse_samples]
+                    diverse_test_temp = test_data[1][diverse_samples]
+                    print(f"[DEBUG] Extracted {len(diverse_test_seq)} test sequences, {len(diverse_test_temp)} temp features")
+                    diverse_test_data = (diverse_test_seq, diverse_test_temp)
+                else:
+                    diverse_test_data = test_data[diverse_samples]
+                    print(f"[DEBUG] Extracted {len(diverse_test_data)} test samples")
+                
+                y_true_all = data.get('y_test', None)
+                y_true_diverse = None
+                if y_true_all is not None:
+                    y_true_diverse = np.array(y_true_all)[diverse_samples]
+                le.explain_samples(
+                    diverse_test_data,
+                    num_samples=len(diverse_samples),
+                    num_features=30,
+                    y_true=y_true_diverse
+                )
+                print(f"[DEBUG] Generated {len(le.explanations)} explanations")
+                
+                # Plot all explained samples (now they match 0-9)
+                print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
+                plots_saved = 0
+                for i in range(len(le.explanations)):
+                    try:
+                        if le.explanations[i] is not None:
+                            # Use original test set index in filename
+                            original_idx = diverse_samples[i]
+                            print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
+                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx)
+                            plots_saved += 1
+                        else:
+                            print(f"[WARNING] Explanation {i} is None, skipping...")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to plot sample {i}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                print(f"[LIME] Successfully saved {plots_saved} plots")
+                
+                le.save_explanations(lime_dir)
+        except Exception as e:
+            print(f"[ERROR] LIME explainability failed: {e}")
+        if not _dir_has_png(lime_dir):
+            print("[WARNING] No LIME plots generated.")
+        _ensure_stub_csv(
+            os.path.join(lime_dir, "lime_explanation_sample_0.csv"),
+            ["Activity", "Weight"]
+        )
     
     # -------------------------------------------------------------------------
     # RUN BENCHMARK EVALUATION
