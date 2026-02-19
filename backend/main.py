@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -32,6 +32,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _strip_api_prefix(request: Request, call_next):
+    """
+    Firebase Hosting forwards /api/* to Cloud Run unchanged.
+    Our backend routes are defined without /api, so strip it here.
+    """
+    path = request.scope.get("path", "")
+    if path == "/api" or path.startswith("/api/"):
+        new_path = path[4:] or "/"
+        request.scope["path"] = new_path
+        request.scope["raw_path"] = new_path.encode("utf-8")
+    return await call_next(request)
 
 # -----------------------------------------------------------------------------
 # Paths / Storage
@@ -366,6 +380,32 @@ def _load_run_status(run_id: str) -> Dict[str, Any]:
 @app.get("/health")
 def health():
     return {"ok": True, "service": "ppm-backend"}
+
+
+@app.get("/version")
+def version():
+    def _module_version(name: str) -> Dict[str, Optional[str]]:
+        try:
+            mod = __import__(name)
+            return {"present": True, "version": getattr(mod, "__version__", None)}
+        except Exception:
+            return {"present": False, "version": None}
+
+    return {
+        "service": "ppm-backend",
+        "revision": os.getenv("K_REVISION"),
+        "configuration": os.getenv("K_CONFIGURATION"),
+        "max_upload_mb": MAX_UPLOAD_MB,
+        "docs_url": "/api/docs",
+        "deps": {
+            "torch": _module_version("torch"),
+            "torch_geometric": _module_version("torch_geometric"),
+            "tensorflow": _module_version("tensorflow"),
+            "sklearn": _module_version("sklearn"),
+            "shap": _module_version("shap"),
+            "lime": _module_version("lime"),
+        },
+    }
 
 
 @app.post("/datasets/upload", response_model=DatasetUploadResponse)

@@ -26,7 +26,10 @@ plt.rcParams.update({
 def _dir_has_png(path):
     if not os.path.isdir(path):
         return False
-    return any(name.lower().endswith(".png") for name in os.listdir(path))
+    for _, _, files in os.walk(path):
+        if any(name.lower().endswith(".png") for name in files):
+            return True
+    return False
 
 
 def _write_placeholder_plot(output_path, title, lines=None):
@@ -602,7 +605,7 @@ class GradientExplainer:
         df.to_csv(os.path.join(output_dir, 'gradient_global_activity.csv'), index=False)
         
         if df.empty:
-            print(f"[WARNING] No gradient importances available for {task}.")
+            print("[WARNING] No gradient importances available for activity.")
             return
 
         plt.figure(figsize=(10, 6))
@@ -937,6 +940,18 @@ class GraphLIMEExplainer:
             self.vocabs = vocabularies or {}
         if not isinstance(self.vocabs, dict):
             self.vocabs = {}
+
+    def _get_activity_name(self, idx):
+        if 'Activity' in self.vocabs:
+            inv_vocab = {v: k for k, v in self.vocabs['Activity'].items()}
+            return inv_vocab.get(int(idx), f"Activity_{idx}")
+        return f"Activity_{idx}"
+
+    def _get_resource_name(self, idx):
+        if 'Resource' in self.vocabs:
+            inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
+            return inv_vocab.get(int(idx), f"Resource_{idx}")
+        return f"Resource_{idx}"
         
     def _get_feature_name(self, node_type, feature_idx):
         if node_type == 'activity' and 'Activity' in self.vocabs:
@@ -1017,8 +1032,9 @@ class GraphLIMEExplainer:
     def explain_local(self, graph, task='activity', num_perturbations=200):
         self.model.eval()
         graph = graph.to(self.device)
-        
+
         predicted_class = None
+        true_val = None
         with torch.no_grad():
             out = self.model(graph)
             if task == 'event_time':
@@ -1026,65 +1042,87 @@ class GraphLIMEExplainer:
                 true_val = graph.y_timestamp.item()
             elif task == 'remaining_time':
                 base_score = out[2].item()
-        
+                true_val = graph.y_remaining_time.item()
+            else:
+                logits = out[0].view(-1)
+                probs = torch.softmax(logits, dim=0)
+                predicted_class = int(torch.argmax(probs).item())
+                base_score = float(probs[predicted_class].item())
+                true_val = float(graph.y_activity.view(-1)[0].item())
+
         activity_features = graph['activity'].x.shape[1] if 'activity' in graph.x_dict else 0
         resource_features = graph['resource'].x.shape[1] if 'resource' in graph.x_dict else 0
-        
-        active_activity = torch.where(graph['activity'].x.sum(dim=0) > 0)[0].cpu().numpy() if activity_features > 0 else np.array([])
-        active_resource = torch.where(graph['resource'].x.sum(dim=0) > 0)[0].cpu().numpy() if resource_features > 0 else np.array([])
-        
+
+        active_activity = (
+            torch.where(graph['activity'].x.sum(dim=0) > 0)[0].cpu().numpy()
+            if activity_features > 0 else np.array([])
+        )
+        active_resource = (
+            torch.where(graph['resource'].x.sum(dim=0) > 0)[0].cpu().numpy()
+            if resource_features > 0 else np.array([])
+        )
+
         active_features = [("activity", idx) for idx in active_activity] + [
             ("resource", idx) for idx in active_resource
         ]
         if not active_features:
-            return [], base_score
+            return [], base_score, true_val, [], predicted_class
 
         X_perturb = []
         y_perturb = []
-        
+
         for _ in range(num_perturbations):
-            mask_activity = np.ones(activity_features)
-            mask_resource = np.ones(resource_features)
-            
+            mask_activity = np.ones(activity_features, dtype=np.float32)
+            mask_resource = np.ones(resource_features, dtype=np.float32)
+
             if len(active_activity) > 0:
-                subset = np.random.choice(active_activity, size=int(max(1, len(active_activity)*0.3)), replace=False)
-                mask_activity[subset] = 0
-            
+                subset = np.random.choice(
+                    active_activity, size=int(max(1, len(active_activity) * 0.3)), replace=False
+                )
+                mask_activity[subset] = 0.0
+
             if len(active_resource) > 0:
-                subset = np.random.choice(active_resource, size=int(max(1, len(active_resource)*0.3)), replace=False)
-                mask_resource[subset] = 0
-            
-            mask_activity_active = mask_activity[active_activity] if len(active_activity) > 0 else np.array([])
-            mask_resource_active = mask_resource[active_resource] if len(active_resource) > 0 else np.array([])
+                subset = np.random.choice(
+                    active_resource, size=int(max(1, len(active_resource) * 0.3)), replace=False
+                )
+                mask_resource[subset] = 0.0
+
+            mask_activity_active = (
+                mask_activity[active_activity] if len(active_activity) > 0 else np.array([])
+            )
+            mask_resource_active = (
+                mask_resource[active_resource] if len(active_resource) > 0 else np.array([])
+            )
             combined_mask = np.concatenate([mask_activity_active, mask_resource_active])
             X_perturb.append(combined_mask)
-            
+
             masked_graph = graph.clone()
-            mask_tensor = torch.tensor(mask, device=self.device, dtype=torch.float32).view(-1, 1)
-            
-            if task in ['event_time', 'remaining_time']:
-                masked_graph['time'].x = masked_graph['time'].x * mask_tensor
-            elif task == 'activity':
-                masked_graph['activity'].x = masked_graph['activity'].x * mask_tensor
-            else:
-                masked_graph['activity'].x = masked_graph['activity'].x * mask_tensor
-                masked_graph['resource'].x = masked_graph['resource'].x * mask_tensor
-                masked_graph['time'].x = masked_graph['time'].x * mask_tensor
-            
+            if activity_features > 0:
+                act_mask_tensor = torch.tensor(
+                    mask_activity, device=self.device, dtype=torch.float32
+                ).view(1, -1)
+                masked_graph['activity'].x = masked_graph['activity'].x * act_mask_tensor
+            if resource_features > 0 and 'resource' in masked_graph.x_dict:
+                res_mask_tensor = torch.tensor(
+                    mask_resource, device=self.device, dtype=torch.float32
+                ).view(1, -1)
+                masked_graph['resource'].x = masked_graph['resource'].x * res_mask_tensor
+
             with torch.no_grad():
                 out_p = self.model(masked_graph)
                 if task == 'event_time':
                     score = out_p[1].item()
                 elif task == 'remaining_time':
                     score = out_p[2].item()
-                elif task == 'activity':
-                    probs = torch.softmax(out_p[0], dim=-1)
-                    score = probs[predicted_class].item()
+                else:
+                    probs = torch.softmax(out_p[0].view(-1), dim=0)
+                    cls = predicted_class if predicted_class is not None else int(torch.argmax(probs).item())
+                    score = float(probs[cls].item())
                 y_perturb.append(score)
-        
+
         X_perturb = np.array(X_perturb)
         y_perturb = np.array(y_perturb)
-        
+
         coefs = self._hsic_lasso(X_perturb, y_perturb)
         if coefs is None or np.allclose(coefs, 0):
             weights = []
@@ -1094,7 +1132,8 @@ class GraphLIMEExplainer:
                 if x_std == 0 or y_std == 0:
                     weights.append(0.0)
                 else:
-                    weights.append(float(np.corrcoef(X_perturb[:, k], y_perturb)[0, 1]))
+                    corr = np.corrcoef(X_perturb[:, k], y_perturb)[0, 1]
+                    weights.append(float(np.nan_to_num(corr, nan=0.0)))
             coefs = np.array(weights)
 
         explanation = []
@@ -1113,86 +1152,73 @@ class GraphLIMEExplainer:
             aggregated_explanation = sorted(
                 aggregated_explanation, key=lambda x: x['AbsWeight'], reverse=False
             )
-                
-        return aggregated_explanation, base_score
 
-    def plot_local(self, explanation, base_score, output_dir, task, sample_id):
+        step_info = [{"feature": row["Feature"]} for row in aggregated_explanation]
+        return aggregated_explanation, base_score, true_val, step_info, predicted_class
+
+    def plot_local(self, explanation, base_score, output_dir, task, sample_id, true_val=None, predicted_class=None):
         os.makedirs(output_dir, exist_ok=True)
-        
-        if importance is None:
+
+        if not explanation:
             return
-        
-        num_steps = len(importance)
-        
-        if task in ['event_time', 'remaining_time']:
-            feature_names = []
-            for info in step_info:
-                if 'timestamp' in info:
-                    timestamp = info['timestamp']
-                    if timestamp < 1:
-                        feature_names.append(f"Timestamp: {timestamp*24:.1f}h")
-                    else:
-                        feature_names.append(f"Timestamp: {timestamp:.1f}d")
-                else:
-                    feature_names.append(f"t={info['step']}")
-        else:
-            feature_names = []
-            for info in step_info:
-                activity = info.get('activity', f'Step_{info["step"]}')
-                feature_names.append(f'O_{activity}')
-        
-        fig, ax = plt.subplots(figsize=(10, max(6, num_steps * 0.5)))
-        
-        sorted_indices = np.argsort(np.abs(importance))
-        sorted_importance = importance[sorted_indices]
-        sorted_names = [feature_names[i] for i in sorted_indices]
-        
-        colors = ['green' if x > 0 else 'red' for x in sorted_importance]
-        
-        y_pos = np.arange(len(sorted_names))
-        
-        has_positive = False
-        has_negative = False
-        
-        for i, (y, importance_val, color) in enumerate(zip(y_pos, sorted_importance, colors)):
-            if importance_val > 0 and not has_positive:
-                ax.barh(y, importance_val, color=color, alpha=0.7, edgecolor='black', 
-                       linewidth=1, label='Support')
-                has_positive = True
-            elif importance_val < 0 and not has_negative:
-                ax.barh(y, importance_val, color=color, alpha=0.7, edgecolor='black', 
-                       linewidth=1, label='Contradict')
-                has_negative = True
-            else:
-                ax.barh(y, importance_val, color=color, alpha=0.7, edgecolor='black', linewidth=1)
-        
+
+        df = pd.DataFrame(explanation)
+        if "AbsWeight" not in df.columns:
+            df["AbsWeight"] = df["Weight"].abs()
+        df = df.sort_values("AbsWeight", ascending=True)
+
+        fig, ax = plt.subplots(figsize=(10, max(6, len(df) * 0.45)))
+        colors = ['#2ecc71' if x > 0 else '#e74c3c' for x in df["Weight"]]
+        y_pos = np.arange(len(df))
+        ax.barh(y_pos, df["Weight"].values, color=colors, alpha=0.85, edgecolor='black', linewidth=0.8)
+
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(sorted_names, fontsize=9)
-        ax.set_xlabel('Feature Contribution (LIME)', fontweight='bold', fontsize=12)
-        
+        ax.set_yticklabels(df["Feature"].tolist(), fontsize=9)
+        ax.set_xlabel('Feature Contribution (GraphLIME)', fontweight='bold', fontsize=12)
+
         task_name = task.replace('_', ' ').title()
         if task == 'activity':
             pred_activity = self._get_activity_name(int(predicted_class)) if predicted_class is not None else "Unknown"
-            confidence_pct = base_score * 100
-            ax.set_title(f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\nPrediction: {pred_activity} ({confidence_pct:.1f}%)',
-                        fontweight='bold', fontsize=13, pad=15)
+            if true_val is not None:
+                true_activity = self._get_activity_name(int(true_val))
+                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%), True: {true_activity}"
+            else:
+                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%)"
         else:
-            ax.set_title(f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\nPrediction: {base_score:.2f}',
-                        fontweight='bold', fontsize=13, pad=15)
-        
-        ax.legend(loc='best', framealpha=0.95, fontsize=11)
-        
-        ax.axvline(x=0, color='black', linestyle='-', linewidth=2)
-        
+            subtitle = f"Prediction: {base_score:.3f}" + (f", True: {true_val:.3f}" if true_val is not None else "")
+
+        ax.set_title(
+            f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\n{subtitle}',
+            fontweight='bold',
+            fontsize=13,
+            pad=15
+        )
+
+        ax.axvline(x=0, color='black', linestyle='-', linewidth=1.5)
         ax.grid(True, alpha=0.3, axis='x', linestyle='--')
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        
+
         plt.tight_layout()
-        
+
         output_path = os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
+
+        csv_path = os.path.join(output_dir, f'graphlime_sample_{sample_id}_{task}.csv')
+        df.to_csv(csv_path, index=False)
+
+    def plot_local_explanation(self, explanation, base_score, true_val, step_info, output_dir, task, sample_id, predicted_class):
+        # step_info is kept for API compatibility with existing caller.
+        self.plot_local(
+            explanation=explanation,
+            base_score=base_score,
+            output_dir=output_dir,
+            task=task,
+            sample_id=sample_id,
+            true_val=true_val,
+            predicted_class=predicted_class,
+        )
 
 
 class ExplainabilityBenchmark:
@@ -1915,7 +1941,7 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
         print("GRADIENT ANALYSIS (SHAP-STYLE)")
         print("─"*70)
         
-        explainer = ReadableTableExplainer(model, device, vocabularies)
+        explainer = GradientExplainer(model, device, vocabularies)
         grad_dir = os.path.join(output_dir, 'gradient')
         
         for task in tasks:
@@ -1988,7 +2014,7 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
         
         print(f"Analyzing {len(sample_ids)} diverse samples: {sample_ids}")
         
-        for idx in range(num_local_samples):
+        for idx in sample_ids:
             graph = graphs[idx]
             print(f"\nSample {idx}:")
             
@@ -2071,19 +2097,16 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
             combined_df.to_csv(combined_path, index=False)
             print(f"[OK] Combined benchmark summary saved to: {combined_path}")
 
+    if methods in ['gradient', 'all'] and not _dir_has_png(os.path.join(output_dir, 'gradient')):
+        raise RuntimeError("GNN explainability failed: gradient plots were not generated.")
+    if methods == 'temporal' and not _dir_has_png(os.path.join(output_dir, 'temporal')):
+        raise RuntimeError("GNN explainability failed: temporal plots were not generated.")
+    if methods in ['lime', 'all'] and not _dir_has_png(os.path.join(output_dir, 'graphlime')):
+        raise RuntimeError("GNN explainability failed: GraphLIME plots were not generated.")
+
     print("\n" + "="*70)
-    print(f"GNN EXPLAINABILITY ANALYSIS COMPLETE")
+    print("GNN EXPLAINABILITY ANALYSIS COMPLETE")
     print(f"Results saved to: {output_dir}")
-    print("="*70)
-    print("\nGenerated outputs:")
-    print("  [OK] Gradient global importance plots")
-    if methods in ['temporal', 'all']:
-        print("  [OK] Temporal gradient attribution plots")
-    print("  [OK] GraphLIME local explanations (10 diverse samples)")
-    print("  [OK] Feature importance summary CSV")
-    print("  [OK] Method comparison report")
-    if run_benchmark and benchmark_results:
-        print("  [OK] Benchmark evaluation metrics (JSON + CSV)")
     print("="*70)
     
     return {}

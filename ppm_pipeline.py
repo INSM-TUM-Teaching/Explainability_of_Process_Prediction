@@ -16,11 +16,13 @@ if REPO_ROOT not in sys.path:
 np.random.seed(42)
 
 EXPLAINABILITY_AVAILABLE = True
+EXPLAINABILITY_IMPORT_ERROR = None
 try:
     from explainability.transformers import run_transformer_explainability
     from explainability.gnns import run_gnn_explainability
-except ImportError:
+except ImportError as e:
     EXPLAINABILITY_AVAILABLE = False
+    EXPLAINABILITY_IMPORT_ERROR = str(e)
 
 # We already verified TF/Torch are installed, but keep these guards for robustness
 try:
@@ -220,6 +222,12 @@ def run_next_activity_prediction(
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
 
+    if explainability_method and not EXPLAINABILITY_AVAILABLE:
+        raise RuntimeError(
+            "Explainability requested, but explainability modules are unavailable: "
+            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
+        )
+
     if explainability_method and EXPLAINABILITY_AVAILABLE:
         explainability_dir = os.path.join(output_dir, 'explainability')
         explainability_samples = config.get("explainability_samples", 50)
@@ -292,6 +300,12 @@ def run_event_time_prediction(
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
 
+    if explainability_method and not EXPLAINABILITY_AVAILABLE:
+        raise RuntimeError(
+            "Explainability requested, but explainability modules are unavailable: "
+            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
+        )
+
     if explainability_method and EXPLAINABILITY_AVAILABLE:
         explainability_dir = os.path.join(output_dir, 'explainability')
         explainability_samples = config.get("explainability_samples", 50)
@@ -363,6 +377,12 @@ def run_remaining_time_prediction(
     predictor.plot_predictions(data, y_pred, output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_model(output_dir)
+
+    if explainability_method and not EXPLAINABILITY_AVAILABLE:
+        raise RuntimeError(
+            "Explainability requested, but explainability modules are unavailable: "
+            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
+        )
 
     if explainability_method and EXPLAINABILITY_AVAILABLE:
         explainability_dir = os.path.join(output_dir, 'explainability')
@@ -454,6 +474,12 @@ def run_gnn_unified_prediction(
     predictor.save_model(output_dir)
     predictor.plot_training_history(output_dir)
     predictor.save_results(metrics, output_dir)
+
+    if explainability_method and not EXPLAINABILITY_AVAILABLE:
+        raise RuntimeError(
+            "Explainability requested, but explainability modules are unavailable: "
+            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
+        )
 
     if explainability_method and EXPLAINABILITY_AVAILABLE:
         explainability_dir = os.path.join(output_dir, 'explainability')
