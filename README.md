@@ -26,7 +26,7 @@ This diagram summarizes the frontend-backend structure and the APIs used across 
 - Node.js 18+ recommended
 
 **Quickstart (Frontend + Backend)**
-
+Clone the repository first and then follow the steps: 
 1. Create and activate a Python virtual environment.
 ```bash
 python -m venv .venv
