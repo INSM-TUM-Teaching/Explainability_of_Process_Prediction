@@ -4,12 +4,13 @@ import Card from "../ui/card";
 // NOTE: Values must match backend expectations.
 // - transformer: "lime" | "shap"
 // - gnn: "gradient" | "lime" (GraphLIME)
+// - best: "pattern_analysis"
 // - both: "all"
 // - none: "none" (runner normalizes to null)
-export type ExplainValue = "lime" | "shap" | "gradient" | "all" | "none";
+export type ExplainValue = "lime" | "shap" | "gradient" | "all" | "none" | "pattern_analysis";
 
 type Step4ExplainabilityProps = {
-  modelType: "gnn" | "transformer" | null;
+  modelType: "gnn" | "transformer" | "best" | null;
   method: ExplainValue | null;
   onSelect: (method: ExplainValue) => void;
 };
@@ -25,57 +26,74 @@ export default function Step4Explainability({
   method,
   onSelect,
 }: Step4ExplainabilityProps) {
+  const transformerOptions: Option[] = [
+    {
+      value: "none",
+      title: "None",
+      description: "Skip explainability to run faster.",
+    },
+    {
+      value: "lime",
+      title: "LIME",
+      description:
+        "Local surrogate explanations. Explains individual predictions by approximating the model locally with an interpretable model.",
+    },
+    {
+      value: "shap",
+      title: "SHAP",
+      description:
+        "Shapley-value based feature attributions. Provides consistent local explanations across features.",
+    },
+    {
+      value: "all",
+      title: "Both (LIME + SHAP)",
+      description: "Run both methods (takes longer).",
+    },
+  ];
+  const gnnOptions: Option[] = [
+    {
+      value: "none",
+      title: "None",
+      description: "Skip explainability to run faster.",
+    },
+    {
+      value: "gradient",
+      title: "Gradient-Based",
+      description:
+        "Uses gradients to estimate which input features influence predictions most strongly.",
+    },
+    {
+      value: "lime",
+      title: "GraphLIME",
+      description:
+        "Graph-specific local explanations. Identifies important substructures/features for a prediction.",
+    },
+    {
+      value: "all",
+      title: "Both (Gradient + GraphLIME)",
+      description: "Run both methods (takes longer).",
+    },
+  ];
+  const bestOptions: Option[] = [
+    {
+      value: "none",
+      title: "None",
+      description: "Skip explainability to run faster.",
+    },
+    {
+      value: "pattern_analysis",
+      title: "Pattern Analysis",
+      description:
+        "Native BEST explainability — shows pattern probability distributions, chosen pattern lengths, RPIF distance scores, and top pattern frequency table.",
+    },
+  ];
   const options: Option[] = !modelType
     ? []
     : modelType === "transformer"
-    ? [
-        {
-          value: "none",
-          title: "None",
-          description: "Skip explainability to run faster.",
-        },
-        {
-          value: "lime",
-          title: "LIME",
-          description:
-            "Local surrogate explanations. Explains individual predictions by approximating the model locally with an interpretable model.",
-        },
-        {
-          value: "shap",
-          title: "SHAP",
-          description:
-            "Shapley-value based feature attributions. Provides consistent local explanations across features.",
-        },
-        {
-          value: "all",
-          title: "Both (LIME + SHAP)",
-          description: "Run both methods (takes longer).",
-        },
-      ]
-    : [
-        {
-          value: "none",
-          title: "None",
-          description: "Skip explainability to run faster.",
-        },
-        {
-          value: "gradient",
-          title: "Gradient-Based",
-          description:
-            "Uses gradients to estimate which input features influence predictions most strongly.",
-        },
-        {
-          value: "lime",
-          title: "GraphLIME",
-          description:
-            "Graph-specific local explanations. Identifies important substructures/features for a prediction.",
-        },
-        {
-          value: "all",
-          title: "Both (Gradient + GraphLIME)",
-          description: "Run both methods (takes longer).",
-        },
-      ];
+    ? transformerOptions
+    : modelType === "best"
+    ? bestOptions
+    : gnnOptions;
 
   return (
     <div className="space-y-8 w-full">
@@ -140,6 +158,7 @@ export default function Step4Explainability({
           <ul className="list-disc ml-5 space-y-1">
             <li>Transformer models: LIME, SHAP, both, or none</li>
             <li>GNN models: Gradient-Based, GraphLIME, both, or none</li>
+            <li>BEST models: Pattern Analysis or none</li>
           </ul>
         </div>
       </Card>

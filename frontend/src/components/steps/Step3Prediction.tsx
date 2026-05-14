@@ -1,6 +1,7 @@
 import type { DatasetUploadResponse } from "../../lib/api";
 
 type Step3PredictionProps = {
+  modelType: string | null;
   task: string | null;
   category: "classification" | "regression" | null;
   targetColumn: string | null;
@@ -11,6 +12,7 @@ type Step3PredictionProps = {
 };
 
 export default function Step3Prediction({
+  modelType,
   task,
   category,
   targetColumn,
@@ -42,6 +44,46 @@ export default function Step3Prediction({
         </p>
       </div>
 
+      {/* BEST: skip category picker, show sequence tasks directly */}
+      {modelType === "best" ? (
+        <div className="space-y-4">
+          <div
+            onClick={() => onSelectTask("next_activity")}
+            className={`${baseCard} ${isSelected("next_activity") ? selectedCard : unselectedCard}`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Next Activity Prediction</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the next activity in a running process instance.
+              </div>
+            </div>
+            <div
+              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("next_activity") ? "border-brand-600 bg-brand-600" : "border-gray-300"
+              }`}
+            />
+          </div>
+
+          <div
+            onClick={() => onSelectTask("remaining_trace")}
+            className={`${baseCard} ${isSelected("remaining_trace") ? selectedCard : unselectedCard}`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Remaining Trace Prediction</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the complete sequence of future activities for a running case
+                (activity names, not duration).
+              </div>
+            </div>
+            <div
+              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("remaining_trace") ? "border-brand-600 bg-brand-600" : "border-gray-300"
+              }`}
+            />
+          </div>
+        </div>
+      ) : (
+        <>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div
           onClick={() => onSelectCategory("classification")}
@@ -197,6 +239,8 @@ export default function Step3Prediction({
             />
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );
