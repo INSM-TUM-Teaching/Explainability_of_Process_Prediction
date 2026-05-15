@@ -552,16 +552,23 @@ def run_best_nap_prediction(
     test_size = float(split.get("test_size", 0.2))
 
     runner = BESTRunner(config=config, task="nap")
+    print("[BEST NAP] Preparing data...")
     runner.prepare_data(df, test_size=test_size)
+    print("[BEST NAP] Fitting model...")
     runner.fit()
+    print("[BEST NAP] Running predictions...")
     runner.predict()
 
+    print("[BEST NAP] Evaluating...")
     metrics = runner.evaluate()
+    print(f"[BEST NAP] Metrics: {metrics}")
     runner.save_results(output_dir)
+    runner.plot_performance(output_dir)
     runner.save_model(output_dir)
 
     if explainability:
-        run_best_explainability(runner.model, output_dir, task="nap")
+        print("[BEST NAP] Running explainability...")
+        run_best_explainability(runner, output_dir, task="nap")
 
     return metrics
 
@@ -590,20 +597,32 @@ def run_best_rtp_prediction(
     test_size = float(split.get("test_size", 0.2))
 
     runner = BESTRunner(config=config, task="rtp")
+    print("[BEST RTP] Preparing data...")
     runner.prepare_data(df, test_size=test_size)
+    print("[BEST RTP] Fitting model...")
     runner.fit()
+    print("[BEST RTP] Running predictions...")
     runner.predict()
 
+    print("[BEST RTP] Evaluating...")
     metrics = runner.evaluate()
+    print(f"[BEST RTP] Metrics: {metrics}")
     runner.save_results(output_dir)
+    runner.plot_performance(output_dir)
     runner.save_model(output_dir)
 
     if explainability:
-        run_best_explainability(runner.model, output_dir, task="rtp")
+        print("[BEST RTP] Running explainability...")
+        run_best_explainability(runner, output_dir, task="rtp")
 
     return metrics
 
-def run_best_explainability(model, output_dir, task):
+def run_best_explainability(runner, output_dir, task):
     from explainability.best.best_explainer import BESTExplainer
-    explainer = BESTExplainer(model=model, output_dir=output_dir, task=task)
+    explainer = BESTExplainer(
+        model=runner.model,
+        output_dir=output_dir,
+        task=task,
+        runner=runner,
+    )
     explainer.explain()
