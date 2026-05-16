@@ -36,7 +36,13 @@ python -m venv .venv
 # source .venv/bin/activate
 ```
 
-2. Install backend dependencies.
+2. Install all ML and project dependencies.
+
+```bash
+python install.py
+```
+
+3. Install backend-only dependencies (FastAPI runtime).
 ```bash
 pip install -r backend/requirements.txt
 ```
