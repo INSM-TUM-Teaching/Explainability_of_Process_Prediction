@@ -60,6 +60,7 @@ class NextActivityPredictor:
             max_cases=max_cases,
             max_prefixes_per_case=max_prefixes_per_case
         )
+        all_case_ids = metadata['case_ids']
         
         print(f"Total sequences: {len(sequences_all):,}")
         print(f"Max sequence length: {metadata['max_len']}")
@@ -85,17 +86,17 @@ class NextActivityPredictor:
             val_df = process_data[process_data[split_col] == "val"].drop(columns=[split_col])
             test_df = process_data[process_data[split_col] == "test"].drop(columns=[split_col])
 
-            seq_train, next_train, _ = self._create_sequences_with_prefixes(
+            seq_train, next_train, meta_train = self._create_sequences_with_prefixes(
                 train_df,
                 max_cases=max_cases,
                 max_prefixes_per_case=max_prefixes_per_case
             )
-            seq_val, next_val, _ = self._create_sequences_with_prefixes(
+            seq_val, next_val, meta_val = self._create_sequences_with_prefixes(
                 val_df,
                 max_cases=max_cases,
                 max_prefixes_per_case=max_prefixes_per_case
             )
-            seq_test, next_test, _ = self._create_sequences_with_prefixes(
+            seq_test, next_test, meta_test = self._create_sequences_with_prefixes(
                 test_df,
                 max_cases=max_cases,
                 max_prefixes_per_case=max_prefixes_per_case
@@ -104,14 +105,23 @@ class NextActivityPredictor:
             X_train, y_train = encode_sequences(seq_train, next_train)
             X_val, y_val = encode_sequences(seq_val, next_val)
             X_test, y_test = encode_sequences(seq_test, next_test)
+            train_case_ids = meta_train['case_ids']
+            val_case_ids = meta_val['case_ids']
+            test_case_ids = meta_test['case_ids']
         else:
             X, y = encode_sequences(sequences_all, next_activities_all)
+            all_indices = np.arange(len(X))
             X_train, X_temp, y_train, y_temp = train_test_split(
                 X, y, test_size=test_size, random_state=42
             )
             X_val, X_test, y_val, y_test = train_test_split(
                 X_temp, y_temp, test_size=val_split, random_state=42
             )
+            train_idx, temp_idx = train_test_split(all_indices, test_size=test_size, random_state=42)
+            val_idx, test_idx = train_test_split(temp_idx, test_size=val_split, random_state=42)
+            train_case_ids = [all_case_ids[i] for i in train_idx]
+            val_case_ids = [all_case_ids[i] for i in val_idx]
+            test_case_ids = [all_case_ids[i] for i in test_idx]
 
         self.vocab_size = len(self.label_encoder.classes_) + 2
         print(f"Vocabulary size: {self.vocab_size}")
@@ -124,7 +134,11 @@ class NextActivityPredictor:
         return {
             'X_train': X_train, 'y_train': y_train,
             'X_val': X_val, 'y_val': y_val,
-            'X_test': X_test, 'y_test': y_test
+            'X_test': X_test, 'y_test': y_test,
+            'train_case_ids': train_case_ids,
+            'val_case_ids': val_case_ids,
+            'test_case_ids': test_case_ids,
+            'test_row_indices': list(range(len(X_test)))
         }
     
     def _create_sequences_with_prefixes(self, data, max_cases=None, max_prefixes_per_case=None):
@@ -229,6 +243,7 @@ class NextActivityPredictor:
     def save_results(self, data, y_pred, y_pred_probs, output_dir):
         print("\nSaving results...")
         os.makedirs(output_dir, exist_ok=True)
+        test_case_ids = data.get('test_case_ids')
         
         results = []
         for i in range(len(data['X_test'])):
@@ -242,6 +257,8 @@ class NextActivityPredictor:
             confidence = y_pred_probs[i][y_pred[i]] * 100
             
             results.append({
+                "sample_index": i,
+                "case_id": test_case_ids[i] if test_case_ids is not None and i < len(test_case_ids) else None,
                 "sequence": ", ".join(decoded_seq),
                 "true_next_activity": true_decoded,
                 "predicted_next_activity": pred_decoded,

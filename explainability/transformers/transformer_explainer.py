@@ -56,6 +56,8 @@ class SHAPExplainer:
         self.max_evals = None
         self._background_data = None
         self._max_background = None
+        self.sample_indices = None
+        self.sample_case_ids = None
         
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
@@ -246,7 +248,7 @@ class SHAPExplainer:
         except TypeError:
             return self.explainer(inputs)
 
-    def explain_samples(self, test_data, num_samples=20, indices=None):
+    def explain_samples(self, test_data, num_samples=20, indices=None, sample_ids=None):
         if isinstance(test_data, (list, tuple)):
             if indices is not None and len(indices) > 0:
                 test_sample = test_data[0][indices]
@@ -263,6 +265,19 @@ class SHAPExplainer:
             else:
                 test_sample = test_data[:num_samples]
                 self.test_data = test_sample
+
+        if indices is not None and len(indices) > 0:
+            self.sample_indices = list(indices)
+        else:
+            self.sample_indices = list(range(len(test_sample)))
+
+        if sample_ids is not None:
+            if indices is not None and len(indices) > 0:
+                self.sample_case_ids = [sample_ids[i] for i in indices]
+            else:
+                self.sample_case_ids = list(sample_ids[:len(test_sample)])
+        else:
+            self.sample_case_ids = None
             
         print(f"Computing SHAP values for {len(test_sample)} samples...")
 
@@ -388,7 +403,11 @@ class SHAPExplainer:
         if agg_shap is None:
             print("[WARNING] SHAP values unavailable or invalid for plotting.")
             return
-        pd.DataFrame(agg_shap, columns=names).to_csv(os.path.join(output_dir, 'shap_values_matrix.csv'), index=False)
+        shap_df = pd.DataFrame(agg_shap, columns=names)
+        shap_df.insert(0, 'sample_index', self.sample_indices if self.sample_indices is not None else list(range(len(shap_df))))
+        if self.sample_case_ids is not None:
+            shap_df.insert(1, 'case_id', self.sample_case_ids)
+        pd.DataFrame(shap_df).to_csv(os.path.join(output_dir, 'shap_values_matrix.csv'), index=False)
 
         # Use aggregated activity-level summary to avoid repeated position names.
         plt.figure(figsize=(13.5, 8))
@@ -697,6 +716,8 @@ class LIMEExplainer:
         self.is_multi_input = False
         self.vocab_size = None
         self.y_true = None
+        self.sample_indices = None
+        self.sample_case_ids = None
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
             print("[WARNING] label_encoder is None - LIME will show generic Activity labels!")
@@ -764,7 +785,7 @@ class LIMEExplainer:
             verbose=False
         )
     
-    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None):
+    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None, sample_indices=None, sample_case_ids=None):
         print(f"Generating LIME explanations for {num_samples} samples...")
         
         if isinstance(test_data, (list, tuple)):
@@ -778,6 +799,17 @@ class LIMEExplainer:
             print(f"[DEBUG explain_samples] Processing {len(self.test_data_seq)} samples")
         if y_true is not None:
             self.y_true = y_true[:num_samples]
+        if sample_indices is not None:
+            self.sample_indices = list(sample_indices[:num_samples])
+        else:
+            self.sample_indices = list(range(num_samples))
+        if sample_case_ids is not None:
+            if sample_indices is not None:
+                self.sample_case_ids = [sample_case_ids[i] for i in sample_indices[:num_samples]]
+            else:
+                self.sample_case_ids = list(sample_case_ids[:num_samples])
+        else:
+            self.sample_case_ids = None
             
         vocab_size = self.vocab_size if self.vocab_size is not None else int(np.max(self.test_data_seq)) + 1
         
@@ -822,14 +854,38 @@ class LIMEExplainer:
                 pass
         return f"Activity_{int(token_idx)}"
 
-    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None):
+    def _decode_activity_class(self, class_idx):
+        if class_idx is None:
+            return None
+        try:
+            idx = int(class_idx)
+        except Exception:
+            return class_idx
+
+        if self.label_encoder is None:
+            return idx
+
+        if idx <= 0:
+            return f"CLASS_{idx}_UNUSED"
+
+        label_idx = idx - 1
+        if 0 <= label_idx < len(self.label_encoder.classes_):
+            try:
+                return self.label_encoder.inverse_transform([label_idx])[0]
+            except Exception:
+                pass
+
+        return f"CLASS_{idx}"
+
+    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None, case_id=None):
         if sample_idx >= len(self.explanations) or self.explanations[sample_idx] is None:
             print(f"LIME Explanation not found for sample {sample_idx}.")
             return
     
         # Use original_idx for filename, sample_idx for data access
         display_idx = original_idx if original_idx is not None else sample_idx 
-        print(f"Generating Research-Grade LIME Plot for sample {display_idx}...")
+        case_text = f", case {case_id}" if case_id is not None else ""
+        print(f"Generating Research-Grade LIME Plot for sample {display_idx}{case_text}...")
         exp = self.explanations[sample_idx]
         current_seq = self.test_data_seq[sample_idx]  # Use local index
         
@@ -843,21 +899,12 @@ class LIMEExplainer:
                 
                 pred_probs = exp.predict_proba
                 confidence = pred_probs[label_to_explain] if pred_probs is not None else 0.0
-                pred_label = label_to_explain
-                if self.label_encoder is not None:
-                    try:
-                        pred_label = self.label_encoder.inverse_transform([int(label_to_explain)])[0]
-                    except Exception:
-                        pred_label = label_to_explain
+                pred_label = self._decode_activity_class(label_to_explain)
                 pred_activity_name = pred_label
                 gt_label = None
                 if self.y_true is not None and sample_idx < len(self.y_true):
                     gt_label = self.y_true[sample_idx]
-                    if self.label_encoder is not None:
-                        try:
-                            gt_label = self.label_encoder.inverse_transform([int(gt_label)])[0]
-                        except Exception:
-                            pass
+                    gt_label = self._decode_activity_class(gt_label)
                 gt_text = f" | Ground Truth: {gt_label}" if gt_label is not None else ""
                 title = f"LIME Explanation (Sample {display_idx})\nPredicted Class: {pred_label} | Confidence: {confidence:.2f}{gt_text}"
                 lime_list = exp.as_list(label=label_to_explain)
@@ -935,7 +982,15 @@ class LIMEExplainer:
             return
 
         df = pd.DataFrame(data).sort_values('AbsWeight', ascending=True)
-        df[['Activity', 'Weight']].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.csv'), index=False)
+        df.insert(0, 'sample_index', display_idx)
+        if case_id is not None:
+            df.insert(1, 'case_id', case_id)
+        df[['sample_index', 'case_id'] if case_id is not None else ['sample_index', 'Activity', 'Weight']]
+        if case_id is not None:
+            csv_cols = ['sample_index', 'case_id', 'Activity', 'Weight']
+        else:
+            csv_cols = ['sample_index', 'Activity', 'Weight']
+        df[csv_cols].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.csv'), index=False)
 
         plt.figure(figsize=(10, 6))
         colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['Weight']]
@@ -945,6 +1000,8 @@ class LIMEExplainer:
         plt.axvline(0, color='black', linewidth=0.8)
         plt.grid(axis='x', linestyle='--', alpha=0.6)
         plt.margins(x=0.15)
+        if case_id is not None:
+            title += f"\nCase ID: {case_id}"
         plt.title(title, fontsize=13, fontweight='bold')
         plt.xlabel("Contribution to Prediction", fontsize=11)
         
@@ -1815,7 +1872,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 )
                 if not shap_indices:
                     shap_indices = None
-            se.explain_samples(test_data, num_samples, indices=shap_indices)
+            se.explain_samples(test_data, num_samples, indices=shap_indices, sample_ids=data.get('test_case_ids'))
             if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
                 print("\n[SHAP] Generating timestep-level visualizations...")
                 for i in range(min(5, num_samples)):
@@ -1873,7 +1930,9 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                     diverse_test_data,
                     num_samples=len(diverse_samples),
                     num_features=30,
-                    y_true=y_true_diverse
+                    y_true=y_true_diverse,
+                    sample_indices=diverse_samples,
+                    sample_case_ids=data.get('test_case_ids')
                 )
                 print(f"[DEBUG] Generated {len(le.explanations)} explanations")
                 
@@ -1885,8 +1944,10 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                         if le.explanations[i] is not None:
                             # Use original test set index in filename
                             original_idx = diverse_samples[i]
+                            case_ids = data.get('test_case_ids')
+                            case_id = case_ids[original_idx] if case_ids is not None and original_idx < len(case_ids) else None
                             print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
-                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx)
+                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx, case_id=case_id)
                             plots_saved += 1
                         else:
                             print(f"[WARNING] Explanation {i} is None, skipping...")
