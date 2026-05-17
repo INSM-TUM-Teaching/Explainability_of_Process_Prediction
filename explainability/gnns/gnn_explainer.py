@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 from sklearn.linear_model import Lasso
+from torch_geometric.data import Batch
 
 plt.style.use('seaborn-v0_8-whitegrid')
 plt.rcParams.update({
@@ -1069,7 +1070,7 @@ class GraphLIMEExplainer:
             return [], base_score, true_val, [], predicted_class
 
         X_perturb = []
-        y_perturb = []
+        perturbed_graphs = [] # NEW: List to hold our graphs
 
         for _ in range(num_perturbations):
             mask_activity = np.ones(activity_features, dtype=np.float32)
@@ -1108,20 +1109,32 @@ class GraphLIMEExplainer:
                 ).view(1, -1)
                 masked_graph['resource'].x = masked_graph['resource'].x * res_mask_tensor
 
-            with torch.no_grad():
-                out_p = self.model(masked_graph)
-                if task == 'event_time':
-                    score = out_p[1].item()
-                elif task == 'remaining_time':
-                    score = out_p[2].item()
-                else:
-                    probs = torch.softmax(out_p[0].view(-1), dim=0)
-                    cls = predicted_class if predicted_class is not None else int(torch.argmax(probs).item())
-                    score = float(probs[cls].item())
-                y_perturb.append(score)
+            # NEW: Append to list instead of running the model
+            perturbed_graphs.append(masked_graph)
+
+        # ==========================================
+        # NEW: BATCHED INFERENCE
+        # ==========================================
+        batched_graphs = Batch.from_data_list(perturbed_graphs).to(self.device)
+
+        with torch.no_grad():
+            # Run the model exactly ONCE for all 200 permutations
+            out_p = self.model(batched_graphs)
+            
+            if task == 'event_time':
+                y_perturb = out_p[1].view(-1).cpu().numpy()
+            elif task == 'remaining_time':
+                y_perturb = out_p[2].view(-1).cpu().numpy()
+            else:
+                # out_p[0] is now shape [200, num_classes], so we softmax across dim=1
+                probs = torch.softmax(out_p[0], dim=1)
+                cls = predicted_class
+                # Extract the probability of the predicted class for all 200 graphs at once
+                y_perturb = probs[:, cls].cpu().numpy()
+        # ==========================================
 
         X_perturb = np.array(X_perturb)
-        y_perturb = np.array(y_perturb)
+        # y_perturb is already a numpy array from the batched inference step
 
         coefs = self._hsic_lasso(X_perturb, y_perturb)
         if coefs is None or np.allclose(coefs, 0):
