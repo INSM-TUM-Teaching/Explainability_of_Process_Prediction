@@ -195,58 +195,62 @@ class GNNPredictor:
             # This eliminates the need to sort thousands of tiny dataframes inside the loop.
             print("Pre-sorting dataset...")
             prefix_df = prefix_df.sort_values(by=["CaseID", "prefix_id", "prefix_pos"])
-    
+
             groups = prefix_df.groupby(["CaseID", "prefix_id"])
             graphs = []
-    
+
             print(f"Building {groups.ngroups:,} graphs...")
-            
+
             # Pre-fetch vocabularies to avoid dictionary lookups in the loop
             act_map = vocabs["Activity"]
             res_map = vocabs["Resource"]
-    
+
             for (_, _), p in tqdm(groups, desc="Building graphs", ncols=100):
                 # The sorting logic was removed from here!
-    
+
                 data = HeteroData()
                 k = len(p)
-    
+
                 # 2. BYPASS PANDAS OVERHEAD USING .values AND .to_list()
                 # This converts columns to fast C-level arrays or Python lists instantly
                 p_activities = p["Activity"].values
                 p_resources = p["Resource"].values
                 p_ts_log = p["__ts_log"].values
-                p_timestamps = p["Timestamp"].to_list() # to_list() preserves the .timestamp() method
-                
+                p_timestamps = p[
+                    "Timestamp"
+                ].to_list()  # to_list() preserves the .timestamp() method
+
                 act_ids = np.array([act_map.get(a, 0) for a in p_activities])
                 data["activity"].x = F.one_hot(
                     torch.tensor(act_ids, dtype=torch.long), num_classes=len(act_map)
                 ).float()
                 data["activity"].num_nodes = k
-    
+
                 res_ids = np.array([res_map.get(r, 0) for r in p_resources])
                 data["resource"].x = F.one_hot(
                     torch.tensor(res_ids, dtype=torch.long), num_classes=len(res_map)
                 ).float()
                 data["resource"].num_nodes = k
-    
-                data["time"].x = torch.tensor(
-                    p_ts_log, dtype=torch.float32
-                ).unsqueeze(1)
+
+                data["time"].x = torch.tensor(p_ts_log, dtype=torch.float32).unsqueeze(
+                    1
+                )
                 data["time"].num_nodes = k
-    
+
                 trace_features = []
                 for col in trace_attributes:
                     if col not in p.columns:
                         continue
-                    
+
                     # Fast access to the first item without using .iloc[0]
-                    val = p[col].values[0] 
-                    
+                    val = p[col].values[0]
+
                     if col in vocabs:
                         idx = vocabs[col].get(val, 0)
                         trace_features.append(
-                            F.one_hot(torch.tensor(idx), num_classes=len(vocabs[col])).float()
+                            F.one_hot(
+                                torch.tensor(idx), num_classes=len(vocabs[col])
+                            ).float()
                         )
                     else:
                         try:
@@ -255,57 +259,65 @@ class GNNPredictor:
                             )
                         except Exception:
                             trace_features.append(torch.zeros(1))
-    
+
                 if not trace_features:
                     trace_features = [torch.zeros(1)]
                 data["trace"].x = torch.cat(trace_features).unsqueeze(0)
                 data["trace"].num_nodes = 1
-    
+
                 idx = torch.arange(k)
                 if k > 1:
                     dfr = torch.stack([idx[:-1], idx[1:]])
                 else:
                     dfr = torch.empty((2, 0), dtype=torch.long)
-    
+
                 data["activity", "next", "activity"].edge_index = dfr
                 data["resource", "next", "resource"].edge_index = dfr.clone()
                 data["time", "next", "time"].edge_index = dfr.clone()
-    
+
                 same_ev = torch.stack([idx, idx])
                 data["activity", "same_event", "resource"].edge_index = same_ev
                 data["resource", "same_event", "activity"].edge_index = same_ev.clone()
                 data["activity", "same_time", "time"].edge_index = same_ev.clone()
                 data["time", "same_time", "activity"].edge_index = same_ev.clone()
-    
+
                 trace_src = torch.zeros(k, dtype=torch.long)
-                data["activity", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
-                data["resource", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
-                data["time", "to_trace", "trace"].edge_index = torch.stack([idx, trace_src])
-    
+                data["activity", "to_trace", "trace"].edge_index = torch.stack(
+                    [idx, trace_src]
+                )
+                data["resource", "to_trace", "trace"].edge_index = torch.stack(
+                    [idx, trace_src]
+                )
+                data["time", "to_trace", "trace"].edge_index = torch.stack(
+                    [idx, trace_src]
+                )
+
                 # Replace iloc for target extraction
                 next_act_name = p["next_activity"].values[0]
                 if next_act_name not in act_map:
-                    print(f"Warning: Activity '{next_act_name}' not in vocabulary. Skipping graph.")
+                    print(
+                        f"Warning: Activity '{next_act_name}' not in vocabulary. Skipping graph."
+                    )
                     continue
                 next_act = act_map[next_act_name]
                 data.y_activity = torch.tensor([next_act], dtype=torch.long)
-    
+
                 # Fast timestamp math using our pre-extracted list
                 if k > 1:
                     t_next = p_timestamps[1].timestamp()
                 else:
                     t_next = p_timestamps[0].timestamp()
                 data.y_timestamp = torch.tensor([np.log1p(t_next)], dtype=torch.float32)
-    
+
                 t_end = p_timestamps[-1].timestamp()
                 t_now = p_timestamps[0].timestamp()
                 remaining = max(0, t_end - t_now)
                 data.y_remaining_time = torch.tensor(
                     [np.log1p(remaining)], dtype=torch.float32
                 )
-    
+
                 graphs.append(data)
-    
+
             return graphs
 
         if split_col:
@@ -379,9 +391,7 @@ class GNNPredictor:
             "sample_graph": dataset[0],
         }
 
-    def build_model(
-        self, sample_graph, batch_size=64, num_workers=0, num_activity_classes=None
-    ):
+    def build_model(self, sample_graph, num_activity_classes=None, **kwargs):
         print("\nBuilding GNN model...")
 
         metadata = sample_graph.metadata()
@@ -407,12 +417,19 @@ class GNNPredictor:
         print(f"Using device: {self.device}")
 
     def create_loaders(
-        self, train_graphs, val_graphs, test_graphs, batch_size=64, num_workers=0
+        self, train_graphs, val_graphs, test_graphs, batch_size=64, num_workers=None
     ):
+        # Centralized worker calculation
+        if num_workers is None:
+            max_cores = os.cpu_count() or 1
+            num_workers = min(4, max_cores)
+
         loader_args = dict(
             batch_size=batch_size,
             num_workers=num_workers,
             collate_fn=Batch.from_data_list,
+            # Pro-tip: Add this line below to speed up data transfer to the GPU!
+            pin_memory=True if torch.cuda.is_available() else False,
         )
 
         train_loader = torch.utils.data.DataLoader(
@@ -504,6 +521,8 @@ class GNNPredictor:
             batch_size=batch_size,
             num_workers=num_workers,
         )
+
+        print(f"Using {num_workers} CPU workers for data loading")
 
         best_val_loss = float("inf")
         patience_counter = 0
