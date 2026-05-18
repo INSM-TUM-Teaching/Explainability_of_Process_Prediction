@@ -64,23 +64,6 @@ export default function Step3Prediction({
             />
           </div>
 
-          <div
-            onClick={() => onSelectTask("remaining_trace")}
-            className={`${baseCard} ${isSelected("remaining_trace") ? selectedCard : unselectedCard}`}
-          >
-            <div className="pr-6 min-w-0">
-              <div className="font-medium text-gray-900">Remaining Trace Prediction</div>
-              <div className="text-sm text-gray-600 mt-1 break-words">
-                Predict the complete sequence of future activities for a running case
-                (activity names, not duration).
-              </div>
-            </div>
-            <div
-              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-                isSelected("remaining_trace") ? "border-brand-600 bg-brand-600" : "border-gray-300"
-              }`}
-            />
-          </div>
         </div>
       ) : (
         <>
