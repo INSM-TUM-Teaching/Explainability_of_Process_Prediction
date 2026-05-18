@@ -987,7 +987,7 @@ def create_run(req: RunCreateRequest):
             stdout=log,
             stderr=log,
             cwd=REPO_ROOT,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
         )
 
     # Save pid
