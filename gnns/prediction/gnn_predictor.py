@@ -506,7 +506,7 @@ class GNNPredictor:
         epochs=50,
         batch_size=64,
         patience=10,
-        num_workers=None,
+        num_workers=4,
         log_every=200,
         train_eval_batches=25,
     ):
