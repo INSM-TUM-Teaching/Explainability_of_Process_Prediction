@@ -506,7 +506,9 @@ class GNNPredictor:
         epochs=50,
         batch_size=64,
         patience=10,
-        num_workers=4,
+        # `num_workers` make it either 4, 8 or 10 based on PC
+        # its basically the number of CPU subprocess
+        num_workers=10,
         log_every=200,
         train_eval_batches=25,
     ):
