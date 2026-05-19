@@ -31,7 +31,6 @@ export type BestConfig = {
   max_pattern_size_eval: number;
   process_stage_width_percentage: number;
   min_freq: number;
-  break_buffer: number;
   filter_sequences: boolean;
   ncores: number;
 };
@@ -312,15 +311,6 @@ function ParameterGrid({
           min="0"
           step="any"
           onChange={(e) => updateNum("min_freq", n(e.target.value))}
-        />
-        <ParameterField
-          label="Break buffer (RTP only, > 1)"
-          value={cfg.break_buffer}
-          placeholder="1.2"
-          editable={editable}
-          min="1"
-          step="0.1"
-          onChange={(e) => updateNum("break_buffer", n(e.target.value))}
         />
         <BooleanField
           label="Filter START/END tokens"

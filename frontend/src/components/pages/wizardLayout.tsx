@@ -186,8 +186,6 @@ function validateBestConfig(cfg: BestConfig): boolean {
     cfg.process_stage_width_percentage <= 1 &&
     typeof cfg.min_freq === "number" &&
     cfg.min_freq > 0 &&
-    typeof cfg.break_buffer === "number" &&
-    cfg.break_buffer > 1 &&
     typeof cfg.ncores === "number" &&
     Number.isInteger(cfg.ncores) &&
     cfg.ncores >= 1
@@ -251,7 +249,6 @@ export default function WizardLayout() {
       max_pattern_size_eval: 21,
       process_stage_width_percentage: 0.2,
       min_freq: 1e-14,
-      break_buffer: 1.2,
       filter_sequences: true,
       ncores: 1,
     }),
