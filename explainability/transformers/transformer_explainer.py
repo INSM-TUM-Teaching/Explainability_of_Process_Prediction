@@ -761,30 +761,10 @@ class LIMEExplainer:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
     def _aggregate_feature_names(self, data):
-        if self.label_encoder is None:
-            return [f'Position_{i+1}' for i in range(data.shape[1])]
-        feature_names = []
-        for pos in range(data.shape[1]):
-            activities_at_pos = []
-            for sample in data:
-                token = sample[pos]
-                if token > 0:
-                    try:
-                        # Token indices are offset by +1 (0 is padding)
-                        activity = self.label_encoder.inverse_transform([int(token) - 1])[0]
-                        activities_at_pos.append(activity)
-                    except Exception as e:
-                        print(f"[WARNING] Failed to decode activity token {int(token)}: {e}")
-                        pass
-    
-            if activities_at_pos:
-                # Find most common activity at this position
-                most_common = max(set(activities_at_pos), key=activities_at_pos.count)
-                feature_names.append(most_common)
-            else:
-                # Fallback for padding-only positions
-                feature_names.append(f'Position_{pos+1}')
-        return feature_names
+        # We must use unique position names so LimeTabularExplainer doesn't confuse
+        # different timestep positions as the same feature when generating perturbations.
+        # The mapping to actual activity names will happen during plot generation.
+        return [f'Position_{i+1}' for i in range(data.shape[1])]
         
     def initialize_explainer(self, training_data, num_classes=None):
         print("Initializing LIME Explainer...")
@@ -876,7 +856,7 @@ class LIMEExplainer:
                 exp = self.explainer.explain_instance(
                     self.test_data_seq[i],
                     predict_fn,
-                    num_features=num_features,
+                    num_features=len(self.test_data_seq[i]),
                     top_labels=1
                 )
                 self.explanations.append(exp)
@@ -1008,6 +988,9 @@ class LIMEExplainer:
                     else:
                         continue
             
+            if name == "[PAD]":
+                continue
+                
             if name not in activity_stats:
                 activity_stats[name] = {'weight': 0.0, 'count': 0}
             activity_stats[name]['weight'] += weight
