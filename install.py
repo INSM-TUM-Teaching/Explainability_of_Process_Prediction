@@ -9,7 +9,7 @@ import sys
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     """Run a command, printing it first."""
     print(f"  $ {' '.join(cmd)}")
-    return subprocess.run(cmd, check=check, capture_output=True, text=True)
+    return subprocess.run(cmd, check=check)
 
 
 def pip(*args: str, check: bool = True) -> subprocess.CompletedProcess:
