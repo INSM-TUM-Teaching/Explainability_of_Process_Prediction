@@ -24,6 +24,14 @@ except ImportError as e:
     EXPLAINABILITY_AVAILABLE = False
     EXPLAINABILITY_IMPORT_ERROR = str(e)
 
+BEST_AVAILABLE = True
+BEST_IMPORT_ERROR = None
+try:
+    from best.predictor import BESTRunner
+except ImportError as e:
+    BEST_AVAILABLE = False
+    BEST_IMPORT_ERROR = str(e)
+
 # We already verified TF/Torch are installed, but keep these guards for robustness
 try:
     import tensorflow as tf
@@ -130,6 +138,18 @@ def default_gnn_config():
         'epochs': 5,
         'batch_size': 64,
         'patience': 10
+    }
+
+
+def default_best_config():
+    return {
+        'max_pattern_size_train': 21,
+        'max_pattern_size_eval': 21,
+        'process_stage_width_percentage': 0.2,
+        'min_freq': 1e-14,
+        'break_buffer': 1.2,
+        'filter_sequences': True,
+        'ncores': 1,
     }
 
 
@@ -506,3 +526,103 @@ def run_gnn_unified_prediction(
         )
 
     return metrics
+
+def run_best_nap_prediction(
+    dataset_path,
+    output_dir,
+    config,
+    split,
+    explainability=None,
+    skip_auto_mapping=False,
+):
+    if not BEST_AVAILABLE:
+        raise RuntimeError(
+            f"best4ppm not available. Install with: pip install git+https://github.com/lmu-dbs/BEST.git"
+            f" ({BEST_IMPORT_ERROR})"
+        )
+
+    df = pd.read_csv(dataset_path)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
+
+    test_size = float(split.get("test_size", 0.2))
+
+    runner = BESTRunner(config=config, task="nap")
+    print("[BEST NAP] Preparing data...")
+    runner.prepare_data(df, test_size=test_size)
+    print("[BEST NAP] Fitting model...")
+    runner.fit()
+    print("[BEST NAP] Running predictions...")
+    runner.predict()
+
+    print("[BEST NAP] Evaluating...")
+    metrics = runner.evaluate()
+    print(f"[BEST NAP] Metrics: {metrics}")
+    runner.save_results(output_dir)
+    runner.plot_performance(output_dir)
+    runner.save_model(output_dir)
+
+    if explainability:
+        print("[BEST NAP] Running explainability...")
+        run_best_explainability(runner, output_dir, task="nap")
+
+    return metrics
+
+def run_best_rtp_prediction(
+    dataset_path,
+    output_dir,
+    config,
+    split,
+    explainability=None,
+    skip_auto_mapping=False,
+):
+    if not BEST_AVAILABLE:
+        raise RuntimeError(
+            f"best4ppm not available. Install with: pip install git+https://github.com/lmu-dbs/BEST.git"
+            f" ({BEST_IMPORT_ERROR})"
+        )
+
+    df = pd.read_csv(dataset_path)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
+
+    test_size = float(split.get("test_size", 0.2))
+
+    runner = BESTRunner(config=config, task="rtp")
+    print("[BEST RTP] Preparing data...")
+    runner.prepare_data(df, test_size=test_size)
+    print("[BEST RTP] Fitting model...")
+    runner.fit()
+    print("[BEST RTP] Running predictions...")
+    runner.predict()
+
+    print("[BEST RTP] Evaluating...")
+    metrics = runner.evaluate()
+    print(f"[BEST RTP] Metrics: {metrics}")
+    runner.save_results(output_dir)
+    runner.plot_performance(output_dir)
+    runner.save_model(output_dir)
+
+    if explainability:
+        print("[BEST RTP] Running explainability...")
+        run_best_explainability(runner, output_dir, task="rtp")
+
+    return metrics
+
+def run_best_explainability(runner, output_dir, task):
+    from explainability.best.best_explainer import BESTExplainer
+    explainer = BESTExplainer(
+        model=runner.model,
+        output_dir=output_dir,
+        task=task,
+        runner=runner,
+    )
+    explainer.explain()

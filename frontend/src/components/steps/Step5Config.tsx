@@ -25,8 +25,18 @@ export type GnnConfig = {
   patience: number;
 };
 
+// Must match backend `default_best_config()` keys/types in `ppm_pipeline.py`.
+export type BestConfig = {
+  max_pattern_size_train: number;
+  max_pattern_size_eval: number;
+  process_stage_width_percentage: number;
+  min_freq: number;
+  filter_sequences: boolean;
+  ncores: number;
+};
+
 type Step5ConfigProps = {
-  modelType: "gnn" | "transformer" | null;
+  modelType: "gnn" | "transformer" | "best" | null;
   mode: ConfigMode | null;
   onSelect: (mode: ConfigMode) => void;
 
@@ -37,6 +47,10 @@ type Step5ConfigProps = {
   gnnConfig: GnnConfig;
   onGnnChange: (cfg: GnnConfig) => void;
   defaultGnnConfig: GnnConfig;
+
+  bestConfig: BestConfig;
+  onBestChange: (cfg: BestConfig) => void;
+  defaultBestConfig: BestConfig;
 };
 
 export default function Step5Config({
@@ -49,6 +63,9 @@ export default function Step5Config({
   gnnConfig,
   onGnnChange,
   defaultGnnConfig,
+  bestConfig,
+  onBestChange,
+  defaultBestConfig,
 }: Step5ConfigProps) {
   if (!modelType) {
     return (
@@ -59,15 +76,15 @@ export default function Step5Config({
     );
   }
 
-  const isTransformer = modelType === "transformer";
-
-  return (
+return (
     <div className="space-y-6 max-w-5xl">
       <div>
         <h2 className="text-2xl font-semibold">Model Configuration</h2>
         <p className="text-sm text-brand-600">
-          {isTransformer
+          {modelType === "transformer"
             ? "These options map 1:1 to the backend Transformer config."
+            : modelType === "best"
+            ? "These options map 1:1 to the backend BEST config."
             : "These options map 1:1 to the backend GNN config."}
         </p>
       </div>
@@ -87,6 +104,9 @@ export default function Step5Config({
           gnnConfig={gnnConfig}
           onGnnChange={onGnnChange}
           defaultGnnConfig={defaultGnnConfig}
+          bestConfig={bestConfig}
+          onBestChange={onBestChange}
+          defaultBestConfig={defaultBestConfig}
         />
       </ConfigCard>
 
@@ -105,6 +125,9 @@ export default function Step5Config({
           gnnConfig={gnnConfig}
           onGnnChange={onGnnChange}
           defaultGnnConfig={defaultGnnConfig}
+          bestConfig={bestConfig}
+          onBestChange={onBestChange}
+          defaultBestConfig={defaultBestConfig}
         />
       </ConfigCard>
     </div>
@@ -155,8 +178,11 @@ function ParameterGrid({
   gnnConfig,
   onGnnChange,
   defaultGnnConfig,
+  bestConfig,
+  onBestChange,
+  defaultBestConfig,
 }: {
-  modelType: "gnn" | "transformer";
+  modelType: "gnn" | "transformer" | "best";
   editable: boolean;
   transformerConfig: TransformerConfig;
   onTransformerChange: (cfg: TransformerConfig) => void;
@@ -164,6 +190,9 @@ function ParameterGrid({
   gnnConfig: GnnConfig;
   onGnnChange: (cfg: GnnConfig) => void;
   defaultGnnConfig: GnnConfig;
+  bestConfig: BestConfig;
+  onBestChange: (cfg: BestConfig) => void;
+  defaultBestConfig: BestConfig;
 }) {
   if (modelType === "transformer") {
     const cfg = editable ? transformerConfig : defaultTransformerConfig;
@@ -236,6 +265,72 @@ function ParameterGrid({
     );
   }
 
+  if (modelType === "best") {
+    const cfg = editable ? bestConfig : defaultBestConfig;
+    const updateNum = <K extends keyof BestConfig>(key: K, value: number) => {
+      onBestChange({ ...bestConfig, [key]: value as BestConfig[K] });
+    };
+    const updateBool = (key: keyof BestConfig, value: boolean) => {
+      onBestChange({ ...bestConfig, [key]: value });
+    };
+    return (
+      <div className="grid grid-cols-2 gap-4">
+        <ParameterField
+          label="Max pattern size (train) — odd integer"
+          value={cfg.max_pattern_size_train}
+          placeholder="21"
+          editable={editable}
+          min="3"
+          step="2"
+          onChange={(e) => updateNum("max_pattern_size_train", n(e.target.value))}
+        />
+        <ParameterField
+          label="Max pattern size (eval) — odd integer ≤ train"
+          value={cfg.max_pattern_size_eval}
+          placeholder="21"
+          editable={editable}
+          min="3"
+          step="2"
+          onChange={(e) => updateNum("max_pattern_size_eval", n(e.target.value))}
+        />
+        <ParameterField
+          label="Stage width % (0–1)"
+          value={cfg.process_stage_width_percentage}
+          placeholder="0.2"
+          editable={editable}
+          min="0"
+          max="1"
+          step="0.05"
+          onChange={(e) => updateNum("process_stage_width_percentage", n(e.target.value))}
+        />
+        <ParameterField
+          label="Min frequency"
+          value={cfg.min_freq}
+          placeholder="1e-14"
+          editable={editable}
+          min="0"
+          step="any"
+          onChange={(e) => updateNum("min_freq", n(e.target.value))}
+        />
+        <BooleanField
+          label="Filter START/END tokens"
+          value={cfg.filter_sequences}
+          editable={editable}
+          onChange={(v) => updateBool("filter_sequences", v)}
+        />
+        <ParameterField
+          label="Parallel cores"
+          value={cfg.ncores}
+          placeholder="1"
+          editable={editable}
+          min="1"
+          step="1"
+          onChange={(e) => updateNum("ncores", n(e.target.value))}
+        />
+      </div>
+    );
+  }
+
   const cfg = editable ? gnnConfig : defaultGnnConfig;
   const update = <K extends keyof GnnConfig>(key: K, value: number) => {
     onGnnChange({ ...gnnConfig, [key]: value });
@@ -296,6 +391,34 @@ function ParameterGrid({
 
 function n(v: string): number {
   return v === "" ? NaN : Number(v);
+}
+
+function BooleanField({
+  label,
+  value,
+  editable,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  editable: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="border rounded-lg p-4 bg-white">
+      <div className="text-sm text-gray-600 mb-1">{label}</div>
+      {editable ? (
+        <input
+          type="checkbox"
+          checked={value}
+          onChange={(e) => onChange(e.target.checked)}
+          className="h-4 w-4 rounded border-gray-300 accent-brand-600 cursor-pointer"
+        />
+      ) : (
+        <div className="px-3 py-2 font-medium text-black">{value ? "true" : "false"}</div>
+      )}
+    </div>
+  );
 }
 
 function ParameterField({

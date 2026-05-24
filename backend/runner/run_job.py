@@ -208,16 +208,21 @@ def main():
         from ppm_pipeline import (
             default_gnn_config,
             default_transformer_config,
+            default_best_config,
             run_next_activity_prediction,
             run_event_time_prediction,
             run_remaining_time_prediction,
             run_gnn_unified_prediction,
+            run_best_nap_prediction,
+            run_best_rtp_prediction,
         )
 
         if model_type == "transformer" and not config:
             config = default_transformer_config()
         if model_type == "gnn" and not config:
             config = default_gnn_config()
+        if model_type == "best" and not config:
+            config = default_best_config()
 
         if model_type == "transformer":
             if task in {"next_activity", "custom_activity"}:
@@ -262,6 +267,28 @@ def main():
                 target_column=target_column if task == "custom_activity" else None,
                 skip_auto_mapping=skip_auto_mapping,
             )
+        elif model_type == "best":
+            if task == "next_activity":
+                metrics = run_best_nap_prediction(
+                    dataset_path,
+                    artifacts_dir,
+                    config=config,
+                    split=split,
+                    explainability=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
+            elif task == "remaining_trace":
+                metrics = run_best_rtp_prediction(
+                    dataset_path,
+                    artifacts_dir,
+                    config=config,
+                    split=split,
+                    explainability=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
+            else:
+                raise RuntimeError(f"Unsupported best task: {task}")
+
         else:
             raise RuntimeError(f"Unsupported model_type: {model_type}")
 
