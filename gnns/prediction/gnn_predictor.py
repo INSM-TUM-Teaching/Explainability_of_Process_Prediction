@@ -481,6 +481,58 @@ class GNNPredictor:
         )
 
         metrics = self.evaluate(test_loader)
+        
+        self.model.eval()
+        results = []
+        inv_act_vocab = {i: v for v, i in self.vocabs['Activity'].items()} if hasattr(self, 'vocabs') and 'Activity' in self.vocabs else {}
+
+        with torch.no_grad():
+            for batch in test_loader:
+                batch = batch.to(self.device)
+                act_logits, time_pred, rem_pred = self.model(batch)
+                
+                probs = torch.softmax(act_logits, dim=1)
+                confidences = probs.max(dim=1)[0].cpu().numpy() * 100
+                
+                y_act = batch.y_activity.view(-1).cpu().numpy()
+                pred_act = act_logits.argmax(dim=1).cpu().numpy()
+                y_time = batch.y_timestamp.view(-1).cpu().numpy()
+                pred_time = time_pred.cpu().numpy()
+                y_rem = batch.y_remaining_time.view(-1).cpu().numpy()
+                pred_rem = rem_pred.cpu().numpy()
+                
+                case_ids = batch.case_id if hasattr(batch, 'case_id') else [None] * len(y_act)
+                case_indices = batch.case_index if hasattr(batch, 'case_index') else [None] * len(y_act)
+                
+                act_x = batch['activity'].x.argmax(dim=-1).cpu().numpy()
+                act_batch = batch['activity'].batch.cpu().numpy()
+                
+                sequences = []
+                for i in range(len(y_act)):
+                    graph_act_indices = act_x[act_batch == i]
+                    decoded_seq = [inv_act_vocab.get(int(idx), str(idx)) for idx in graph_act_indices]
+                    sequences.append(", ".join(decoded_seq))
+                
+                for i in range(len(y_act)):
+                    # Decode from tensors if PyG collated them into 1D arrays
+                    cid = case_ids[i].item() if hasattr(case_ids[i], 'item') else case_ids[i]
+                    cidx = case_indices[i].item() if hasattr(case_indices[i], 'item') else case_indices[i]
+                    
+                    results.append({
+                        'case_id': cid,
+                        'case_index': cidx,
+                        'sequence': sequences[i],
+                        'true_next_activity': inv_act_vocab.get(int(y_act[i]), y_act[i]),
+                        'predicted_next_activity': inv_act_vocab.get(int(pred_act[i]), pred_act[i]),
+                        'confidence_percent': round(float(confidences[i]), 2),
+                        'actual_event_time_days': float(y_time[i]),
+                        'predicted_event_time_days': float(pred_time[i]),
+                        'actual_remaining_time_days': float(y_rem[i]),
+                        'predicted_remaining_time_days': float(pred_rem[i])
+                    })
+        
+        import pandas as pd
+        metrics['predictions_df'] = pd.DataFrame(results)
 
         return metrics
 
@@ -543,5 +595,26 @@ class GNNPredictor:
             f.write(f"Test MAE (Remaining Time): {metrics['mae_rem']:.4f}\n")
             f.write(f"Test Loss:                 {metrics['loss']:.4f}\n")
             f.write("\n" + "="*50 + "\n")
-
+            
         print(f"Results saved to: {results_file}")
+        
+        if 'predictions_df' in metrics:
+            pred_file = os.path.join(output_dir, "gnn_predictions.csv")
+            # Create clean case id similarly
+            df = metrics['predictions_df'].copy()
+            df['case_id'] = df['case_id'].astype(str).str.replace('Case ', '', regex=False).str.replace('case ', '', regex=False).str.replace(' ', '_').str.strip()
+            
+            # Filter out target columns we didn't train on (loss weight == 0.0)
+            if hasattr(self, 'loss_weights'):
+                if self.loss_weights[0] == 0.0:
+                    df = df.drop(columns=['true_next_activity', 'predicted_next_activity', 'confidence_percent'], errors='ignore')
+                if self.loss_weights[1] == 0.0:
+                    df = df.drop(columns=['actual_event_time_days', 'predicted_event_time_days'], errors='ignore')
+                if self.loss_weights[2] == 0.0:
+                    df = df.drop(columns=['actual_remaining_time_days', 'predicted_remaining_time_days'], errors='ignore')
+
+            df.to_csv(pred_file, index=False)
+            print(f"Predictions saved to: {pred_file}")
+            
+            # Remove from metrics dictionary so it doesn't break JSON serialization down the line
+            del metrics['predictions_df']
