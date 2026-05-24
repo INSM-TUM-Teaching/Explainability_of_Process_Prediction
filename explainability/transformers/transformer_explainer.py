@@ -360,7 +360,8 @@ class SHAPExplainer:
         
         if values.ndim > 2:
             if self.task == 'activity':
-                values = np.abs(values).mean(axis=tuple(range(2, values.ndim)))
+                max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(axis=-1)
             else:
                 values = values.mean(axis=tuple(range(2, values.ndim)))
         
@@ -490,7 +491,11 @@ class TimestepSHAPExplainer(SHAPExplainer):
                 else:
                     values = values.reshape((values.shape[0],) + self._seq_shape)
                     if values.ndim > 2:
-                        values = values.mean(axis=tuple(range(2, values.ndim)))
+                        if self.task == 'activity':
+                            max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                            values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(axis=-1)
+                        else:
+                            values = values.mean(axis=tuple(range(2, values.ndim)))
 
         if values.ndim > 2:
             seq_axis = None
@@ -501,7 +506,11 @@ class TimestepSHAPExplainer(SHAPExplainer):
             if seq_axis is not None:
                 values = np.moveaxis(values, seq_axis, 1)
                 if values.ndim > 2:
-                    values = values.mean(axis=tuple(range(2, values.ndim)))
+                    if self.task == 'activity':
+                        max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                        values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(axis=-1)
+                    else:
+                        values = values.mean(axis=tuple(range(2, values.ndim)))
 
         return values
 
