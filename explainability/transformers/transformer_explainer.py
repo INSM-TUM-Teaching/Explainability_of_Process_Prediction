@@ -707,27 +707,34 @@ class LIMEExplainer:
     def _aggregate_feature_names(self, data):
         if self.label_encoder is None:
             return [f'Position_{i+1}' for i in range(data.shape[1])]
+        
         feature_names = []
+        
+        # Iterate over columns (positions)
         for pos in range(data.shape[1]):
-            activities_at_pos = []
-            for sample in data:
-                token = sample[pos]
-                if token > 0:
-                    try:
-                        # Token indices are offset by +1 (0 is padding)
-                        activity = self.label_encoder.inverse_transform([int(token) - 1])[0]
-                        activities_at_pos.append(activity)
-                    except Exception as e:
-                        print(f"[WARNING] Failed to decode activity token {int(token)}: {e}")
-                        pass
-    
-            if activities_at_pos:
-                # Find most common activity at this position
-                most_common = max(set(activities_at_pos), key=activities_at_pos.count)
-                feature_names.append(most_common)
+            # Extract the entire column at once as a NumPy array
+            column_data = data[:, pos]
+            
+            # Filter out all padding tokens (0) instantly
+            valid_tokens = column_data[column_data > 0]
+            
+            if len(valid_tokens) > 0:
+                # 1. FIND THE WINNER: Use NumPy to find the most frequent integer token
+                unique_tokens, counts = np.unique(valid_tokens, return_counts=True)
+                most_common_token = int(unique_tokens[np.argmax(counts)])
+                
+                try:
+                    # 2. TRANSLATE: Only call inverse_transform on the single winning token
+                    # Token indices are offset by +1 (0 is padding)
+                    activity = self.label_encoder.inverse_transform([most_common_token - 1])[0]
+                    feature_names.append(activity)
+                except Exception as e:
+                    print(f"[WARNING] Failed to decode activity token {most_common_token}: {e}")
+                    feature_names.append(f'Position_{pos+1}')
             else:
                 # Fallback for padding-only positions
                 feature_names.append(f'Position_{pos+1}')
+                
         return feature_names
         
     def initialize_explainer(self, training_data, num_classes=None):
@@ -1183,24 +1190,14 @@ class ExplainabilityBenchmark:
     # -------------------------------------------------------------------------
     
     def faithfulness_correlation(self, x_seq, x_temp, attributions, k_values=[1, 3, 5, 10]):
-        """
-        Faithfulness measures if removing top-k important features changes predictions.
-        Higher correlation between importance and prediction change = better faithfulness.
-        
-        Args:
-            x_seq: Sequence input (n_samples, seq_len)
-            x_temp: Temporal features (n_samples, temp_features) or None
-            attributions: Feature importance scores (n_samples, seq_len)
-            k_values: List of k values to test
-            
-        Returns:
-            dict with faithfulness scores for each k
-        """
         print("Computing Faithfulness Correlation...")
         n_samples = len(x_seq)
         seq_len = x_seq.shape[1]
         
         results = {}
+        
+        # 1. BATCH PREDICT ORIGINAL SEQUENCES
+        orig_preds_all = self._predict(x_seq, x_temp)
         
         for k in k_values:
             if k > seq_len:
@@ -1209,33 +1206,34 @@ class ExplainabilityBenchmark:
             pred_changes = []
             importance_sums = []
             
+            # 2. COLLECT ALL MASKED SEQUENCES
+            x_masked_list = []
             for i in range(n_samples):
-                # Original prediction
-                orig_pred = self._predict(x_seq[i:i+1], x_temp[i:i+1] if x_temp is not None else None)
-                
-                # Get top-k important feature indices
                 sample_attr = np.abs(attributions[i]) if attributions.ndim > 1 else np.abs(attributions)
                 top_k_idx = np.argsort(sample_attr)[-k:]
                 
-                # Mask top-k features
-                x_masked = x_seq[i:i+1].copy()
-                x_masked[0, top_k_idx] = 0  # Zero masking
+                x_masked = x_seq[i].copy()
+                x_masked[top_k_idx] = 0  # Zero masking
+                x_masked_list.append(x_masked)
                 
-                # Prediction after masking
-                masked_pred = self._predict(x_masked, x_temp[i:i+1] if x_temp is not None else None)
+                importance_sums.append(sample_attr[top_k_idx].sum())
                 
-                # Calculate prediction change
+            # 3. BATCH PREDICT ALL MASKED SEQUENCES
+            x_masked_batch = np.array(x_masked_list)
+            masked_preds_all = self._predict(x_masked_batch, x_temp)
+            
+            # 4. CALCULATE CHANGES VECTORIZED
+            for i in range(n_samples):
+                orig_pred = orig_preds_all[i:i+1]
+                masked_pred = masked_preds_all[i:i+1]
+                
                 if self.task == 'activity':
-                    # For classification: change in predicted class probability
                     pred_change = np.abs(orig_pred - masked_pred).max()
                 else:
-                    # For regression: absolute difference
                     pred_change = np.abs(orig_pred - masked_pred).mean()
-                
+                    
                 pred_changes.append(pred_change)
-                importance_sums.append(sample_attr[top_k_idx].sum())
             
-            # Correlation between importance sum and prediction change
             from scipy.stats import spearmanr, pearsonr
             if len(set(pred_changes)) > 1 and len(set(importance_sums)) > 1:
                 spearman_corr, spearman_p = spearmanr(importance_sums, pred_changes)
@@ -1259,8 +1257,6 @@ class ExplainabilityBenchmark:
         """
         Comprehensiveness: Prediction change when removing top-k features.
         Higher = explanations capture important features.
-        
-        Formula: Comprehensiveness = f(x) - f(x \ top_k_features)
         """
         print("Computing Comprehensiveness...")
         n_samples = len(x_seq)
@@ -1268,31 +1264,34 @@ class ExplainabilityBenchmark:
         
         results = {}
         
+        # 1. OPTIMIZATION: Predict ALL original sequences in one batch outside the loop
+        orig_preds = self._predict(x_seq, x_temp)
+
         for k in k_values:
             if k > seq_len:
                 continue
             
-            comp_scores = []
+            # 2. OPTIMIZATION: Collect all masked arrays into a list
+            x_masked_list = []
             
             for i in range(n_samples):
-                orig_pred = self._predict(x_seq[i:i+1], x_temp[i:i+1] if x_temp is not None else None)
-                
                 sample_attr = np.abs(attributions[i]) if attributions.ndim > 1 else np.abs(attributions)
                 top_k_idx = np.argsort(sample_attr)[-k:]
                 
-                x_masked = x_seq[i:i+1].copy()
-                x_masked[0, top_k_idx] = 0
+                x_masked = x_seq[i].copy()
+                x_masked[top_k_idx] = 0
+                x_masked_list.append(x_masked)
                 
-                masked_pred = self._predict(x_masked, x_temp[i:i+1] if x_temp is not None else None)
-                
-                if self.task == 'activity':
-                    orig_conf = orig_pred.max()
-                    masked_conf = masked_pred.max()
-                    comp = orig_conf - masked_conf
-                else:
-                    comp = np.abs(orig_pred - masked_pred).mean()
-                
-                comp_scores.append(comp)
+            # 3. OPTIMIZATION: Stack the list and run a SINGLE prediction batch
+            x_masked_batch = np.array(x_masked_list)
+            masked_preds = self._predict(x_masked_batch, x_temp)
+            
+            if self.task == 'activity':
+                orig_confs = orig_preds.max(axis=1)
+                masked_confs = masked_preds.max(axis=1)
+                comp_scores = orig_confs - masked_confs
+            else:
+                comp_scores = np.abs(orig_preds - masked_preds).mean(axis=1)
             
             results[f'comprehensiveness_k{k}'] = {
                 'mean': float(np.mean(comp_scores)),
@@ -1301,13 +1300,11 @@ class ExplainabilityBenchmark:
             }
         
         return results
-    
+
     def sufficiency(self, x_seq, x_temp, attributions, k_values=[1, 3, 5, 10]):
         """
         Sufficiency: Prediction using ONLY top-k features.
         Lower = top features are sufficient to make prediction.
-        
-        Formula: Sufficiency = f(x) - f(only_top_k_features)
         """
         print("Computing Sufficiency...")
         n_samples = len(x_seq)
@@ -1315,32 +1312,35 @@ class ExplainabilityBenchmark:
         
         results = {}
         
+        # 1. OPTIMIZATION: Predict ALL original sequences in one batch
+        orig_preds = self._predict(x_seq, x_temp)
+
         for k in k_values:
             if k > seq_len:
                 continue
             
-            suff_scores = []
+            # 2. OPTIMIZATION: Collect all top-k arrays into a list
+            x_only_top_list = []
             
             for i in range(n_samples):
-                orig_pred = self._predict(x_seq[i:i+1], x_temp[i:i+1] if x_temp is not None else None)
-                
                 sample_attr = np.abs(attributions[i]) if attributions.ndim > 1 else np.abs(attributions)
                 top_k_idx = np.argsort(sample_attr)[-k:]
                 
                 # Keep ONLY top-k features, mask everything else
-                x_only_top = np.zeros_like(x_seq[i:i+1])
-                x_only_top[0, top_k_idx] = x_seq[i, top_k_idx]
+                x_only_top = np.zeros_like(x_seq[i])
+                x_only_top[top_k_idx] = x_seq[i, top_k_idx]
+                x_only_top_list.append(x_only_top)
                 
-                top_pred = self._predict(x_only_top, x_temp[i:i+1] if x_temp is not None else None)
-                
-                if self.task == 'activity':
-                    orig_conf = orig_pred.max()
-                    top_conf = top_pred.max()
-                    suff = orig_conf - top_conf
-                else:
-                    suff = np.abs(orig_pred - top_pred).mean()
-                
-                suff_scores.append(suff)
+            # 3. OPTIMIZATION: Stack the list and run a SINGLE prediction batch
+            x_only_top_batch = np.array(x_only_top_list)
+            top_preds = self._predict(x_only_top_batch, x_temp)
+            
+            if self.task == 'activity':
+                orig_confs = orig_preds.max(axis=1)
+                top_confs = top_preds.max(axis=1)
+                suff_scores = orig_confs - top_confs
+            else:
+                suff_scores = np.abs(orig_preds - top_preds).mean(axis=1)
             
             results[f'sufficiency_k{k}'] = {
                 'mean': float(np.mean(suff_scores)),
@@ -1472,40 +1472,62 @@ class ExplainabilityBenchmark:
     # -------------------------------------------------------------------------
     
     def monotonicity(self, x_seq, x_temp, attributions):
-        """
-        Monotonicity: Does prediction change monotonically as we remove features
-        in order of importance?
-        
-        Higher score = more monotonic (better explanation quality)
-        """
         print("Computing Monotonicity...")
         n_samples = min(len(x_seq), 20)
         seq_len = x_seq.shape[1]
         
         monotonicity_scores = []
         
+        # 1. BATCH PREDICT ORIGINAL SEQUENCES
+        orig_preds_all = self._predict(x_seq[:n_samples], 
+                                     x_temp[:n_samples] if x_temp is not None else None)
+        
+        # 2. COLLECT EVERY MASKED STEP
+        all_masked_steps = []
+        steps_per_sample = [] # Keep track of how many steps each sample took
+        
         for i in range(n_samples):
-            orig_pred = self._predict(x_seq[i:i+1], x_temp[i:i+1] if x_temp is not None else None)
-            
             sample_attr = np.abs(attributions[i])
-            sorted_indices = np.argsort(sample_attr)[::-1]  # Most important first
+            sorted_indices = np.argsort(sample_attr)[::-1]
             
+            x_masked = x_seq[i].copy()
+            num_steps = min(10, seq_len)
+            steps_per_sample.append(num_steps)
+            
+            for idx in sorted_indices[:num_steps]:
+                x_masked = x_masked.copy() # Important: Create a new array for each step
+                x_masked[idx] = 0
+                all_masked_steps.append(x_masked)
+                
+        # 3. BATCH PREDICT ALL STEPS AT ONCE
+        x_masked_batch = np.array(all_masked_steps)
+        # We also need to duplicate the temp features to match the batch size
+        if x_temp is not None:
+            x_temp_expanded = np.repeat(x_temp[:n_samples], steps_per_sample, axis=0)
+        else:
+            x_temp_expanded = None
+            
+        all_step_preds = self._predict(x_masked_batch, x_temp_expanded)
+        
+        # 4. UNPACK RESULTS AND CALCULATE SCORES
+        current_idx = 0
+        for i in range(n_samples):
+            num_steps = steps_per_sample[i]
+            
+            orig_pred = orig_preds_all[i:i+1]
             predictions = [orig_pred.flatten()[0] if self.task != 'activity' else orig_pred.max()]
-            x_masked = x_seq[i:i+1].copy()
             
-            # Progressively remove features
-            for j, idx in enumerate(sorted_indices[:min(10, seq_len)]):
-                x_masked[0, idx] = 0
-                pred = self._predict(x_masked, x_temp[i:i+1] if x_temp is not None else None)
+            for _ in range(num_steps):
+                pred = all_step_preds[current_idx:current_idx+1]
                 pred_val = pred.flatten()[0] if self.task != 'activity' else pred.max()
                 predictions.append(pred_val)
-            
-            # Count monotonic decreases
+                current_idx += 1
+                
             n_monotonic = sum(1 for j in range(1, len(predictions)) 
                             if predictions[j] <= predictions[j-1])
             monotonicity = n_monotonic / (len(predictions) - 1) if len(predictions) > 1 else 0
             monotonicity_scores.append(monotonicity)
-        
+            
         return {
             'monotonicity': {
                 'mean': float(np.mean(monotonicity_scores)),
