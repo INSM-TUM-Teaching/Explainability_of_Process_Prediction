@@ -404,10 +404,18 @@ class GradientExplainer:
         
         if step_info:
             df_info = pd.DataFrame(step_info)
+            import re
+            m = re.search(r'case_(.+?)_idx_(.+)', str(sample_id))
+            if m:
+                df_info.insert(0, 'case_id', m.group(1))
+                df_info.insert(1, 'case_index', m.group(2))
+
             df_info['gradient_value'] = centered_contrib
             
             if task in ['event_time', 'remaining_time']:
                 cols = ['step']
+                if m:
+                    cols = ['case_id', 'case_index'] + cols
                 if 'timestamp' in df_info.columns:
                     cols.append('timestamp')
                 if 'activity' in df_info.columns:
@@ -873,10 +881,18 @@ class TemporalGradientExplainer:
 
         if step_info:
             df_info = pd.DataFrame(step_info)
+            import re
+            m = re.search(r'case_(.+?)_idx_(.+)', str(sample_id))
+            if m:
+                df_info.insert(0, 'case_id', m.group(1))
+                df_info.insert(1, 'case_index', m.group(2))
+
             df_info['gradient_value'] = centered_contrib
 
             if task in ['event_time', 'remaining_time']:
                 cols = ['step']
+                if m:
+                    cols = ['case_id', 'case_index'] + cols
                 if 'timestamp' in df_info.columns:
                     cols.append('timestamp')
                 if 'activity' in df_info.columns:
@@ -1163,6 +1179,12 @@ class GraphLIMEExplainer:
             return
 
         df = pd.DataFrame(explanation)
+        import re
+        m = re.search(r'case_(.+?)_idx_(.+)', str(sample_id))
+        if m:
+            df.insert(0, 'case_id', m.group(1))
+            df.insert(1, 'case_index', m.group(2))
+        
         if "AbsWeight" not in df.columns:
             df["AbsWeight"] = df["Weight"].abs()
         df = df.sort_values("AbsWeight", ascending=True)
@@ -1973,7 +1995,13 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
                         print(f"  Sample {i} (graph index {idx}):")
                         graph = graphs[idx]
                         contrib, pred, true_val, step_info = explainer.explain_individual_sample(graph, task)
-                        explainer.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, grad_dir, task, i)
+                        c_id = getattr(graph, 'case_id', 'unknown')
+                        c_idx = getattr(graph, 'case_index', 'unknown')
+                        
+                        if c_id != "unknown":
+                            c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
+                        sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{idx}"
+                        explainer.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, grad_dir, task, sample_name)
                     
             except Exception as e:
                 print(f"[ERROR] Failed {task}: {e}")
@@ -2018,11 +2046,17 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
             graph = graphs[idx]
             print(f"\nSample {idx}:")
             
+            c_id = getattr(graph, 'case_id', 'unknown')
+            c_idx = getattr(graph, 'case_index', 'unknown')
+            if c_id != "unknown":
+                c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
+            sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{idx}"
+            
             for task in tasks:
                 try:
                     print(f"  Processing {task}...")
                     imp, score, true_val, step_info, pred_class = lime_explainer.explain_local(graph, task)
-                    lime_explainer.plot_local_explanation(imp, score, true_val, step_info, lime_dir, task, idx, pred_class)
+                    lime_explainer.plot_local_explanation(imp, score, true_val, step_info, lime_dir, task, sample_name, pred_class)
                     
                 except Exception as e:
                     print(f"[ERROR] Failed Sample {idx} {task}: {e}")

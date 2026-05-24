@@ -246,6 +246,7 @@ class NextActivityPredictor:
         test_case_ids = data.get('test_case_ids')
         
         results = []
+        case_counters = {}
         for i in range(len(data['X_test'])):
             seq = data['X_test'][i]
             seq = seq[seq > 0]
@@ -256,9 +257,20 @@ class NextActivityPredictor:
             pred_decoded = self.label_encoder.inverse_transform([y_pred[i] - 1])[0]
             confidence = y_pred_probs[i][y_pred[i]] * 100
             
+            c_id = test_case_ids[i] if test_case_ids is not None and i < len(test_case_ids) else None
+            
+            if c_id is not None:
+                if c_id not in case_counters:
+                    case_counters[c_id] = 1
+                else:
+                    case_counters[c_id] += 1
+                c_idx = case_counters[c_id]
+            else:
+                c_idx = None
+            
             results.append({
-                "sample_index": i,
-                "case_id": test_case_ids[i] if test_case_ids is not None and i < len(test_case_ids) else None,
+                "case_id": c_id,
+                "case_index": c_idx,
                 "sequence": ", ".join(decoded_seq),
                 "true_next_activity": true_decoded,
                 "predicted_next_activity": pred_decoded,

@@ -248,7 +248,7 @@ class SHAPExplainer:
         except TypeError:
             return self.explainer(inputs)
 
-    def explain_samples(self, test_data, num_samples=20, indices=None, sample_ids=None):
+    def explain_samples(self, test_data, num_samples=20, indices=None, sample_ids=None, sample_indexes=None):
         if isinstance(test_data, (list, tuple)):
             if indices is not None and len(indices) > 0:
                 test_sample = test_data[0][indices]
@@ -278,6 +278,14 @@ class SHAPExplainer:
                 self.sample_case_ids = list(sample_ids[:len(test_sample)])
         else:
             self.sample_case_ids = None
+
+        if sample_indexes is not None:
+            if indices is not None and len(indices) > 0:
+                self.sample_case_indexes = [sample_indexes[i] for i in indices]
+            else:
+                self.sample_case_indexes = list(sample_indexes[:len(test_sample)])
+        else:
+            self.sample_case_indexes = None
             
         print(f"Computing SHAP values for {len(test_sample)} samples...")
 
@@ -404,9 +412,14 @@ class SHAPExplainer:
             print("[WARNING] SHAP values unavailable or invalid for plotting.")
             return
         shap_df = pd.DataFrame(agg_shap, columns=names)
-        shap_df.insert(0, 'sample_index', self.sample_indices if self.sample_indices is not None else list(range(len(shap_df))))
-        if self.sample_case_ids is not None:
-            shap_df.insert(1, 'case_id', self.sample_case_ids)
+        
+        insert_idx = 0
+        if getattr(self, 'sample_case_ids', None) is not None:
+            shap_df.insert(insert_idx, 'case_id', self.sample_case_ids)
+            insert_idx += 1
+        if getattr(self, 'sample_case_indexes', None) is not None:
+            shap_df.insert(insert_idx, 'case_index', self.sample_case_indexes)
+            
         pd.DataFrame(shap_df).to_csv(os.path.join(output_dir, 'shap_values_matrix.csv'), index=False)
 
         # Use aggregated activity-level summary to avoid repeated position names.
@@ -577,10 +590,16 @@ class TimestepSHAPExplainer(SHAPExplainer):
             except Exception as e:
                 print(f"Could not add prediction overlay: {e}")
 
-        plt.title(f'Transformer Model - SHAP Explainability (Sample {sample_idx})',
+        c_id = self.sample_case_ids[sample_idx] if getattr(self, 'sample_case_ids', None) and sample_idx < len(self.sample_case_ids) else "unknown"
+        if c_id != "unknown":
+            c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_")
+        c_idx = self.sample_case_indexes[sample_idx] if getattr(self, 'sample_case_indexes', None) and sample_idx < len(self.sample_case_indexes) else "unknown"
+        sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{sample_idx}"
+
+        plt.title(f'Transformer Model - SHAP Explainability ({sample_name})',
                   fontsize=14, fontweight='bold')
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_sample_{sample_idx}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_{sample_name}.png'), dpi=300)
         plt.close()
 
         df_data = {
@@ -593,7 +612,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
             df_data['Timestep'] = x_values
 
         df = pd.DataFrame(df_data)
-        df.to_csv(os.path.join(output_dir, f'shap_timestep_data_sample_{sample_idx}.csv'), index=False)
+        df.to_csv(os.path.join(output_dir, f'shap_timestep_data_{sample_name}.csv'), index=False)
 
     def plot_timestep_heatmap(self, output_dir, sample_idx=0):
         if self.shap_values is None:
@@ -632,7 +651,14 @@ class TimestepSHAPExplainer(SHAPExplainer):
         ax.set_xlabel('Event (Activity + Timestamp)' if self.timestamps else 'Timestep (Activity)',
                       fontsize=12, fontweight='bold')
         ax.set_ylabel('SHAP Value (Contribution)', fontsize=12, fontweight='bold')
-        ax.set_title(f'Timestep-Level SHAP Attribution - Sample {sample_idx}',
+        
+        c_id = self.sample_case_ids[sample_idx] if getattr(self, 'sample_case_ids', None) and sample_idx < len(self.sample_case_ids) else "unknown"
+        if c_id != "unknown":
+            c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_")
+        c_idx = self.sample_case_indexes[sample_idx] if getattr(self, 'sample_case_indexes', None) and sample_idx < len(self.sample_case_indexes) else "unknown"
+        sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{sample_idx}"
+
+        ax.set_title(f'Timestep-Level SHAP Attribution - ({sample_name})',
                      fontsize=14, fontweight='bold')
         ax.grid(axis='y', linestyle='--', alpha=0.3)
 
@@ -644,7 +670,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
         ax.legend(handles=legend_elements, loc='upper right')
 
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'shap_timestep_heatmap_sample_{sample_idx}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'shap_timestep_heatmap_{sample_name}.png'), dpi=300)
         plt.close()
 
     def plot_global_temporal_importance(self, output_dir):
@@ -785,7 +811,7 @@ class LIMEExplainer:
             verbose=False
         )
     
-    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None, sample_indices=None, sample_case_ids=None):
+    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None, sample_indices=None, sample_case_ids=None, sample_indexes=None):
         print(f"Generating LIME explanations for {num_samples} samples...")
         
         if isinstance(test_data, (list, tuple)):
@@ -810,6 +836,14 @@ class LIMEExplainer:
                 self.sample_case_ids = list(sample_case_ids[:num_samples])
         else:
             self.sample_case_ids = None
+
+        if sample_indexes is not None:
+            if sample_indices is not None:
+                self.sample_case_indexes = [sample_indexes[i] for i in sample_indices[:num_samples]]
+            else:
+                self.sample_case_indexes = list(sample_indexes[:num_samples])
+        else:
+            self.sample_case_indexes = None
             
         vocab_size = self.vocab_size if self.vocab_size is not None else int(np.max(self.test_data_seq)) + 1
         
@@ -877,7 +911,7 @@ class LIMEExplainer:
 
         return f"CLASS_{idx}"
 
-    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None, case_id=None):
+    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None, case_id=None, case_index=None):
         if sample_idx >= len(self.explanations) or self.explanations[sample_idx] is None:
             print(f"LIME Explanation not found for sample {sample_idx}.")
             return
@@ -885,6 +919,8 @@ class LIMEExplainer:
         # Use original_idx for filename, sample_idx for data access
         display_idx = original_idx if original_idx is not None else sample_idx 
         case_text = f", case {case_id}" if case_id is not None else ""
+        if case_index is not None:
+            case_text += f" (idx {case_index})"
         print(f"Generating Research-Grade LIME Plot for sample {display_idx}{case_text}...")
         exp = self.explanations[sample_idx]
         current_seq = self.test_data_seq[sample_idx]  # Use local index
@@ -982,15 +1018,29 @@ class LIMEExplainer:
             return
 
         df = pd.DataFrame(data).sort_values('AbsWeight', ascending=True)
-        df.insert(0, 'sample_index', display_idx)
+        
+        insert_idx = 0
         if case_id is not None:
-            df.insert(1, 'case_id', case_id)
-        df[['sample_index', 'case_id'] if case_id is not None else ['sample_index', 'Activity', 'Weight']]
+            df.insert(insert_idx, 'case_id', case_id)
+            insert_idx += 1
+        if case_index is not None:
+            df.insert(insert_idx, 'case_index', case_index)
+            insert_idx += 1
+            
+        csv_cols = []
         if case_id is not None:
-            csv_cols = ['sample_index', 'case_id', 'Activity', 'Weight']
+            csv_cols.append('case_id')
+        if case_index is not None:
+            csv_cols.append('case_index')
+        csv_cols.extend(['Activity', 'Weight'])
+        
+        if case_id is not None and case_index is not None:
+            clean_case_id = str(case_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
+            file_suffix = f"case_{clean_case_id}_idx_{case_index}"
         else:
-            csv_cols = ['sample_index', 'Activity', 'Weight']
-        df[csv_cols].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.csv'), index=False)
+            file_suffix = f"sample_{display_idx}"
+        
+        df[csv_cols].to_csv(os.path.join(output_dir, f'lime_explanation_{file_suffix}.csv'), index=False)
 
         plt.figure(figsize=(10, 6))
         colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['Weight']]
@@ -1002,6 +1052,8 @@ class LIMEExplainer:
         plt.margins(x=0.15)
         if case_id is not None:
             title += f"\nCase ID: {case_id}"
+        if case_index is not None:
+            title += f" (idx: {case_index})"
         plt.title(title, fontsize=13, fontweight='bold')
         plt.xlabel("Contribution to Prediction", fontsize=11)
         
@@ -1020,7 +1072,7 @@ class LIMEExplainer:
 
         # Add full sample sequence at the bottom with predicted activity highlighted.
         plt.tight_layout(rect=[0.05, 0.05, 0.98, 1])
-        plt.savefig(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'lime_explanation_{file_suffix}.png'), dpi=300)
         plt.close()
 
     def save_explanations(self, output_dir):
@@ -1043,7 +1095,7 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
     # Load LIME results if available (aggregate from multiple samples)
     lime_importance = {}
     if lime_dir:
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_sample_') and f.endswith('.csv')]
+        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
         if lime_files:
             all_lime_weights = {}
             for lime_file in lime_files:
@@ -1177,9 +1229,9 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
     if lime_dir:
         if not os.path.isdir(lime_dir):
             raise RuntimeError("LIME output missing: lime directory not found.")
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_sample_') and f.endswith('.csv')]
+        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
         if not lime_files:
-            raise RuntimeError("LIME output missing: no lime_explanation_sample_*.csv files found.")
+            raise RuntimeError("LIME output missing: no lime_explanation_*.csv files found.")
         lime_feats = set()
         for lime_file in lime_files:
             lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
@@ -1823,6 +1875,16 @@ class ExplainabilityBenchmark:
 def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=50, methods='all', label_encoder=None, scaler=None, timestamps=None, feature_config=None, run_benchmark=True):
     os.makedirs(output_dir, exist_ok=True)
     
+    # Pre-calculate case indexes sequential per case id
+    test_case_ids = data.get('test_case_ids')
+    test_case_indexes = None
+    if test_case_ids is not None:
+        case_counters = {}
+        test_case_indexes = []
+        for cid in test_case_ids:
+            case_counters[cid] = case_counters.get(cid, 0) + 1
+            test_case_indexes.append(case_counters[cid])
+    
     # Initialize explainer references
     se = None  # SHAP explainer
     le = None  # LIME explainer
@@ -1872,7 +1934,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 )
                 if not shap_indices:
                     shap_indices = None
-            se.explain_samples(test_data, num_samples, indices=shap_indices, sample_ids=data.get('test_case_ids'))
+            se.explain_samples(test_data, num_samples, indices=shap_indices, sample_ids=test_case_ids, sample_indexes=test_case_indexes)
             if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
                 print("\n[SHAP] Generating timestep-level visualizations...")
                 for i in range(min(5, num_samples)):
@@ -1932,7 +1994,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                     num_features=30,
                     y_true=y_true_diverse,
                     sample_indices=diverse_samples,
-                    sample_case_ids=data.get('test_case_ids')
+                    sample_case_ids=test_case_ids,
+                    sample_indexes=test_case_indexes
                 )
                 print(f"[DEBUG] Generated {len(le.explanations)} explanations")
                 
@@ -1944,10 +2007,10 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                         if le.explanations[i] is not None:
                             # Use original test set index in filename
                             original_idx = diverse_samples[i]
-                            case_ids = data.get('test_case_ids')
-                            case_id = case_ids[original_idx] if case_ids is not None and original_idx < len(case_ids) else None
+                            case_id = test_case_ids[original_idx] if test_case_ids is not None and original_idx < len(test_case_ids) else None
+                            case_index = test_case_indexes[original_idx] if test_case_indexes is not None and original_idx < len(test_case_indexes) else None
                             print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
-                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx, case_id=case_id)
+                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx, case_id=case_id, case_index=case_index)
                             plots_saved += 1
                         else:
                             print(f"[WARNING] Explanation {i} is None, skipping...")
@@ -1964,7 +2027,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
         if not _dir_has_png(lime_dir):
             print("[WARNING] No LIME plots generated.")
         _ensure_stub_csv(
-            os.path.join(lime_dir, "lime_explanation_sample_0.csv"),
+            os.path.join(lime_dir, "lime_explanation_stub.csv"),
             ["Activity", "Weight"]
         )
     

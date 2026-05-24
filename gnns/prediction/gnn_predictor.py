@@ -170,6 +170,7 @@ class GNNPredictor:
         def build_graphs(prefix_df):
             groups = prefix_df.groupby(["CaseID", "prefix_id"])
             graphs = []
+            case_indexes = {}
             
             print(f"Building {groups.ngroups:,} graphs...")
             for (_, _), p in tqdm(groups, desc="Building graphs", ncols=100):
@@ -250,6 +251,14 @@ class GNNPredictor:
                 t_now = p.iloc[0]["Timestamp"].timestamp()
                 remaining = max(0, t_end - t_now)
                 data.y_remaining_time = torch.tensor([np.log1p(remaining)], dtype=torch.float32)
+                
+                cid = first["CaseID"]
+                if cid not in case_indexes:
+                    case_indexes[cid] = 1
+                else:
+                    case_indexes[cid] += 1
+                data.case_id = cid
+                data.case_index = case_indexes[cid]
                 
                 graphs.append(data)
             
