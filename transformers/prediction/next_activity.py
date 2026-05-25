@@ -71,7 +71,7 @@ class NextActivityPredictor:
             X_encoded = [self.label_encoder.transform(seq) for seq in sequences]
             y_encoded = self.label_encoder.transform(next_activities)
             X = keras.preprocessing.sequence.pad_sequences(
-                X_encoded, maxlen=self.max_len, padding='pre', value=0
+                X_encoded, maxlen=self.max_len, padding='pre', value=-1
             )
             X = X + 1
             y = y_encoded + 1
@@ -260,6 +260,7 @@ class NextActivityPredictor:
             c_id = test_case_ids[i] if test_case_ids is not None and i < len(test_case_ids) else None
             
             if c_id is not None:
+                c_id = str(c_id).replace("Case ", "").replace("case ", "").strip()
                 if c_id not in case_counters:
                     case_counters[c_id] = 1
                 else:
@@ -278,7 +279,7 @@ class NextActivityPredictor:
             })
         
         results_df = pd.DataFrame(results)
-        output_path = os.path.join(output_dir, "next_activity_predictions.csv")
+        output_path = os.path.join(output_dir, "transformer_predictions.csv")
         results_df.to_csv(output_path, index=False)
         
         print(f"Results saved to: {output_path}")
