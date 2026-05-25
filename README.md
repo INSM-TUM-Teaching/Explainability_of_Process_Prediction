@@ -29,11 +29,11 @@ This diagram summarizes the frontend-backend structure and the APIs used across 
 Clone the repository first and then follow the steps: 
 1. Create and activate a Python virtual environment.
 ```bash
-python -m venv .venv
+python3.12 -m venv .venv
 # Windows PowerShell
 .venv\Scripts\Activate.ps1
 # macOS/Linux
-# source .venv/bin/activate
+source .venv/bin/activate
 ```
 
 2. Install all ML and project dependencies.
