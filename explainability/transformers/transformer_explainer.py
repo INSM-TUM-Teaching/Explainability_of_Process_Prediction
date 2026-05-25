@@ -61,14 +61,14 @@ class SHAPExplainer:
         
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
-            print("[WARNING] label_encoder is None - will show generic Activity labels!")
+            print("[WARNING] label_encoder is None - will show generic activity labels!")
             print("[FIX] Pass label_encoder to run_transformer_explainability()")
         else:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
     def _get_activity_names_for_sample(self, sequence):
         if self.label_encoder is None:
-            return [f'Activity_{int(t)}' if t > 0 else '[PAD]' for t in sequence]
+            return [f'activity_{int(t)}' if t > 0 else '[PAD]' for t in sequence]
         
         names = []
         for token in sequence:
@@ -389,19 +389,19 @@ class SHAPExplainer:
         return agg_shap_matrix, agg_feat_matrix, sorted_names
 
     def plot_bar(self, output_dir):
-        print("Generating Global Importance Plot (Bar)...")
+        print("Generating Global importance Plot (Bar)...")
         agg_values, _, names = self._aggregate_by_activity()
         if agg_values is None:
             print("[WARNING] SHAP values unavailable or invalid for plotting.")
             return
         
         mean_impact = np.abs(agg_values).mean(axis=0)
-        df = pd.DataFrame({'Activity': names, 'Mean_Impact': mean_impact}).sort_values('Mean_Impact', ascending=False)
+        df = pd.DataFrame({'activity': names, 'importance': mean_impact}).sort_values('importance', ascending=False)
         df.to_csv(os.path.join(output_dir, 'global_importance_data.csv'), index=False)
         
         plt.figure(figsize=(10, 6))
         shap.summary_plot(agg_values, feature_names=names, plot_type="bar", show=False, max_display=15)
-        plt.title(f"Global Feature Importance ({self.task.capitalize()})", fontsize=14, fontweight='bold')
+        plt.title(f"Global Feature importance ({self.task.capitalize()})", fontsize=14, fontweight='bold')
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'shap_bar_plot.png'), dpi=300)
         plt.close()
@@ -612,7 +612,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
         plt.close()
 
         df_data = {
-            'Activity': filtered_activities,
+            'activity': filtered_activities,
             'SHAP_Value': filtered_shap
         }
         if use_timestamps:
@@ -657,7 +657,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
         ax.set_xticks(timesteps)
         ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=8)
         ax.axhline(0, color='black', linewidth=1)
-        ax.set_xlabel('Event (Activity + Timestamp)' if self.timestamps else 'Timestep (Activity)',
+        ax.set_xlabel('Event (activity + Timestamp)' if self.timestamps else 'Timestep (activity)',
                       fontsize=12, fontweight='bold')
         ax.set_ylabel('SHAP Value (Contribution)', fontsize=12, fontweight='bold')
         
@@ -690,7 +690,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
         if seq_values is None:
             return
 
-        print("Generating Global Temporal Importance Plot...")
+        print("Generating Global Temporal importance Plot...")
 
         mean_shap_per_timestep = np.mean(np.abs(seq_values), axis=0)
 
@@ -717,7 +717,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
                edgecolor='black', linewidth=0.5)
         ax.set_xlabel('Timestep Position', fontsize=12, fontweight='bold')
         ax.set_ylabel('Mean Absolute SHAP Value', fontsize=12, fontweight='bold')
-        ax.set_title('Global Timestep Importance (Averaged Across All Samples)',
+        ax.set_title('Global Timestep importance (Averaged Across All Samples)',
                      fontsize=14, fontweight='bold')
         ax.grid(axis='y', linestyle='--', alpha=0.3)
 
@@ -733,7 +733,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
 
         df = pd.DataFrame({
             'Timestep': timesteps,
-            'Most_Common_Activity': activity_labels,
+            'Most_Common_activity': activity_labels,
             'Mean_Absolute_SHAP': mean_shap_per_timestep
         })
         df.to_csv(os.path.join(output_dir, 'shap_global_temporal_data.csv'), index=False)
@@ -755,7 +755,7 @@ class LIMEExplainer:
         self.sample_case_ids = None
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
-            print("[WARNING] label_encoder is None - LIME will show generic Activity labels!")
+            print("[WARNING] label_encoder is None - LIME will show generic activity labels!")
             print("[FIX] Pass label_encoder to run_transformer_explainability()")
         else:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
@@ -875,7 +875,7 @@ class LIMEExplainer:
             except Exception as e:
                 print(f"[WARNING] Failed to decode activity token {int(token_idx)}: {e}")
                 pass
-        return f"Activity_{int(token_idx)}"
+        return f"activity_{int(token_idx)}"
 
     def _decode_activity_class(self, class_idx):
         if class_idx is None:
@@ -973,7 +973,7 @@ class LIMEExplainer:
                 else:
                     continue
             else:
-                # Activity name from aggregated feature_names
+                # activity name from aggregated feature_names
                 # Extract base name (remove conditions like "<= 3.00")
                 name = rule.split('<=')[0].split('>')[0].strip()
                 # If name still looks like a Position_ label, try mapping or skip.
@@ -1000,16 +1000,18 @@ class LIMEExplainer:
         for name, stats in activity_stats.items():
             label = f"{name} (x{stats['count']})" if stats['count'] > 1 else name
             data.append({
-                'Activity': label,
-                'Weight': stats['weight'],
-                'AbsWeight': abs(stats['weight'])
+                'activity': label,
+                'importance': stats['weight']
             })
             
         if not data:
             print("No valid LIME features found to plot.")
             return
 
-        df = pd.DataFrame(data).sort_values('AbsWeight', ascending=True)
+        df = pd.DataFrame(data)
+        df["_abs_importance"] = df["importance"].abs()
+        df = df.sort_values("_abs_importance", ascending=True)
+        df = df.drop(columns=["_abs_importance"])
         
         insert_idx = 0
         if case_id is not None:
@@ -1024,7 +1026,7 @@ class LIMEExplainer:
             csv_cols.append('case_id')
         if case_index is not None:
             csv_cols.append('case_index')
-        csv_cols.extend(['Activity', 'Weight'])
+        csv_cols.extend(['activity', 'importance'])
         
         if case_id is not None and case_index is not None:
             clean_case_id = str(case_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
@@ -1035,15 +1037,15 @@ class LIMEExplainer:
         df[csv_cols].to_csv(os.path.join(output_dir, f'lime_explanation_{file_suffix}.csv'), index=False)
 
         plt.figure(figsize=(10, 6))
-        colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['Weight']]
+        colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['importance']]
         
-        bars = plt.barh(df['Activity'], df['Weight'], color=colors, height=0.6)
+        bars = plt.barh(df['activity'], df['importance'], color=colors, height=0.6)
         
         plt.axvline(0, color='black', linewidth=0.8)
         plt.grid(axis='x', linestyle='--', alpha=0.6)
         plt.margins(x=0.15)
         if case_id is not None:
-            title += f"\nCase ID: {case_id}"
+            title += f"\ncase id: {case_id}"
         if case_index is not None:
             title += f" (idx: {case_index})"
         plt.title(title, fontsize=13, fontweight='bold')
@@ -1082,7 +1084,7 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
     shap_importance = {}
     if shap_dir and os.path.exists(os.path.join(shap_dir, 'global_importance_data.csv')):
         shap_df = pd.read_csv(os.path.join(shap_dir, 'global_importance_data.csv'))
-        shap_importance = dict(zip(shap_df['Activity'], shap_df['Mean_Impact']))
+        shap_importance = dict(zip(shap_df['activity'], shap_df['importance']))
     
     # Load LIME results if available (aggregate from multiple samples)
     lime_importance = {}
@@ -1093,9 +1095,9 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
             for lime_file in lime_files:
                 lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
                 for _, row in lime_df.iterrows():
-                    activity = row['Activity']
+                    activity = row['activity']
                     activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
-                    weight = abs(row['Weight'])
+                    weight = abs(row['importance'])
                     if activity not in all_lime_weights:
                         all_lime_weights[activity] = []
                     all_lime_weights[activity].append(weight)
@@ -1111,17 +1113,17 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
         lime_score = lime_importance.get(feature, 0)
         avg_score = (shap_score + lime_score) / 2 if shap_score and lime_score else (shap_score or lime_score)
         
+        
         summary_data.append({
-            'Feature': feature,
-            'SHAP_Importance': shap_score,
-            'LIME_Importance': lime_score,
-            'Average_Importance': avg_score,
-            'Agreement': 'Both' if shap_score > 0 and lime_score > 0 else 'SHAP only' if shap_score > 0 else 'LIME only'
+            'activity': feature,
+            'shap_importance': shap_score,
+            'lime_importance': lime_score,
+            'average_importance': avg_score
         })
     
     # Save summary
     summary_df = pd.DataFrame(summary_data)
-    summary_df = summary_df.sort_values('Average_Importance', ascending=False)
+    summary_df = summary_df.sort_values('average_importance', ascending=False)
     summary_df.to_csv(os.path.join(output_dir, 'feature_importance_summary.csv'), index=False)
     
     # Generate text report
@@ -1131,15 +1133,13 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
         f.write("="*70 + "\n\n")
         
         f.write(f"Total features analyzed: {len(all_features)}\n")
-        f.write(f"Features identified by both methods: {len([x for x in summary_data if x['Agreement'] == 'Both'])}\n")
-        f.write(f"Features identified by SHAP only: {len([x for x in summary_data if x['Agreement'] == 'SHAP only'])}\n")
-        f.write(f"Features identified by LIME only: {len([x for x in summary_data if x['Agreement'] == 'LIME only'])}\n\n")
+
         
         f.write("Top 10 Most Important Features (Average):\n")
         f.write("-"*70 + "\n")
         for i, row in enumerate(summary_df.head(10).to_dict('records'), 1):
-            f.write(f"{i:2d}. {row['Feature']:<30} | Avg: {row['Average_Importance']:.4f}\n")
-            f.write(f"    SHAP: {row['SHAP_Importance']:.4f} | LIME: {row['LIME_Importance']:.4f}\n\n")
+            f.write(f"{i:2d}. {row['activity']:<30} | Avg: {row['average_importance']:.4f}\n")
+            f.write(f"    SHAP: {row['shap_importance']:.4f} | LIME: {row['lime_importance']:.4f}\n\n")
     
     print(f"[OK] Feature importance summary saved: feature_importance_summary.csv")
     print(f"[OK] Comparison report saved: comparison_report.txt")
@@ -1213,7 +1213,7 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
         if not os.path.exists(shap_path):
             raise RuntimeError("SHAP output missing: global_importance_data.csv")
         shap_df = pd.read_csv(shap_path)
-        shap_feats = set(shap_df['Activity'].astype(str).tolist())
+        shap_feats = set(shap_df['activity'].astype(str).tolist())
         missing_shap = sorted(expected - shap_feats)
         if missing_shap:
             print(f"[WARNING] SHAP missing activities: {', '.join(missing_shap)}")
@@ -1227,7 +1227,7 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
         lime_feats = set()
         for lime_file in lime_files:
             lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-            for val in lime_df['Activity'].astype(str).tolist():
+            for val in lime_df['activity'].astype(str).tolist():
                 name = re.sub(r'\s+\(x\d+\)$', '', val).strip()
                 lime_feats.add(name)
         missing_lime = sorted(expected - lime_feats)
@@ -1891,7 +1891,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
     if label_encoder is None:
         print("\n" + "!"*60)
         print("WARNING: label_encoder is None!")
-        print("Plots will show generic labels like 'Activity_4'")
+        print("Plots will show generic labels like 'activity_4'")
         print("To fix: Pass predictor.label_encoder to this function")
         print("!"*60 + "\n")
     
@@ -1944,7 +1944,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
             print("[WARNING] No SHAP plots generated.")
         _ensure_stub_csv(
             os.path.join(shap_dir, "global_importance_data.csv"),
-            ["Activity", "Mean_Impact"]
+            ["activity", "Mean_Impact"]
         )
 
     if methods in ['lime', 'all']:
@@ -2020,7 +2020,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
             print("[WARNING] No LIME plots generated.")
         _ensure_stub_csv(
             os.path.join(lime_dir, "lime_explanation_stub.csv"),
-            ["Activity", "Weight"]
+            ["activity", "Weight"]
         )
     
     # -------------------------------------------------------------------------
