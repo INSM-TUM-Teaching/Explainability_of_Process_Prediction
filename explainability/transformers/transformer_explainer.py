@@ -432,8 +432,6 @@ class SHAPExplainer:
         plt.figure(figsize=(10, 6))
         shap.summary_plot(agg_values, feature_names=names,
                           plot_type="bar", show=False, max_display=15)
-        plt.title(
-            f"Global Feature importance ({self.task.capitalize()})", fontsize=14, fontweight='bold')
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'shap_bar_plot.png'), dpi=300)
         plt.close()
@@ -550,8 +548,6 @@ class SHAPExplainer:
         plt.figure(figsize=(13.5, 8))
         shap.summary_plot(agg_shap, features=agg_feat,
                           feature_names=names, show=False, max_display=15)
-        plt.title(
-            f"Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'shap_summary_plot.png'), dpi=300)
         plt.close()
@@ -567,8 +563,6 @@ class SHAPExplainer:
             plt.figure(figsize=(10, 6))
             shap.summary_plot(temp_values, features=self.test_data_temp,
                               feature_names=temp_feature_names, show=False, max_display=15)
-            plt.title(
-                f"Temporal Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
             plt.tight_layout()
             plt.savefig(os.path.join(
                 output_dir, 'shap_summary_plot_temp.png'), dpi=300)
@@ -735,8 +729,6 @@ class TimestepSHAPExplainer(SHAPExplainer):
         c_idx = self.sample_case_indexes[sample_idx] if getattr(self, 'sample_case_indexes', None) and sample_idx < len(self.sample_case_indexes) else "unknown"
         sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{sample_idx}"
 
-        plt.title(f'Transformer Model - SHAP Explainability ({sample_name})',
-                  fontsize=14, fontweight='bold')
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_{sample_name}.png'), dpi=300)
         plt.close()
@@ -797,8 +789,6 @@ class TimestepSHAPExplainer(SHAPExplainer):
         c_idx = self.sample_case_indexes[sample_idx] if getattr(self, 'sample_case_indexes', None) and sample_idx < len(self.sample_case_indexes) else "unknown"
         sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{sample_idx}"
 
-        ax.set_title(f'Timestep-Level SHAP Attribution - ({sample_name})',
-                     fontsize=14, fontweight='bold')
         ax.grid(axis='y', linestyle='--', alpha=0.3)
 
         from matplotlib.patches import Patch
@@ -847,8 +837,6 @@ class TimestepSHAPExplainer(SHAPExplainer):
                edgecolor='black', linewidth=0.5)
         ax.set_xlabel('Timestep Position', fontsize=12, fontweight='bold')
         ax.set_ylabel('Mean Absolute SHAP Value', fontsize=12, fontweight='bold')
-        ax.set_title('Global Timestep importance (Averaged Across All Samples)',
-                     fontsize=14, fontweight='bold')
         ax.grid(axis='y', linestyle='--', alpha=0.3)
 
         top_n = 10

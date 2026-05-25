@@ -215,7 +215,7 @@ class GradientExplainer:
         elif task == 'remaining_time':
             score = out[2]
             true_val = graph.y_remaining_time.item()
-        elif task == 'activity':
+        elif task in ['activity', 'next_activity']:
             predicted_class = out[0].argmax()
             score = out[0].view(-1)[predicted_class]
             true_val = graph.y_activity.item()
@@ -250,7 +250,7 @@ class GradientExplainer:
                         res_idx = res_inp.argmax().item()
                         info['resource'] = self._get_resource_name(res_idx)
                 
-                elif task == 'activity':
+                elif task in ['activity', 'next_activity']:
                     if 'activity' in graph.x_dict and graph.x_dict['activity'].grad is not None:
                         act_grad = graph.x_dict['activity'].grad[step]
                         act_inp = graph.x_dict['activity'][step]
@@ -310,7 +310,7 @@ class GradientExplainer:
         
         fig, ax = plt.subplots(figsize=(18, 8))
         
-        centered_contrib = contributions - np.mean(contributions)
+        centered_contrib = contributions # removed np.mean(contributions) mean-centering
         
         if task in ['event_time', 'remaining_time']:
             x_labels = []
@@ -335,10 +335,20 @@ class GradientExplainer:
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
         
-        ax.bar(time_steps, positive, color='#2ecc71', alpha=0.85,
-               label='Increases Prediction', width=0.75, edgecolor='#27ae60', linewidth=0.8)
-        ax.bar(time_steps, negative, color='#e74c3c', alpha=0.85,
-               label='Decreases Prediction', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+        ax.bar(time_steps, positive, color='#2ca02c', alpha=1.0,
+               label='Supports', width=0.75, edgecolor='#27ae60', linewidth=0.8)
+        ax.bar(time_steps, negative, color='#d62728', alpha=1.0,
+               label='Contradicts', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+
+        max_y = max(positive.max() if len(positive) > 0 else 0, abs(negative.min()) if len(negative) > 0 else 0)
+        offset = max_y * 0.05 if max_y > 0 else 0.01
+
+        for i, (p, n) in enumerate(zip(positive, negative)):
+            if p > 0:
+                ax.text(time_steps[i], p + offset, f'+{p:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            elif n < 0:
+                ax.text(time_steps[i], n - offset, f'{n:.3f}', ha='center', va='top', fontsize=10, fontweight='bold')
+
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
         
         if task in ['event_time', 'remaining_time']:
@@ -377,8 +387,6 @@ class GradientExplainer:
         ax.set_ylabel('Gradient Value (Contribution)', fontweight='bold', fontsize=14)
         
         task_name = task.replace('_', ' ').title()
-        ax.set_title(f'Timestep-Level Gradient Attribution - Sample {sample_id}',
-                    fontweight='bold', fontsize=16, pad=20)
         
         ax.legend(loc='upper right', framealpha=0.95, fontsize=12)
         
@@ -474,17 +482,27 @@ class GradientExplainer:
             xlabel_text = 'Event sequence position (BPI Dataset)'
         
         mean_val = np.mean(contributions[contributions > 0]) if np.any(contributions > 0) else 0
-        centered_contrib = contributions - mean_val
+        centered_contrib = contributions # removed - mean_val mean-centering
         
         fig, ax = plt.subplots(figsize=(20, 8))
         
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
         
-        ax.bar(x_values, positive, color='#d62728', alpha=0.85, 
-               label='Positive', width=0.75, edgecolor='darkred', linewidth=0.8)
-        ax.bar(x_values, negative, color='#1f77b4', alpha=0.85, 
-               label='Negative', width=0.75, edgecolor='darkblue', linewidth=0.8)
+        ax.bar(x_values, positive, color='#2ca02c', alpha=1.0, 
+               label='Supports', width=0.75, edgecolor='darkred', linewidth=0.8)
+        ax.bar(x_values, negative, color='#d62728', alpha=1.0, 
+               label='Contradicts', width=0.75, edgecolor='darkblue', linewidth=0.8)
+
+        max_y = max(positive.max() if len(positive) > 0 else 0, abs(negative.min()) if len(negative) > 0 else 0)
+        offset = max_y * 0.05 if max_y > 0 else 0.01
+
+        for i, (p, n) in enumerate(zip(positive, negative)):
+            if p > 0:
+                ax.text(x_values[i], p + offset, f'+{p:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            elif n < 0:
+                ax.text(x_values[i], n - offset, f'{n:.3f}', ha='center', va='top', fontsize=10, fontweight='bold')
+
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
         
         max_contrib = np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
@@ -518,8 +536,6 @@ class GradientExplainer:
                      fontweight='bold', fontsize=14)
         
         task_name = task.replace('_', ' ').title()
-        ax.set_title(f'Graph Neural Network (GNN) Model - SHAP Explainability (Averaged Over {num_samples} Samples)\n{task_name}',
-                    fontweight='bold', fontsize=17, pad=20)
         
         ax.legend(loc='upper left', framealpha=0.95, fontsize=12)
         
@@ -631,7 +647,6 @@ class GradientExplainer:
                  color=[colors.get(t, 'grey') for t in df['activity'].apply(lambda x: 'Activity' if 'Act_' in x else 'Resource')])
         
         task_name_title = task.replace('_', ' ').title()
-        plt.title(f"Global Feature importance ({task_name_title})", fontweight='bold', fontsize=14)
         plt.xlabel("Mean Gradient Magnitude (Impact)", fontweight='bold')
         plt.grid(axis='x', linestyle='--', alpha=0.5)
         
@@ -800,7 +815,7 @@ class TemporalGradientExplainer:
 
         fig, ax = plt.subplots(figsize=(18, 8))
 
-        centered_contrib = contributions - np.mean(contributions)
+        centered_contrib = contributions # removed np.mean(contributions) mean-centering
 
         if task in ['event_time', 'remaining_time']:
             x_labels = []
@@ -825,10 +840,20 @@ class TemporalGradientExplainer:
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
 
-        ax.bar(time_steps, positive, color='#2ecc71', alpha=0.85,
-               label='Increases Prediction', width=0.75, edgecolor='#27ae60', linewidth=0.8)
-        ax.bar(time_steps, negative, color='#e74c3c', alpha=0.85,
-               label='Decreases Prediction', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+        ax.bar(time_steps, positive, color='#2ca02c', alpha=1.0,
+               label='Supports', width=0.75, edgecolor='#27ae60', linewidth=0.8)
+        ax.bar(time_steps, negative, color='#d62728', alpha=1.0,
+               label='Contradicts', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+
+        max_y = max(positive.max() if len(positive) > 0 else 0, abs(negative.min()) if len(negative) > 0 else 0)
+        offset = max_y * 0.05 if max_y > 0 else 0.01
+
+        for i, (p, n) in enumerate(zip(positive, negative)):
+            if p > 0:
+                ax.text(time_steps[i], p + offset, f'+{p:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            elif n < 0:
+                ax.text(time_steps[i], n - offset, f'{n:.3f}', ha='center', va='top', fontsize=10, fontweight='bold')
+
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
 
         if task in ['event_time', 'remaining_time']:
@@ -863,9 +888,6 @@ class TemporalGradientExplainer:
 
         ax.set_xlabel(xlabel, fontweight='bold', fontsize=14)
         ax.set_ylabel('Gradient Value (Contribution)', fontweight='bold', fontsize=14)
-
-        ax.set_title(f'Timestep-Level Gradient Attribution - Sample {sample_id}',
-                     fontweight='bold', fontsize=16, pad=20)
 
         ax.legend(loc='upper right', framealpha=0.95, fontsize=12)
         ax.grid(True, alpha=0.3, axis='y', linestyle='--', linewidth=0.8)
@@ -1200,31 +1222,21 @@ class GraphLIMEExplainer:
         df = df.drop(columns=["_abs_importance"])
 
         fig, ax = plt.subplots(figsize=(10, max(6, len(df) * 0.45)))
-        colors = ['#2ecc71' if x > 0 else '#e74c3c' for x in df["importance"]]
+        colors = ['#2ca02c' if x > 0 else '#d62728' for x in df["importance"]]
         y_pos = np.arange(len(df))
-        ax.barh(y_pos, df["importance"].values, color=colors, alpha=0.85, edgecolor='black', linewidth=0.8)
+        bars = ax.barh(y_pos, df["importance"].values, color=colors, alpha=0.85, edgecolor='black', linewidth=0.8)
+
+        for i, bar in enumerate(bars):
+            val = df["importance"].values[i]
+            offset = 0.01 if val >= 0 else -0.01
+            ha = 'left' if val >= 0 else 'right'
+            prefix = '+' if val > 0 else ''
+            ax.text(val + offset, bar.get_y() + bar.get_height()/2, f'{prefix}{val:.3f}', 
+                    ha=ha, va='center', fontsize=8, fontweight='bold')
 
         ax.set_yticks(y_pos)
         ax.set_yticklabels(df["activity"].tolist(), fontsize=9)
         ax.set_xlabel('Feature Contribution (GraphLIME)', fontweight='bold', fontsize=12)
-
-        task_name = task.replace('_', ' ').title()
-        if task == 'activity':
-            pred_activity = self._get_activity_name(int(predicted_class)) if predicted_class is not None else "Unknown"
-            if true_val is not None:
-                true_activity = self._get_activity_name(int(true_val))
-                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%), True: {true_activity}"
-            else:
-                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%)"
-        else:
-            subtitle = f"Prediction: {base_score:.3f}" + (f", True: {true_val:.3f}" if true_val is not None else "")
-
-        ax.set_title(
-            f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\n{subtitle}',
-            fontweight='bold',
-            fontsize=13,
-            pad=15
-        )
 
         ax.axvline(x=0, color='black', linestyle='-', linewidth=1.5)
         ax.grid(True, alpha=0.3, axis='x', linestyle='--')
@@ -1272,7 +1284,7 @@ class ExplainabilityBenchmark:
             return self.model(graph)
 
     def _select_output(self, out):
-        if self.task == 'activity':
+        if self.task in ['activity', 'next_activity']:
             return out[0]
         if self.task == 'event_time':
             return out[1]
@@ -1280,7 +1292,7 @@ class ExplainabilityBenchmark:
 
     def _prediction_value(self, out):
         pred = self._select_output(out)
-        if self.task == 'activity':
+        if self.task in ['activity', 'next_activity']:
             return pred.max()
         return pred.mean()
 
@@ -1327,7 +1339,7 @@ class ExplainabilityBenchmark:
                 g.x_dict[key].requires_grad = True
 
             out = self.model(g)
-            if self.task == 'activity':
+            if self.task in ['activity', 'next_activity']:
                 logits = out[0]
                 pred_idx = logits.argmax(dim=1)
                 score = logits[0, pred_idx]
@@ -1425,7 +1437,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task == 'activity':
+                if self.task in ['activity', 'next_activity']:
                     pred_change = (orig_pred - masked_pred).abs().max().item()
                 else:
                     pred_change = (orig_pred - masked_pred).abs().mean().item()
@@ -1477,7 +1489,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task == 'activity':
+                if self.task in ['activity', 'next_activity']:
                     comp = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     comp = (orig_pred - masked_pred).abs().mean().item()
@@ -1516,7 +1528,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task == 'activity':
+                if self.task in ['activity', 'next_activity']:
                     suff = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     suff = (orig_pred - masked_pred).abs().mean().item()

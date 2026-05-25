@@ -17,7 +17,6 @@ def plot_research_grade_local(df, current_seq_names, output_path, title="Trace H
     ax_bar.grid(axis='x', linestyle='--', alpha=0.6)
     ax_bar.margins(x=0.15)
     
-    ax_bar.set_title(title, fontsize=14, fontweight='bold', pad=15)
     ax_bar.set_xlabel("Contribution to Prediction", fontsize=11)
     
     for rect in bars:
