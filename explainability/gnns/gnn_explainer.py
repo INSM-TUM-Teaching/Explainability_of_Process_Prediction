@@ -1982,8 +1982,8 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
     if isinstance(tasks, str):
         tasks = [tasks]
     
-    print(f"\n[→] Tasks: {tasks}")
-    print(f"[→] Samples: {num_samples}")
+    print(f"\n[->] Tasks: {tasks}")
+    print(f"[->] Samples: {num_samples}")
     
     if methods in ['gradient', 'all']:
         print("\n" + "─"*70)

@@ -229,8 +229,8 @@ class ColumnMapping(BaseModel):
 
 class RunCreateRequest(BaseModel):
     dataset_id: str
-    model_type: str = Field(..., description="transformer | gnn")
-    task: str = Field(..., description="next_activity | custom_activity | event_time | remaining_time | unified (gnn)")
+    model_type: str = Field(..., description="transformer | gnn | best")
+    task: str = Field(..., description="next_activity | custom_activity | event_time | remaining_time | unified (gnn) | remaining_trace (best)")
     config: Dict[str, Any] = Field(default_factory=dict)
     split: Dict[str, float] = Field(default_factory=lambda: {"test_size": 0.2, "val_split": 0.5})
     explainability: Optional[Any] = None
@@ -987,7 +987,7 @@ def create_run(req: RunCreateRequest):
             stdout=log,
             stderr=log,
             cwd=REPO_ROOT,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
         )
 
     # Save pid

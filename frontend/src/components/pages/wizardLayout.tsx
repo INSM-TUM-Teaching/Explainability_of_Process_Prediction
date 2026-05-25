@@ -9,6 +9,7 @@ import Step2Model from "../steps/Step2Model";
 import Step3Prediction from "../steps/Step3Prediction";
 import Step4Explainability, { type ExplainValue } from "../steps/Step4Explainability";
 import Step5Config, {
+  type BestConfig,
   type ConfigMode,
   type GnnConfig,
   type TransformerConfig,
@@ -92,17 +93,18 @@ function estimateProgressFromLogs(lines: string[], status: RunStatus | null): nu
   return Math.min(99, Math.round(progress));
 }
 
-function normalizeModelType(v: string | null): "gnn" | "transformer" | null {
+function normalizeModelType(v: string | null): "gnn" | "transformer" | "best" | null {
   if (!v) return null;
   const s = v.toLowerCase().trim();
   if (s === "gnn" || s.includes("gnn")) return "gnn";
   if (s === "transformer" || s.includes("transformer")) return "transformer";
+  if (s === "best") return "best";
   return null;
 }
 
 function normalizeTask(
   v: string | null
-): "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | null {
+): "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace" | null {
   if (!v) return null;
   const s = v.toLowerCase().trim();
 
@@ -111,19 +113,23 @@ function normalizeTask(
   if (s === "event_time" || s.includes("event time") || s === "timestamp") return "event_time";
   if (s === "remaining_time" || s.includes("remaining time")) return "remaining_time";
   if (s === "unified") return "unified";
+  if (s === "remaining_trace") return "remaining_trace";
 
   return null;
 }
 
 function isExplainAllowed(
   explain: ExplainValue | null,
-  model: "gnn" | "transformer" | null
+  model: "gnn" | "transformer" | "best" | null
 ): boolean {
   if (!explain) return true;
   if (!model) return true;
 
   if (model === "transformer") {
     return explain === "none" || explain === "lime" || explain === "shap" || explain === "all";
+  }
+  if (model === "best") {
+    return explain === "none" || explain === "pattern_analysis";
   }
   return explain === "none" || explain === "gradient" || explain === "lime" || explain === "all";
 }
@@ -167,6 +173,23 @@ function validateGnnConfig(cfg: GnnConfig): boolean {
   const lrOk = typeof cfg.lr === "number" && cfg.lr > 0;
 
   return positiveInts && dropoutOk && lrOk;
+}
+
+function validateBestConfig(cfg: BestConfig): boolean {
+  const isOddInt = (v: number) => Number.isInteger(v) && v > 1 && v % 2 === 1;
+  return (
+    isOddInt(cfg.max_pattern_size_train) &&
+    isOddInt(cfg.max_pattern_size_eval) &&
+    cfg.max_pattern_size_eval <= cfg.max_pattern_size_train &&
+    typeof cfg.process_stage_width_percentage === "number" &&
+    cfg.process_stage_width_percentage >= 0 &&
+    cfg.process_stage_width_percentage <= 1 &&
+    typeof cfg.min_freq === "number" &&
+    cfg.min_freq > 0 &&
+    typeof cfg.ncores === "number" &&
+    Number.isInteger(cfg.ncores) &&
+    cfg.ncores >= 1
+  );
 }
 
 export default function WizardLayout() {
@@ -220,9 +243,22 @@ export default function WizardLayout() {
     []
   );
 
+  const defaultBestConfig = useMemo<BestConfig>(
+    () => ({
+      max_pattern_size_train: 21,
+      max_pattern_size_eval: 21,
+      process_stage_width_percentage: 0.2,
+      min_freq: 1e-14,
+      filter_sequences: true,
+      ncores: 1,
+    }),
+    []
+  );
+
   const [transformerConfig, setTransformerConfig] =
     useState<TransformerConfig>(defaultTransformerConfig);
   const [gnnConfig, setGnnConfig] = useState<GnnConfig>(defaultGnnConfig);
+  const [bestConfig, setBestConfig] = useState<BestConfig>(defaultBestConfig);
 
   /* -------------------- RUN STATE -------------------- */
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>("idle");
@@ -272,6 +308,9 @@ export default function WizardLayout() {
         }
         if (modelTypeNormalized === "gnn") {
           return configMode === "default" || validateGnnConfig(gnnConfig);
+        }
+        if (modelTypeNormalized === "best") {
+          return configMode === "default" || validateBestConfig(bestConfig);
         }
         return false;
       }
@@ -367,6 +406,18 @@ export default function WizardLayout() {
     setConfigMode(null);
     setTransformerConfig(defaultTransformerConfig);
     setGnnConfig(defaultGnnConfig);
+    setBestConfig(defaultBestConfig);
+
+    // Reset task if incompatible with the new model
+    const bestOnlyTasks = new Set(["remaining_trace"]);
+    const nonBestTasks = new Set(["event_time", "remaining_time", "unified", "custom_activity"]);
+    if (nextModel === "best" && predictionTask && nonBestTasks.has(predictionTask)) {
+      setPredictionTask(null);
+      setPredictionCategory(null);
+    } else if (nextModel !== "best" && predictionTask && bestOnlyTasks.has(predictionTask)) {
+      setPredictionTask(null);
+      setPredictionCategory(null);
+    }
 
     if (!isExplainAllowed(explainMethod, nextModel)) {
       setExplainMethod(null);
@@ -391,6 +442,7 @@ export default function WizardLayout() {
     setConfigMode(null);
     setTransformerConfig(defaultTransformerConfig);
     setGnnConfig(defaultGnnConfig);
+    setBestConfig(defaultBestConfig);
 
     setPipelineStatus("idle");
     setProgress(0);
@@ -437,6 +489,10 @@ export default function WizardLayout() {
         ? configMode === "custom"
           ? transformerConfig
           : defaultTransformerConfig
+        : mt === "best"
+        ? configMode === "custom"
+          ? bestConfig
+          : defaultBestConfig
         : configMode === "custom"
         ? gnnConfig
         : defaultGnnConfig;
@@ -620,11 +676,15 @@ export default function WizardLayout() {
                     gnnConfig={gnnConfig}
                     onGnnChange={setGnnConfig}
                     defaultGnnConfig={defaultGnnConfig}
+                    bestConfig={bestConfig}
+                    onBestChange={setBestConfig}
+                    defaultBestConfig={defaultBestConfig}
                   />
                 )}
 
                 {step === 4 && (
                   <Step3Prediction
+                    modelType={modelType}
                     task={predictionTask}
                     category={predictionCategory}
                     targetColumn={customTargetColumn}

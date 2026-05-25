@@ -68,6 +68,29 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
           }`}
         />
       </div>
+
+      {/* BEST */}
+      <div
+        onClick={() => onSelect("best")}
+        className={`${baseCard} ${isSelected("best") ? selectedCard : unselectedCard}`}
+      >
+        <div className="pr-6 min-w-0">
+          <div className="font-medium text-gray-900">
+            BEST (Bilaterally Expanding Subtrace Tree)
+          </div>
+          <div className="text-sm text-gray-600 mt-1 break-words">
+            Probabilistic tree-based model for activity sequence prediction. Builds a
+            pattern tree directly from the event log — no neural network training required.
+          </div>
+        </div>
+
+        {/* Radio */}
+        <div
+          className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+            isSelected("best") ? "border-brand-600 bg-brand-600" : "border-gray-300"
+          }`}
+        />
+      </div>
     </div>
   );
 }
