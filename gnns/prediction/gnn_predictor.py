@@ -616,5 +616,8 @@ class GNNPredictor:
             df.to_csv(pred_file, index=False)
             print(f"Predictions saved to: {pred_file}")
             
+            json_file = os.path.join(output_dir, "gnn_predictions.json")
+            df.to_json(json_file, orient='records', indent=2)
+            
             # Remove from metrics dictionary so it doesn't break JSON serialization down the line
             del metrics['predictions_df']

@@ -7,6 +7,7 @@ import {
   listArtifacts,
   type RunStatus,
 } from "../../lib/api";
+import NextActivityResults from "./NextActivityResults";
 
 type ResultsViewProps = {
   runId: string | null;
@@ -38,12 +39,15 @@ export default function ResultsView({
   const [artifacts, setArtifacts] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Also load summary.json for all runs right away to check if we should use NextActivityResults
+  const [summary, setSummary] = useState<any>(null);
 
   useEffect(() => {
     if (!runId) {
       setStatus(null);
       setArtifacts([]);
       setError(null);
+      setSummary(null);
       return;
     }
 
@@ -61,6 +65,18 @@ export default function ResultsView({
         if (cancelled) return;
         setStatus(nextStatus);
         setArtifacts(nextArtifacts.artifacts);
+
+        // Try load summary
+        try {
+          const sumRes = await fetch(artifactUrl(runId, "summary.json"));
+          if (sumRes.ok) {
+            const sumData = await sumRes.json();
+            if (!cancelled) setSummary(sumData);
+          }
+        } catch (e) {
+          console.warn("Could not load summary.json", e);
+        }
+
       } catch (e) {
         if (cancelled) return;
         const message = e instanceof Error ? e.message : String(e);
@@ -94,6 +110,17 @@ export default function ResultsView({
               Back to pipeline
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // If we have summary and task is next_activity or custom_activity, switch out completely to the custom screen
+  if (summary && summary.request && (summary.request.task === "next_activity" || summary.request.task === "custom_activity")) {
+    return (
+      <div className="flex-1 min-w-0 overflow-auto bg-brand-50">
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-8 py-8">
+          <NextActivityResults runId={runId} summary={summary} onBackToPipeline={onBackToPipeline} />
         </div>
       </div>
     );

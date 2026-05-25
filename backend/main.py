@@ -1052,6 +1052,59 @@ def list_artifacts(run_id: str):
     return {"run_id": run_id, "artifacts": artifacts}
 
 
+class ExplainReq(BaseModel):
+    case_id: str
+    case_index: int
+    method: str
+
+@app.post("/runs/{run_id}/explain")
+def explain_on_demand(run_id: str, req: ExplainReq):
+    run_dir = os.path.join(RUNS_DIR, run_id)
+    if not os.path.isdir(run_dir):
+        raise HTTPException(404, "Run not found")
+        
+    summary_path = os.path.join(run_dir, "artifacts", "summary.json")
+    if not os.path.exists(summary_path):
+        raise HTTPException(404, "Run summary not found")
+        
+    summary = _read_json(summary_path)
+    if summary.get("status") != "succeeded":
+        raise HTTPException(400, "Run is not succeeded")
+        
+    req_data = summary.get("request", {})
+    model_type = req_data.get("model_type")
+    
+    # get dataset path
+    dataset_id = req_data.get("dataset_id")
+    ds_dir = os.path.join(DATASETS_DIR, dataset_id)
+    meta_json_path = os.path.join(ds_dir, "meta.json")
+    ds_meta = _read_json(meta_json_path)
+    dataset_path = ds_meta.get("preprocessed_path") or ds_meta.get("raw_path")
+    if ds_meta.get("split_dataset_path"):
+        dataset_path = ds_meta.get("split_dataset_path")
+
+    import subprocess
+    cmd = [
+        sys.executable,
+        os.path.join(os.path.dirname(__file__), "..", "explain_on_demand.py"),
+        "--run-dir", run_dir,
+        "--dataset", dataset_path,
+        "--case-id", req.case_id,
+        "--case-index", str(req.case_index),
+        "--method", req.method,
+        "--model-type", model_type
+    ]
+    
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        out = proc.stdout
+        for line in out.splitlines():
+            if line.startswith("{") and "success" in line:
+                return json.loads(line)
+        return {"success": True, "output": out}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(500, f"Error generating explanation: {e.stderr}")
+
 @app.get("/runs/{run_id}/artifacts/{artifact_path:path}")
 def get_artifact(run_id: str, artifact_path: str):
     """

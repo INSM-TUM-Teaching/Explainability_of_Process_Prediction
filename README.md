@@ -22,7 +22,7 @@ This diagram summarizes the frontend-backend structure and the APIs used across 
 ![System Structure](frontend/src/assets/system_structure.png)
 
 **Requirements**
-- Python 3.10+ recommended
+- Python 3.12 recommended
 - Node.js 18+ recommended
 
 **Quickstart (Frontend + Backend)**

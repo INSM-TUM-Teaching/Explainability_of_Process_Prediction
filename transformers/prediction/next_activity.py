@@ -273,16 +273,31 @@ class NextActivityPredictor:
                 "case_id": c_id,
                 "case_index": c_idx,
                 "sequence": ", ".join(decoded_seq),
-                "true_next_activity": true_decoded,
-                "predicted_next_activity": pred_decoded,
-                "confidence_percent": round(confidence, 2)
+                "true_next_activity": str(true_decoded),
+                "predicted_next_activity": str(pred_decoded),
+                "confidence_percent": float(round(confidence, 2))
             })
         
         results_df = pd.DataFrame(results)
         output_path = os.path.join(output_dir, "transformer_predictions.csv")
         results_df.to_csv(output_path, index=False)
         
-        print(f"Results saved to: {output_path}")
+        # also save to json for the frontend
+        import json
+        json_output_path = os.path.join(output_dir, "transformer_predictions.json")
+        with open(json_output_path, "w") as f:
+            json.dump(results, f, indent=2)
+
+        print(f"Results saved to: {output_path} and {json_output_path}")
+
+        # save the data and label encoder as well for on-demand explainability
+        import pickle
+        with open(os.path.join(output_dir, "transformer_artifacts.pkl"), "wb") as f:
+            pickle.dump({
+                "label_encoder": self.label_encoder,
+                "vocab_size": self.vocab_size,
+                "max_len": self.max_len,
+            }, f)
     
     def plot_training_history(self, output_dir):
         if self.history is None:
