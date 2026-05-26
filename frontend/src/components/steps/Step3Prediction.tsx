@@ -52,14 +52,36 @@ export default function Step3Prediction({
             className={`${baseCard} ${isSelected("next_activity") ? selectedCard : unselectedCard}`}
           >
             <div className="pr-6 min-w-0">
-              <div className="font-medium text-gray-900">Next Activity Prediction</div>
+              <div className="font-medium text-gray-900">Next Activity Prediction (NAP)</div>
               <div className="text-sm text-gray-600 mt-1 break-words">
-                Predict the next activity in a running process instance.
+                Predict the single next activity for each running case prefix. Evaluated with
+                accuracy and balanced accuracy (BEST task: nap).
               </div>
             </div>
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
                 isSelected("next_activity") ? "border-brand-600 bg-brand-600" : "border-gray-300"
+              }`}
+            />
+          </div>
+
+          <div
+            onClick={() => onSelectTask("remaining_trace")}
+            className={`${baseCard} ${isSelected("remaining_trace") ? selectedCard : unselectedCard}`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Remaining Trace Prediction (RTP)</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the full sequence of activities until case completion. Uses the break buffer
+                setting from model configuration to cap trace length. Evaluated with normalized DLS
+                (BEST task: rtp).
+              </div>
+            </div>
+            <div
+              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("remaining_trace")
+                  ? "border-brand-600 bg-brand-600"
+                  : "border-gray-300"
               }`}
             />
           </div>

@@ -84,7 +84,9 @@ export default function Step4Explainability({
       value: "pattern_analysis",
       title: "Pattern Analysis",
       description:
-        "Native BEST explainability — shows pattern probability distributions, chosen pattern lengths, RPIF distance scores, and top pattern frequency table.",
+        "Summarises which historical subtrace patterns BEST matched during prediction: top patterns " +
+        "by frequency (with accuracy), activity importance, high-error patterns, RPIF distance and " +
+        "confidence distributions, plus CSV/JSON tables for the results view.",
     },
   ];
   const options: Option[] = !modelType
