@@ -125,46 +125,52 @@ class BESTExplainer:
         with open(path, "w") as f:
             json.dump(summary, f, indent=2)
 
-    def _save_top_patterns_csv(self) -> None:
-        """Saves top_patterns.csv as a global dictionary of patterns."""
-        # We need to extract all unique patterns from the model's fitted patterns
-        # self.model._unpruned_nodes contains patterns by stage
-        
-        all_patterns = []
+    def _extract_patterns_from_tree(self) -> dict:
+        """Helper to recursively extract all patterns from _stage_trees since _unpruned_nodes lacks 'freq'."""
         seen_patterns = {}
         
-        # Each "node" in unpruned_nodes is a pattern
-        for stage, nodes in getattr(self.model, "_unpruned_nodes", {}).items():
-            for node_idx, node in nodes.items():
-                pattern_seq = node["name"] # comma-separated string
-                if not pattern_seq: continue
+        def _walk_tree(node):
+            if not node: return
+            name = node.get("name")
+            if name and name not in seen_patterns:
+                seen_patterns[name] = node
+            for child in node.get("children", []):
+                _walk_tree(child)
+
+        for stage, tree in getattr(self.model, "_stage_trees", {}).items():
+            _walk_tree(tree)
+            
+        return seen_patterns
+
+    def _save_top_patterns_csv(self) -> None:
+        """Saves top_patterns.csv as a global dictionary of patterns."""
+        import json
+        
+        tree_patterns = self._extract_patterns_from_tree()
+        seen_patterns = {}
+        
+        for pattern_seq, node in tree_patterns.items():
+            if not pattern_seq: continue
+            
+            # Try to decode the sequence
+            try:
+                seq_indices = [int(idx) for idx in pattern_seq.split(",")]
+                decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
                 
-                if pattern_seq not in seen_patterns:
-                    # Try to decode the sequence
-                    try:
-                        seq_indices = [int(idx) for idx in pattern_seq.split(",")]
-                        decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
-                        
-                        # Predicted next activity for this pattern
-                        # In BEST, the center activity is predicted. 
-                        # Actually, _pred_for_process_stage says:
-                        # pred = picked_pattern[math.floor(len(picked_pattern)/2):]
-                        # So it predicts the center activity and everything after it?
-                        # For NAP, it's picked_pattern[1] if len is 3?
-                        # Let's use the center activity for "what it predicts" or similar logic
-                        center_idx = len(seq_indices) // 2
-                        predicted_next = decoded_seq[center_idx] if center_idx < len(decoded_seq) else None
-                        
-                        seen_patterns[pattern_seq] = {
-                            "pattern_id": len(seen_patterns) + 1,
-                            "sequence": json.dumps(decoded_seq),
-                            "predicted_next_activity": predicted_next,
-                            "global_frequency": int(node.get("freq", 0)),
-                            "global_accuracy": float(node.get("prob", 0)), # 'prob' in BEST node is conditional prob
-                            "avg_confidence": float(node.get("prob", 0))
-                        }
-                    except:
-                        continue
+                # Predicted next activity for this pattern
+                center_idx = len(seq_indices) // 2
+                predicted_next = decoded_seq[center_idx + 1] if (center_idx + 1) < len(decoded_seq) else None
+                
+                seen_patterns[pattern_seq] = {
+                    "pattern_id": len(seen_patterns) + 1,
+                    "sequence": json.dumps(decoded_seq),
+                    "predicted_next_activity": predicted_next,
+                    "global_frequency": int(node.get("freq", 0)),
+                    "global_accuracy": float(node.get("prob", 0)), 
+                    "avg_confidence": float(node.get("prob", 0))
+                }
+            except Exception as e:
+                continue
         
         df_patterns = pd.DataFrame(list(seen_patterns.values()))
         if not df_patterns.empty:
@@ -186,20 +192,19 @@ class BESTExplainer:
                 seq_map[cid] = {}
             seq_map[cid][idx] = json.loads(row["sequence"])
 
-        # This requires the all_matches_tracker from BESTPredictorCustom
         tracker = getattr(self.model, "all_matches_tracker", [])
         if not tracker:
             with open(os.path.join(self.output_dir, "pattern_analysis.json"), "w") as f:
                 json.dump({}, f)
             return
 
+        tree_patterns = self._extract_patterns_from_tree()
         pattern_id_map = {}
         id_counter = 1
-        for stage, nodes in getattr(self.model, "_unpruned_nodes", {}).items():
-            for node in nodes.values():
-                if node["name"] and node["name"] not in pattern_id_map:
-                    pattern_id_map[node["name"]] = id_counter
-                    id_counter += 1
+        for name in tree_patterns.keys():
+            if name:
+                pattern_id_map[name] = id_counter
+                id_counter += 1
 
         analysis = {}
         for entry in tracker:
@@ -225,10 +230,12 @@ class BESTExplainer:
                 pid = pattern_id_map.get(pattern_name)
                 if pid:
                     pattern_len = len(pattern_name.split(","))
-                    # Offset logic: center of pattern is last activity in prefix
-                    # Start is case_index - L//2
-                    start_offset = max(0, case_index - (pattern_len // 2) - 1)
-                    end_offset = case_index + (pattern_len // 2) - 1
+                    # BEST patterns match with their center at the last prefix activity.
+                    # A pattern of length L has (L // 2) activities to the left of the center.
+                    # Including the center, it covers (L // 2) + 1 activities of the prefix.
+                    num_prefix_elements = (pattern_len // 2) + 1
+                    start_offset = max(0, case_index - num_prefix_elements)
+                    end_offset = case_index - 1
                     
                     all_pattern_matches.append({
                         "pattern_id": pid,
@@ -297,11 +304,16 @@ class BESTExplainer:
                 prefix_data = prefixes[i]
                 raw_seq = prefix_data["prefix"]
                 real_seq_enc = raw_seq[padding_size:]
+                
+                case_index = len(real_seq_enc)
+                if case_index == 0:
+                    continue
+
                 decoded_seq = [runner._decode_activity(a) for a in real_seq_enc]
                 
                 rows.append({
                     "case_id": str(prefix_data["case_id"]),
-                    "case_index": len(real_seq_enc),
+                    "case_index": case_index,
                     "sequence": json.dumps(decoded_seq),
                     "true_next": runner._decode_activity(actuals_enc[i]),
                     "pred_next": runner._decode_activity(predictions[i]),

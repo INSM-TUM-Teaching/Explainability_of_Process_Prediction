@@ -271,6 +271,9 @@ class BESTRunner:
             real_sequence_enc = raw_sequence[padding_size:]
             case_index = len(real_sequence_enc) # 1-indexed step number
             
+            if case_index == 0:
+                continue # Skip the initial "empty" state for the UI
+
             decoded_sequence = [self._decode_activity(a) for a in real_sequence_enc]
             true_next = self._decode_activity(actuals_enc[i])
             pred_next = self._decode_activity(preds[i])
