@@ -149,18 +149,18 @@ class BESTExplainer:
             dict: Mapping from pattern sequence (str) to pattern_id (int)
         """
         import json
+        from collections import defaultdict
         
         tree_patterns = self._extract_patterns_from_tree()
-        seen_patterns = {}
-        pattern_id_map = {}
+        
+        # Map internal sequences to their visible properties
+        internal_to_visible = {}
         
         for pattern_seq, node in tree_patterns.items():
             if not pattern_seq: continue
             
-            # Try to decode the sequence
             try:
                 seq_indices = [int(idx) for idx in pattern_seq.split(",")]
-                
                 decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
                 
                 # Filter out padding tokens for UI
@@ -177,22 +177,64 @@ class BESTExplainer:
                 if predicted_next in ["START", "END"]:
                     continue # Skip if the prediction itself is a padding token
 
-                pid = len(seen_patterns) + 1
-                pattern_id_map[pattern_seq] = pid
-                
-                seen_patterns[pattern_seq] = {
-                    "pattern_id": pid,
-                    "sequence": json.dumps(filtered_seq),
-                    "predicted_next_activity": predicted_next,
-
-                    "global_frequency": int(node.get("freq", 0)),
-                    "global_accuracy": float(node.get("prob", 0)), 
-                    "avg_confidence": float(node.get("prob", 0))
+                visible_seq_str = json.dumps(filtered_seq)
+                internal_to_visible[pattern_seq] = {
+                    "visible_seq": visible_seq_str,
+                    "pred": predicted_next,
+                    "freq": int(node.get("freq", 0)),
+                    "prob": float(node.get("prob", 0))
                 }
-            except Exception as e:
+            except Exception:
                 continue
+
+        # Aggregate by visible sequence
+        aggregated = {}
+        for p_seq, data in internal_to_visible.items():
+            vis_seq = data["visible_seq"]
+            pred = data["pred"]
+            freq = data["freq"]
+            prob = data["prob"]
+            
+            if vis_seq not in aggregated:
+                aggregated[vis_seq] = {
+                    "preds": defaultdict(int),
+                    "total_freq": 0,
+                    "sum_prob": 0.0,
+                    "count": 0
+                }
+                
+            aggregated[vis_seq]["preds"][pred] += freq
+            aggregated[vis_seq]["total_freq"] += freq
+            aggregated[vis_seq]["sum_prob"] += prob
+            aggregated[vis_seq]["count"] += 1
+
+        final_patterns = []
+        visible_to_id = {}
+        pattern_id_map = {}
         
-        df_patterns = pd.DataFrame(list(seen_patterns.values()))
+        pid_counter = 1
+        for vis_seq, agg_data in aggregated.items():
+            visible_to_id[vis_seq] = pid_counter
+            
+            # Find the most predicted output for this sequence
+            best_pred = max(agg_data["preds"].items(), key=lambda x: x[1])[0] if agg_data["preds"] else None
+            avg_prob = agg_data["sum_prob"] / agg_data["count"] if agg_data["count"] > 0 else 0.0
+            
+            final_patterns.append({
+                "pattern_id": pid_counter,
+                "sequence": vis_seq,
+                "predicted_next_activity": best_pred,
+                "global_frequency": agg_data["total_freq"],
+                "global_accuracy": avg_prob,
+                "avg_confidence": avg_prob
+            })
+            pid_counter += 1
+            
+        # Map internal sequences to the assigned PID so the heatmap bridge knows which ID to use
+        for p_seq, data in internal_to_visible.items():
+            pattern_id_map[p_seq] = visible_to_id[data["visible_seq"]]
+        
+        df_patterns = pd.DataFrame(final_patterns)
         if not df_patterns.empty:
             df_patterns = df_patterns.sort_values("global_frequency", ascending=False)
             
@@ -200,6 +242,7 @@ class BESTExplainer:
         df_patterns.to_csv(path, index=False)
         
         return pattern_id_map
+
 
     def _save_pattern_analysis_json(self, df_rich: pd.DataFrame, pattern_id_map: dict) -> None:
         """Saves pattern_analysis.json (The Heatmap Bridge)."""
