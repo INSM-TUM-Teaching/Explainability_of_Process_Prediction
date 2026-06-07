@@ -7,10 +7,68 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from best4ppm.models.best import BESTPredictor
+from best4ppm.models.best import BESTPredictor, Task
 from best4ppm.data.sequencedata import SequenceData
 from best4ppm.eval.evaluator import NAPEvaluator, RTPEvaluator
 
+class BESTPredictorCustom(BESTPredictor):
+    """Custom BESTPredictor that captures all matching patterns during prediction."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.all_matches_tracker = [] # List of {'case_id': ..., 'case_index': ..., 'matches': [...]}
+
+    def _pred_for_process_stage(self, eval_pattern_size: int, stage: int, sequence: list[int], verbose: bool = False) -> tuple[list[int], dict]:
+        # We call the original but also capture all matching patterns
+        # The original _pred_for_process_stage calls extract_matching_patterns
+        
+        import math
+        import numpy as np
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Re-implementing parts of the logic to capture ALL matching patterns
+        all_applying_children = self.extract_matching_patterns(stage, sequence)
+        
+        # Original logic to filter single activity patterns
+        all_applying_children = all_applying_children[1:]
+        lens_all_children = [len(p['name'].split(',')) for p in all_applying_children]
+        applying_children = [c for c, c_len in zip(all_applying_children, lens_all_children) if c_len <= eval_pattern_size]
+
+        # Store these for pattern_analysis.json
+        # We don't have case_id/case_index here easily, so we might need to store them temporarily
+        # and match them later in the predictor loop.
+        self._last_all_matches = applying_children
+
+        if len(applying_children) == 0:
+            return [], {}
+
+        # Rest of original logic to pick the best one
+        probs = [p['prob'] for p in applying_children]
+        global_probs = [p['global_prob'] for p in applying_children]
+        dists = [p['total_log_rpif_dist'] for p in applying_children]
+        lens_children = [len(p['name'].split(',')) for p in applying_children]
+
+        max_prob = max(probs)
+        argmax_prob_indices = [idx for idx, p in enumerate(probs) if p==max_prob]
+        argmax_prob_children_lens = [lens_children[idx] for idx in argmax_prob_indices]
+        max_len = max(argmax_prob_children_lens)
+        argmax_prob_argmax_len_indices = [idx for idx, l in enumerate(lens_children) if l==max_len and idx in argmax_prob_indices]
+        argmax_prob_argmax_len_dists = [dists[idx] for idx in argmax_prob_argmax_len_indices]
+        min_dist_max_len = min(argmax_prob_argmax_len_dists)
+        argmax_prob_argmax_len_argmin_dist_indices = [idx for idx, d in enumerate(dists) if d==min_dist_max_len and idx in argmax_prob_argmax_len_indices]
+
+        candidate_children = [[p for p in applying_children][pick] for pick in argmax_prob_argmax_len_argmin_dist_indices]
+
+        if len(argmax_prob_argmax_len_argmin_dist_indices) > 1:
+            picked_child = candidate_children[np.random.choice(range(0, len(candidate_children)))]
+        else:
+            picked_child = candidate_children[0]
+
+        picked_pattern = [int(act) for act in picked_child['name'].split(',')]
+        pred = picked_pattern[math.floor(len(picked_pattern)/2):]
+
+        return pred, {'prob':picked_child['prob'], 'len':len(picked_pattern), 'dist':picked_child['total_log_rpif_dist']}
 
 class BESTRunner:
     """Adapter that wraps BESTPredictor + SequenceData into the pipeline interface."""
@@ -67,7 +125,7 @@ class BESTRunner:
         process_stage_width = self.config.get("process_stage_width_percentage", 0.2)
         min_freq = self.config.get("min_freq", 1e-14)
 
-        self.model = BESTPredictor(
+        self.model = BESTPredictorCustom(
             max_pattern_size=max_pattern_size,
             process_stage_width_percentage=process_stage_width,
             min_freq=min_freq,
@@ -95,13 +153,41 @@ class BESTRunner:
         ncores = self.config.get("ncores", 1)
 
         self._prepare_test_data(filter_sequences=filter_seqs)
-        self.predictions = self.model.predict(
-            eval_pattern_size=eval_pattern_size,
-            task=self.task,
-            break_buffer=break_buffer,
-            filter_tokens=True,
-            ncores=ncores,
-        )
+        
+        # If ncores > 1, the tracker will be hard to implement without more complex sync.
+        # For now, if explainability is needed, we should probably stick to ncores=1 or handle it.
+        # But we will override the loop here to capture matches.
+        
+        if ncores == 1 and self.task == "nap":
+            from tqdm import tqdm
+            self.predictions = []
+            padding_size = getattr(self.model, "_padding_size", 0)
+            self.model.all_matches_tracker = []
+
+            for prefix in tqdm(self.test_seq.relevant_prefixes, desc="[BEST] Predicting (Custom)"):
+                prefix_sequence = prefix['prefix']
+                pred_activity = self.model._predict_activity(prefix=prefix_sequence,
+                                                       eval_pattern_size=eval_pattern_size)
+                self.predictions.append(pred_activity)
+                
+                # Capture matches from the last _pred_for_process_stage call
+                matches = getattr(self.model, "_last_all_matches", [])
+                real_seq_enc = prefix_sequence[padding_size:]
+                
+                self.model.all_matches_tracker.append({
+                    "case_id": str(prefix['case_id']),
+                    "case_index": len(real_seq_enc),
+                    "matches": matches
+                })
+        else:
+            # Fallback to original multi-core or RTP prediction (without all-matches tracking for now)
+            self.predictions = self.model.predict(
+                eval_pattern_size=eval_pattern_size,
+                task=self.task,
+                break_buffer=break_buffer,
+                filter_tokens=True,
+                ncores=ncores,
+            )
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -148,12 +234,66 @@ class BESTRunner:
     def save_results(self, output_dir: str) -> None:
         """Write predictions CSV with actual vs predicted columns.
 
-        NAP -> best_predictions.csv  [CaseID, prefix_id, actual_next_activity, predicted_next_activity, correct]
-        RTP -> best_predictions.csv  [CaseID, prefix_id, actual_remaining_trace, predicted_remaining_trace]
+        NAP -> best_predictions.csv  [case_id, case_index, sequence, true_next_activity, predicted_next_activity, confidence, correct]
         """
+        import json
         os.makedirs(output_dir, exist_ok=True)
 
+        if self.task != "nap":
+            # For RTP we keep the old format for now or implement similarly if needed
+            self._save_results_rtp(output_dir)
+            return
+
         # Pull per-prefix case ids from relevant_prefixes (same ordering as predictions)
+        if hasattr(self.test_seq, "relevant_prefixes") and self.test_seq.relevant_prefixes:
+            prefixes = self.test_seq.relevant_prefixes
+        else:
+            print("[BEST] No relevant prefixes found, cannot save results.")
+            return
+
+        n = min(len(prefixes), len(self.predictions))
+        preds = self.predictions[:n]
+        actuals_enc = getattr(self.test_seq, "next_activities", [None] * n)
+        
+        # Tracker for confidence
+        tracker = getattr(self.model, "choice_tracker_nap", {})
+        probs = tracker.get("prob", [None] * n)
+
+        rows = []
+        padding_size = getattr(self.model, "_padding_size", 0)
+
+        for i in range(n):
+            prefix_data = prefixes[i]
+            case_id = str(prefix_data["case_id"])
+            raw_sequence = prefix_data["prefix"] # This is padded internally by SequenceData
+            
+            # The "real" events are those after padding_size
+            real_sequence_enc = raw_sequence[padding_size:]
+            case_index = len(real_sequence_enc) # 1-indexed step number
+            
+            decoded_sequence = [self._decode_activity(a) for a in real_sequence_enc]
+            true_next = self._decode_activity(actuals_enc[i])
+            pred_next = self._decode_activity(preds[i])
+            conf = probs[i] if i < len(probs) else None
+            correct = int(true_next == pred_next) if (true_next is not None and pred_next is not None) else None
+
+            rows.append({
+                "case_id": case_id,
+                "case_index": case_index,
+                "sequence": json.dumps(decoded_sequence),
+                "true_next_activity": true_next,
+                "predicted_next_activity": pred_next,
+                "confidence": conf,
+                "correct": correct
+            })
+
+        df_out = pd.DataFrame(rows)
+        out_path = os.path.join(output_dir, "best_predictions.csv")
+        df_out.to_csv(out_path, index=False)
+        print(f"[BEST] Predictions saved -> {out_path} ({len(df_out)} rows)")
+
+    def _save_results_rtp(self, output_dir: str) -> None:
+        """Fallback for RTP results."""
         if hasattr(self.test_seq, "relevant_prefixes") and self.test_seq.relevant_prefixes:
             prefixes = self.test_seq.relevant_prefixes
             case_ids = [p["case_id"] for p in prefixes]
@@ -167,43 +307,26 @@ class BESTRunner:
         prefix_ids = prefix_ids[:n]
         preds = self.predictions[:n]
 
-        if self.task == "nap":
-            decoded_preds = self._decode_nap(preds)
-            # Actual next activities are encoded ints — decode them
-            actuals_enc = getattr(self.test_seq, "next_activities", [None] * n)
-            decoded_actuals = [self._decode_activity(a) for a in actuals_enc[:n]]
-            correct = [
-                int(p == a) if (p is not None and a is not None) else None
-                for p, a in zip(decoded_preds, decoded_actuals)
-            ]
-            df_out = pd.DataFrame({
-                "CaseID": case_ids,
-                "prefix_length": prefix_ids,
-                "actual_next_activity": decoded_actuals,
-                "predicted_next_activity": decoded_preds,
-                "correct": correct,
-            })
-        else:
-            decoded_preds = self._decode_rtp(preds)
-            actuals_enc = getattr(self.test_seq, "full_future_sequences", [None] * n)
-            decoded_actuals = []
-            for seq in actuals_enc[:n]:
-                if seq is None:
-                    decoded_actuals.append(None)
-                else:
-                    decoded_actuals.append(", ".join(
-                        str(self._decode_activity(idx)) for idx in seq if idx is not None
-                    ))
-            df_out = pd.DataFrame({
-                "CaseID": case_ids,
-                "prefix_length": prefix_ids,
-                "actual_remaining_trace": decoded_actuals,
-                "predicted_remaining_trace": decoded_preds,
-            })
+        decoded_preds = self._decode_rtp(preds)
+        actuals_enc = getattr(self.test_seq, "full_future_sequences", [None] * n)
+        decoded_actuals = []
+        for seq in actuals_enc[:n]:
+            if seq is None:
+                decoded_actuals.append(None)
+            else:
+                decoded_actuals.append(", ".join(
+                    str(self._decode_activity(idx)) for idx in seq if idx is not None
+                ))
+        df_out = pd.DataFrame({
+            "CaseID": case_ids,
+            "prefix_length": prefix_ids,
+            "actual_remaining_trace": decoded_actuals,
+            "predicted_remaining_trace": decoded_preds,
+        })
 
         out_path = os.path.join(output_dir, "best_predictions.csv")
         df_out.to_csv(out_path, index=False)
-        print(f"[BEST] Predictions saved -> {out_path} ({len(df_out)} rows)")
+        print(f"[BEST] RTP Predictions saved -> {out_path}")
 
     def plot_performance(self, output_dir: str) -> None:
         """Generate a performance overview chart and save it to output_dir."""

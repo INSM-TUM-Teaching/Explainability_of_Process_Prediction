@@ -61,15 +61,20 @@ class BESTExplainer:
         self._plot_distances(distances)
 
         # Build decoded prediction frame from runner when available
-        decoded_preds, decoded_actuals, prefix_lengths = self._build_prediction_frame()
+        df_rich, n_samples = self._build_prediction_frame()
 
-        if decoded_preds is not None:
-            # Rich charts using actual predictions and labels
-            self._plot_accuracy_by_prefix_length(decoded_preds, decoded_actuals, prefix_lengths)
-            self._plot_confidence_by_class(probs, decoded_preds)
-            self._plot_activity_distribution(decoded_preds, decoded_actuals)
-            self._save_top_patterns_enriched(probs, distances, decoded_preds, decoded_actuals, prefix_lengths)
-            self._write_summary_report_enriched(probs, distances, decoded_preds, decoded_actuals, prefix_lengths)
+        if df_rich is not None:
+            # New artifact generation (as requested in Best Visualizaiton.docx)
+            self._save_summary_json(df_rich)
+            self._save_top_patterns_csv() # This will be the global dictionary
+            self._save_pattern_analysis_json()
+
+            # Rich charts using actual predictions and labels (Legacy/Enhanced)
+            self._plot_accuracy_by_prefix_length(df_rich)
+            self._plot_confidence_by_class(df_rich)
+            self._plot_activity_distribution(df_rich)
+            self._save_top_patterns_enriched(df_rich, distances) # This is the main results table
+            self._write_summary_report_enriched(df_rich, distances)
         else:
             # Fallback: basic tracker charts (pattern length histogram may be degenerate)
             lengths = self._clean(tracker.get("len", []))
@@ -79,6 +84,168 @@ class BESTExplainer:
             self._write_summary_report_basic(probs, lengths, distances)
 
         print(f"[BEST Explainer] Artefacts written to {self.output_dir}")
+
+    # ------------------------------------------------------------------
+    # New Artifact Generation (Phase 3)
+    # ------------------------------------------------------------------
+
+    def _save_summary_json(self, df: pd.DataFrame) -> None:
+        """Saves summary.json with global metrics and prefix stats."""
+        import json
+        
+        correct_flags = (df["true_next"] == df["pred_next"]).dropna()
+        overall_acc = correct_flags.mean() if not correct_flags.empty else 0.0
+        avg_conf = df["confidence"].dropna().mean() if not df["confidence"].dropna().empty else 0.0
+        
+        prefix_stats = []
+        acc_by_len = defaultdict(list)
+        for _, row in df.iterrows():
+            if row["true_next"] is not None and row["pred_next"] is not None:
+                acc_by_len[row["case_index"]].append(int(row["true_next"] == row["pred_next"]))
+        
+        for length in sorted(acc_by_len.keys()):
+            vals = acc_by_len[length]
+            prefix_stats.append({
+                "prefix_length": int(length),
+                "accuracy": float(np.mean(vals)),
+                "sample_count": int(len(vals))
+            })
+
+        summary = {
+            "task_type": self.task,
+            "overall_accuracy": float(overall_acc),
+            "average_confidence": float(avg_conf),
+            "total_test_cases": int(len(df)),
+            "prefix_stats": prefix_stats
+        }
+
+        path = os.path.join(self.output_dir, "summary.json")
+        with open(path, "w") as f:
+            json.dump(summary, f, indent=2)
+
+    def _save_top_patterns_csv(self) -> None:
+        """Saves top_patterns.csv as a global dictionary of patterns."""
+        # We need to extract all unique patterns from the model's fitted patterns
+        # self.model._unpruned_nodes contains patterns by stage
+        
+        all_patterns = []
+        seen_patterns = {}
+        
+        # Each "node" in unpruned_nodes is a pattern
+        for stage, nodes in getattr(self.model, "_unpruned_nodes", {}).items():
+            for node_idx, node in nodes.items():
+                pattern_seq = node["name"] # comma-separated string
+                if not pattern_seq: continue
+                
+                if pattern_seq not in seen_patterns:
+                    # Try to decode the sequence
+                    try:
+                        seq_indices = [int(idx) for idx in pattern_seq.split(",")]
+                        decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
+                        
+                        # Predicted next activity for this pattern
+                        # In BEST, the center activity is predicted. 
+                        # Actually, _pred_for_process_stage says:
+                        # pred = picked_pattern[math.floor(len(picked_pattern)/2):]
+                        # So it predicts the center activity and everything after it?
+                        # For NAP, it's picked_pattern[1] if len is 3?
+                        # Let's use the center activity for "what it predicts" or similar logic
+                        center_idx = len(seq_indices) // 2
+                        predicted_next = decoded_seq[center_idx] if center_idx < len(decoded_seq) else None
+                        
+                        seen_patterns[pattern_seq] = {
+                            "pattern_id": len(seen_patterns) + 1,
+                            "sequence": json.dumps(decoded_seq),
+                            "predicted_next_activity": predicted_next,
+                            "global_frequency": int(node.get("freq", 0)),
+                            "global_accuracy": float(node.get("prob", 0)), # 'prob' in BEST node is conditional prob
+                            "avg_confidence": float(node.get("prob", 0))
+                        }
+                    except:
+                        continue
+        
+        df_patterns = pd.DataFrame(list(seen_patterns.values()))
+        if not df_patterns.empty:
+            df_patterns = df_patterns.sort_values("global_frequency", ascending=False)
+            
+        path = os.path.join(self.output_dir, "top_patterns.csv")
+        df_patterns.to_csv(path, index=False)
+
+    def _save_pattern_analysis_json(self) -> None:
+        """Saves pattern_analysis.json (The Heatmap Bridge)."""
+        import json
+        
+        # This requires the all_matches_tracker from BESTPredictorCustom
+        tracker = getattr(self.model, "all_matches_tracker", [])
+        if not tracker:
+            # Fallback if tracker is empty
+            with open(os.path.join(self.output_dir, "pattern_analysis.json"), "w") as f:
+                json.dump({}, f)
+            return
+
+        # We need a pattern_id mapping (same as in _save_top_patterns_csv)
+        # To be consistent, let's re-build the seen_patterns mapping or pass it
+        pattern_id_map = {}
+        id_counter = 1
+        for stage, nodes in getattr(self.model, "_unpruned_nodes", {}).items():
+            for node in nodes.values():
+                if node["name"] and node["name"] not in pattern_id_map:
+                    pattern_id_map[node["name"]] = id_counter
+                    id_counter += 1
+
+        analysis = {}
+        for entry in tracker:
+            case_id = f"case_{entry['case_id']}"
+            index_key = f"index_{entry['case_index']}"
+            
+            if case_id not in analysis:
+                analysis[case_id] = {}
+            
+            # Re-construct full_sequence from decoded matches or similar
+            # Actually, the runner has the prefix sequence
+            # But we already have the decoded sequence in the rows we saved.
+            # Let's just find the sequence for this case/index
+            full_seq = []
+            matches = entry.get("matches", [])
+            
+            # We need to find the full_sequence. We can get it from the prefixes.
+            # But it's easier to just store it in the tracker.
+            # For now, let's assume we can't easily get it and just focus on matches.
+            
+            all_pattern_matches = []
+            for m in matches:
+                pattern_name = m["name"]
+                pid = pattern_id_map.get(pattern_name)
+                if pid:
+                    # Offsets in BEST: patterns are centered.
+                    # A pattern of length L matched at index I (1-indexed)
+                    # means it covers from I - L/2 to I + L/2?
+                    # In BEST prediction, the pattern is matched so its CENTER is the last activity.
+                    # So it covers [I - L//2, I + L//2]? 
+                    # Actually, BEST matching for NAP:
+                    # sequence_to_match = sequence[-n_matching_elements:] where n = ceil(L/2)
+                    # This means the pattern's LEFT half matches the end of the sequence.
+                    # So the pattern starts at I - (L//2) and ends at I + (L//2)?
+                    
+                    pattern_len = len(pattern_name.split(","))
+                    start_offset = max(0, entry["case_index"] - (pattern_len // 2) - 1)
+                    end_offset = entry["case_index"] + (pattern_len // 2) - 1
+                    
+                    all_pattern_matches.append({
+                        "pattern_id": pid,
+                        "start_offset": int(start_offset),
+                        "end_offset": int(end_offset),
+                        "frequency": int(m.get("freq", 0))
+                    })
+            
+            analysis[case_id][index_key] = {
+                "full_sequence": [], # We will fill this if possible, or UI handles it
+                "all_pattern_matches": all_pattern_matches
+            }
+
+        path = os.path.join(self.output_dir, "pattern_analysis.json")
+        with open(path, "w") as f:
+            json.dump(analysis, f, indent=2)
 
     # ------------------------------------------------------------------
     # Tracker retrieval
@@ -103,68 +270,61 @@ class BESTExplainer:
         """Decode predictions and actuals from runner if available.
 
         Returns:
-            (decoded_preds, decoded_actuals, prefix_lengths) or (None, None, None)
-            where prefix_lengths is the number of REAL events seen before each prediction.
+            (df, n) where df has columns [case_id, case_index, sequence, true_next, pred_next, confidence]
         """
         if self.runner is None:
-            return None, None, None
+            return None, 0
 
         runner = self.runner
         try:
             predictions = runner.predictions
             if predictions is None or len(predictions) == 0:
-                return None, None, None
+                return None, 0
 
-            if self.task == "nap":
-                decoded_preds = runner._decode_nap(predictions)
-                actuals_enc = getattr(runner.test_seq, "next_activities", None)
-                if actuals_enc is None:
-                    return None, None, None
-                n = min(len(decoded_preds), len(actuals_enc))
-                decoded_preds = decoded_preds[:n]
-                decoded_actuals = [runner._decode_activity(a) for a in actuals_enc[:n]]
-            else:
-                decoded_preds = runner._decode_rtp(predictions)
-                actuals_enc = getattr(runner.test_seq, "full_future_sequences", None)
-                if actuals_enc is None:
-                    return None, None, None
-                n = min(len(decoded_preds), len(actuals_enc))
-                decoded_preds = decoded_preds[:n]
-                decoded_actuals = []
-                for seq in actuals_enc[:n]:
-                    if seq is None:
-                        decoded_actuals.append(None)
-                    else:
-                        decoded_actuals.append(", ".join(
-                            str(runner._decode_activity(idx))
-                            for idx in seq if idx is not None
-                        ))
+            if self.task != "nap":
+                return None, 0
 
-            # Effective prefix length = padded prefix len - padding_size
-            # padding_size = int(max_pattern_size/2)+1 (stored on BESTPredictor as _padding_size)
+            # Use the same logic as save_results in predictor.py
+            prefixes = runner.test_seq.relevant_prefixes
+            n = min(len(prefixes), len(predictions))
+            actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
+            tracker = getattr(self.model, "choice_tracker_nap", {})
+            probs = tracker.get("prob", [None] * n)
             padding_size = getattr(self.model, "_padding_size", 0)
-            if hasattr(runner.test_seq, "relevant_prefixes") and runner.test_seq.relevant_prefixes:
-                raw_lens = [len(p["prefix"]) for p in runner.test_seq.relevant_prefixes[:n]]
-                prefix_lengths = [max(0, raw - padding_size) for raw in raw_lens]
-            else:
-                prefix_lengths = list(range(n))
 
-            return decoded_preds, decoded_actuals, prefix_lengths
+            rows = []
+            import json
+            for i in range(n):
+                prefix_data = prefixes[i]
+                raw_seq = prefix_data["prefix"]
+                real_seq_enc = raw_seq[padding_size:]
+                decoded_seq = [runner._decode_activity(a) for a in real_seq_enc]
+                
+                rows.append({
+                    "case_id": str(prefix_data["case_id"]),
+                    "case_index": len(real_seq_enc),
+                    "sequence": json.dumps(decoded_seq),
+                    "true_next": runner._decode_activity(actuals_enc[i]),
+                    "pred_next": runner._decode_activity(predictions[i]),
+                    "confidence": probs[i] if i < len(probs) else None
+                })
+            
+            return pd.DataFrame(rows), n
 
         except Exception as e:
             print(f"[BEST Explainer] Warning: could not build prediction frame: {e}")
-            return None, None, None
+            return None, 0
 
     # ------------------------------------------------------------------
     # Rich charts (runner available)
     # ------------------------------------------------------------------
 
-    def _plot_accuracy_by_prefix_length(self, preds, actuals, prefix_lengths):
+    def _plot_accuracy_by_prefix_length(self, df):
         """Line chart: accuracy vs number of real events seen before prediction."""
         acc_by_len = defaultdict(list)
-        for p, a, l in zip(preds, actuals, prefix_lengths):
-            if p is not None and a is not None:
-                acc_by_len[l].append(int(p == a))
+        for _, row in df.iterrows():
+            if row["true_next"] is not None and row["pred_next"] is not None:
+                acc_by_len[row["case_index"]].append(int(row["true_next"] == row["pred_next"]))
 
         if not acc_by_len:
             return
@@ -197,15 +357,12 @@ class BESTExplainer:
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
 
-    def _plot_confidence_by_class(self, probs: np.ndarray, decoded_preds: list) -> None:
+    def _plot_confidence_by_class(self, df: pd.DataFrame) -> None:
         """Horizontal bar chart: mean pattern confidence per predicted activity class."""
-        if len(probs) != len(decoded_preds):
-            return
-
         conf_by_class = defaultdict(list)
-        for p_val, cls in zip(probs, decoded_preds):
-            if cls is not None:
-                conf_by_class[cls].append(p_val)
+        for _, row in df.iterrows():
+            if row["pred_next"] is not None and row["confidence"] is not None:
+                conf_by_class[row["pred_next"]].append(row["confidence"])
 
         if not conf_by_class:
             return
@@ -224,24 +381,24 @@ class BESTExplainer:
         ax.set_xlabel("Mean pattern confidence (+/- std)")
         ax.set_title("Pattern Confidence by Predicted Activity")
         ax.set_xlim(0, 1.05)
-        ax.axvline(probs.mean(), color="red", linestyle="--", linewidth=1.2,
-                   label=f"Overall mean ({probs.mean():.3f})")
+        
+        overall_mean = df["confidence"].dropna().mean()
+        ax.axvline(overall_mean, color="red", linestyle="--", linewidth=1.2,
+                   label=f"Overall mean ({overall_mean:.3f})")
         ax.legend()
         fig.tight_layout()
         path = os.path.join(self.output_dir, "confidence_by_predicted_class.png")
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
 
-    def _plot_activity_distribution(self, decoded_preds: list, decoded_actuals: list) -> None:
+    def _plot_activity_distribution(self, df: pd.DataFrame) -> None:
         """Side-by-side bar chart: predicted vs actual activity frequencies."""
-        valid_pairs = [(p, a) for p, a in zip(decoded_preds, decoded_actuals)
-                       if p is not None and a is not None]
-        if not valid_pairs:
+        valid_df = df.dropna(subset=["pred_next", "true_next"])
+        if valid_df.empty:
             return
 
-        preds_clean, actuals_clean = zip(*valid_pairs)
-        pred_counts = Counter(preds_clean)
-        actual_counts = Counter(actuals_clean)
+        pred_counts = Counter(valid_df["pred_next"])
+        actual_counts = Counter(valid_df["true_next"])
 
         all_classes = sorted(set(pred_counts) | set(actual_counts))
         actual_vals = [actual_counts.get(c, 0) for c in all_classes]
@@ -288,62 +445,59 @@ class BESTExplainer:
 
     def _save_top_patterns_enriched(
         self,
-        probs: np.ndarray,
+        df_rich: pd.DataFrame,
         distances: np.ndarray,
-        decoded_preds: list,
-        decoded_actuals: list,
-        prefix_lengths: list,
     ) -> None:
         """Save per-prediction table with confidence, correctness, and prefix length."""
-        n = len(probs)
+        n = len(df_rich)
         dist_arr = distances if len(distances) == n else np.full(n, np.nan)
-        n_rows = min(n, len(decoded_preds), len(decoded_actuals), len(prefix_lengths))
 
         correct = [
             int(p == a) if p is not None and a is not None else None
-            for p, a in zip(decoded_preds[:n_rows], decoded_actuals[:n_rows])
+            for p, a in zip(df_rich["pred_next"], df_rich["true_next"])
         ]
 
-        df = pd.DataFrame({
-            "prefix_length_events": prefix_lengths[:n_rows],
-            "predicted_activity": decoded_preds[:n_rows],
-            "actual_activity": decoded_actuals[:n_rows],
+        df_out = pd.DataFrame({
+            "case_id": df_rich["case_id"],
+            "case_index": df_rich["case_index"],
+            "sequence": df_rich["sequence"],
+            "predicted_activity": df_rich["pred_next"],
+            "actual_activity": df_rich["true_next"],
             "correct": correct,
-            "pattern_confidence": probs[:n_rows],
-            "rpif_distance": dist_arr[:n_rows],
+            "pattern_confidence": df_rich["confidence"],
+            "rpif_distance": dist_arr,
         })
 
         path = os.path.join(self.output_dir, "top_patterns.csv")
-        df.to_csv(path, index=False)
+        df_out.to_csv(path, index=False)
 
     def _write_summary_report_enriched(
         self,
-        probs: np.ndarray,
+        df_rich: pd.DataFrame,
         distances: np.ndarray,
-        decoded_preds: list,
-        decoded_actuals: list,
-        prefix_lengths: list,
     ) -> None:
         """Write enriched summary with accuracy, per-class breakdown, prefix length stats."""
-        n = len(decoded_preds)
+        n = len(df_rich)
 
         correct_flags = [
-            int(p == a) for p, a in zip(decoded_preds, decoded_actuals)
+            int(p == a) for p, a in zip(df_rich["pred_next"], df_rich["true_next"])
             if p is not None and a is not None
         ]
         overall_acc = np.mean(correct_flags) if correct_flags else float("nan")
 
         # Per actual-class accuracy
         class_correct = defaultdict(list)
-        for p, a in zip(decoded_preds, decoded_actuals):
+        for p, a in zip(df_rich["pred_next"], df_rich["true_next"]):
             if p is not None and a is not None:
                 class_correct[a].append(int(p == a))
 
         # Accuracy by prefix length
         len_correct = defaultdict(list)
-        for p, a, l in zip(decoded_preds, decoded_actuals, prefix_lengths):
+        for p, a, l in zip(df_rich["pred_next"], df_rich["true_next"], df_rich["case_index"]):
             if p is not None and a is not None:
                 len_correct[l].append(int(p == a))
+
+        probs = df_rich["confidence"].dropna()
 
         lines = [
             "=" * 60,
@@ -353,14 +507,17 @@ class BESTExplainer:
             f"Overall accuracy           : {overall_acc:.4f} ({overall_acc * 100:.2f}%)",
             "",
             "Pattern confidence (probability of chosen pattern):",
-            f"  Mean   : {probs.mean():.4f}",
-            f"  Median : {float(np.median(probs)):.4f}",
-            f"  Std    : {probs.std():.4f}",
-            f"  Min    : {probs.min():.4f}",
-            f"  Max    : {probs.max():.4f}",
-            f"  % with confidence >= 0.99 : {(probs >= 0.99).mean() * 100:.1f}%",
-            f"  % with confidence <  0.90 : {(probs < 0.90).mean() * 100:.1f}%",
         ]
+        if not probs.empty:
+            lines += [
+                f"  Mean   : {probs.mean():.4f}",
+                f"  Median : {float(np.median(probs)):.4f}",
+                f"  Std    : {probs.std():.4f}",
+                f"  Min    : {probs.min():.4f}",
+                f"  Max    : {probs.max():.4f}",
+                f"  % with confidence >= 0.99 : {(probs >= 0.99).mean() * 100:.1f}%",
+                f"  % with confidence <  0.90 : {(probs < 0.90).mean() * 100:.1f}%",
+            ]
 
         if len(distances) > 0:
             lines += [
