@@ -173,10 +173,12 @@ class BESTRunner:
                 # Capture matches from the last _pred_for_process_stage call
                 matches = getattr(self.model, "_last_all_matches", [])
                 real_seq_enc = prefix_sequence[padding_size:]
+                decoded_sequence = [self._decode_activity(a) for a in real_seq_enc]
+                filtered_seq = [a for a in decoded_sequence if a not in ["START", "END"]]
                 
                 self.model.all_matches_tracker.append({
                     "case_id": str(prefix['case_id']),
-                    "case_index": len(real_seq_enc),
+                    "case_index": len(filtered_seq),
                     "matches": matches
                 })
         else:
@@ -269,12 +271,14 @@ class BESTRunner:
             
             # The "real" events are those after padding_size
             real_sequence_enc = raw_sequence[padding_size:]
-            case_index = len(real_sequence_enc) # 1-indexed step number
+            decoded_sequence = [self._decode_activity(a) for a in real_sequence_enc]
+            filtered_seq = [a for a in decoded_sequence if a not in ["START", "END"]]
+            
+            case_index = len(filtered_seq) # 1-indexed step number
             
             if case_index == 0:
                 continue # Skip the initial "empty" state for the UI
 
-            decoded_sequence = [self._decode_activity(a) for a in real_sequence_enc]
             true_next = self._decode_activity(actuals_enc[i])
             pred_next = self._decode_activity(preds[i])
             conf = probs[i] if i < len(probs) else None
@@ -283,7 +287,7 @@ class BESTRunner:
             rows.append({
                 "case_id": case_id,
                 "case_index": case_index,
-                "sequence": json.dumps(decoded_sequence),
+                "sequence": json.dumps(filtered_seq),
                 "true_next_activity": true_next,
                 "predicted_next_activity": pred_next,
                 "confidence": conf,
