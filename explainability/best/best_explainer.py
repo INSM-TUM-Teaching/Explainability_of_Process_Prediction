@@ -66,8 +66,8 @@ class BESTExplainer:
         if df_rich is not None:
             # New artifact generation (as requested in Best Visualizaiton.docx)
             self._save_summary_json(df_rich)
-            self._save_top_patterns_csv() # This is the GLOBAL dictionary
-            self._save_pattern_analysis_json(df_rich)
+            pattern_id_map = self._save_top_patterns_csv() # This is the GLOBAL dictionary
+            self._save_pattern_analysis_json(df_rich, pattern_id_map)
 
             # Rich charts using actual predictions and labels (Legacy/Enhanced)
             self._plot_accuracy_by_prefix_length(df_rich)
@@ -117,7 +117,7 @@ class BESTExplainer:
             "task_type": self.task,
             "overall_accuracy": float(overall_acc),
             "average_confidence": float(avg_conf),
-            "total_test_cases": int(len(df)),
+            "total_test_cases": int(df["case_id"].nunique()),
             "prefix_stats": prefix_stats
         }
 
@@ -142,12 +142,17 @@ class BESTExplainer:
             
         return seen_patterns
 
-    def _save_top_patterns_csv(self) -> None:
-        """Saves top_patterns.csv as a global dictionary of patterns."""
+    def _save_top_patterns_csv(self) -> dict:
+        """Saves top_patterns.csv as a global dictionary of patterns.
+        
+        Returns:
+            dict: Mapping from pattern sequence (str) to pattern_id (int)
+        """
         import json
         
         tree_patterns = self._extract_patterns_from_tree()
         seen_patterns = {}
+        pattern_id_map = {}
         
         for pattern_seq, node in tree_patterns.items():
             if not pattern_seq: continue
@@ -155,14 +160,22 @@ class BESTExplainer:
             # Try to decode the sequence
             try:
                 seq_indices = [int(idx) for idx in pattern_seq.split(",")]
+                
+                # Single-activity patterns are not used for predicting a "next" activity in BEST.
+                if len(seq_indices) < 3:
+                    continue
+                    
                 decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
                 
                 # Predicted next activity for this pattern
                 center_idx = len(seq_indices) // 2
                 predicted_next = decoded_seq[center_idx + 1] if (center_idx + 1) < len(decoded_seq) else None
                 
+                pid = len(seen_patterns) + 1
+                pattern_id_map[pattern_seq] = pid
+                
                 seen_patterns[pattern_seq] = {
-                    "pattern_id": len(seen_patterns) + 1,
+                    "pattern_id": pid,
                     "sequence": json.dumps(decoded_seq),
                     "predicted_next_activity": predicted_next,
                     "global_frequency": int(node.get("freq", 0)),
@@ -178,8 +191,10 @@ class BESTExplainer:
             
         path = os.path.join(self.output_dir, "top_patterns.csv")
         df_patterns.to_csv(path, index=False)
+        
+        return pattern_id_map
 
-    def _save_pattern_analysis_json(self, df_rich: pd.DataFrame) -> None:
+    def _save_pattern_analysis_json(self, df_rich: pd.DataFrame, pattern_id_map: dict) -> None:
         """Saves pattern_analysis.json (The Heatmap Bridge)."""
         import json
         
@@ -197,14 +212,6 @@ class BESTExplainer:
             with open(os.path.join(self.output_dir, "pattern_analysis.json"), "w") as f:
                 json.dump({}, f)
             return
-
-        tree_patterns = self._extract_patterns_from_tree()
-        pattern_id_map = {}
-        id_counter = 1
-        for name in tree_patterns.keys():
-            if name:
-                pattern_id_map[name] = id_counter
-                id_counter += 1
 
         analysis = {}
         for entry in tracker:
