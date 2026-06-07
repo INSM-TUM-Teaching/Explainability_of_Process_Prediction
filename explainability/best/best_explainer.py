@@ -66,14 +66,16 @@ class BESTExplainer:
         if df_rich is not None:
             # New artifact generation (as requested in Best Visualizaiton.docx)
             self._save_summary_json(df_rich)
-            self._save_top_patterns_csv() # This will be the global dictionary
-            self._save_pattern_analysis_json()
+            self._save_top_patterns_csv() # This is the GLOBAL dictionary
+            self._save_pattern_analysis_json(df_rich)
 
             # Rich charts using actual predictions and labels (Legacy/Enhanced)
             self._plot_accuracy_by_prefix_length(df_rich)
             self._plot_confidence_by_class(df_rich)
             self._plot_activity_distribution(df_rich)
-            self._save_top_patterns_enriched(df_rich, distances) # This is the main results table
+            # DELETED: self._save_top_patterns_enriched(df_rich, distances) 
+            # This was overwriting top_patterns.csv with per-case results.
+            # The per-case results are already in best_predictions.csv.
             self._write_summary_report_enriched(df_rich, distances)
         else:
             # Fallback: basic tracker charts (pattern length histogram may be degenerate)
@@ -171,20 +173,26 @@ class BESTExplainer:
         path = os.path.join(self.output_dir, "top_patterns.csv")
         df_patterns.to_csv(path, index=False)
 
-    def _save_pattern_analysis_json(self) -> None:
+    def _save_pattern_analysis_json(self, df_rich: pd.DataFrame) -> None:
         """Saves pattern_analysis.json (The Heatmap Bridge)."""
         import json
         
+        # Build a map for quick lookup of the full sequence for a case/index
+        seq_map = {}
+        for _, row in df_rich.iterrows():
+            cid = str(row["case_id"])
+            idx = int(row["case_index"])
+            if cid not in seq_map:
+                seq_map[cid] = {}
+            seq_map[cid][idx] = json.loads(row["sequence"])
+
         # This requires the all_matches_tracker from BESTPredictorCustom
         tracker = getattr(self.model, "all_matches_tracker", [])
         if not tracker:
-            # Fallback if tracker is empty
             with open(os.path.join(self.output_dir, "pattern_analysis.json"), "w") as f:
                 json.dump({}, f)
             return
 
-        # We need a pattern_id mapping (same as in _save_top_patterns_csv)
-        # To be consistent, let's re-build the seen_patterns mapping or pass it
         pattern_id_map = {}
         id_counter = 1
         for stage, nodes in getattr(self.model, "_unpruned_nodes", {}).items():
@@ -196,40 +204,31 @@ class BESTExplainer:
         analysis = {}
         for entry in tracker:
             case_id = f"case_{entry['case_id']}"
-            index_key = f"index_{entry['case_index']}"
+            # Standardize case_id for internal lookup
+            raw_cid = str(entry['case_id'])
+            
+            # Use 1-indexing if not already ensured
+            case_index = int(entry['case_index'])
+            if case_index == 0: continue # Skip initial padding/start
+            
+            index_key = f"index_{case_index}"
             
             if case_id not in analysis:
                 analysis[case_id] = {}
             
-            # Re-construct full_sequence from decoded matches or similar
-            # Actually, the runner has the prefix sequence
-            # But we already have the decoded sequence in the rows we saved.
-            # Let's just find the sequence for this case/index
-            full_seq = []
-            matches = entry.get("matches", [])
-            
-            # We need to find the full_sequence. We can get it from the prefixes.
-            # But it's easier to just store it in the tracker.
-            # For now, let's assume we can't easily get it and just focus on matches.
+            full_seq = seq_map.get(raw_cid, {}).get(case_index, [])
             
             all_pattern_matches = []
+            matches = entry.get("matches", [])
             for m in matches:
                 pattern_name = m["name"]
                 pid = pattern_id_map.get(pattern_name)
                 if pid:
-                    # Offsets in BEST: patterns are centered.
-                    # A pattern of length L matched at index I (1-indexed)
-                    # means it covers from I - L/2 to I + L/2?
-                    # In BEST prediction, the pattern is matched so its CENTER is the last activity.
-                    # So it covers [I - L//2, I + L//2]? 
-                    # Actually, BEST matching for NAP:
-                    # sequence_to_match = sequence[-n_matching_elements:] where n = ceil(L/2)
-                    # This means the pattern's LEFT half matches the end of the sequence.
-                    # So the pattern starts at I - (L//2) and ends at I + (L//2)?
-                    
                     pattern_len = len(pattern_name.split(","))
-                    start_offset = max(0, entry["case_index"] - (pattern_len // 2) - 1)
-                    end_offset = entry["case_index"] + (pattern_len // 2) - 1
+                    # Offset logic: center of pattern is last activity in prefix
+                    # Start is case_index - L//2
+                    start_offset = max(0, case_index - (pattern_len // 2) - 1)
+                    end_offset = case_index + (pattern_len // 2) - 1
                     
                     all_pattern_matches.append({
                         "pattern_id": pid,
@@ -239,7 +238,7 @@ class BESTExplainer:
                     })
             
             analysis[case_id][index_key] = {
-                "full_sequence": [], # We will fill this if possible, or UI handles it
+                "full_sequence": full_seq,
                 "all_pattern_matches": all_pattern_matches
             }
 
