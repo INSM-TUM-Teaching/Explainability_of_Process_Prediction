@@ -1145,3 +1145,44 @@ def download_artifacts_zip(run_id: str):
                 zf.write(full, arcname=rel)
 
     return FileResponse(zip_path, filename=f"run_{run_id}_artifacts.zip")
+
+from backend.runner.global_stats import get_process_map, calculate_global_metrics
+
+@app.get("/datasets/{dataset_id}/process_map")
+def download_process_map(dataset_id: str):
+    meta = _load_dataset_meta(dataset_id)
+    dataset_path = meta.preprocessed_path or meta.raw_path or meta.stored_path
+    if meta.split_dataset_path:
+        dataset_path = meta.split_dataset_path
+
+    if not dataset_path or not os.path.exists(dataset_path):
+        raise HTTPException(status_code=404, detail="Dataset file not found.")
+
+    res = get_process_map(dataset_path)
+    if "error" in res:
+        raise HTTPException(status_code=500, detail=res["error"])
+    return res
+
+@app.get("/runs/{run_id}/global")
+def get_global_metrics(run_id: str):
+    rdir = _run_dir(run_id)
+    if not os.path.exists(rdir):
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    req_path = _run_request_path(run_id)
+    if not os.path.exists(req_path):
+        raise HTTPException(status_code=404, detail="Run request not found")
+        
+    req = _read_json(req_path)
+    dataset_id = req.get("dataset_id")
+    
+    meta = _load_dataset_meta(dataset_id)
+    dataset_path = meta.preprocessed_path or meta.raw_path or meta.stored_path
+    if meta.split_dataset_path:
+        dataset_path = meta.split_dataset_path
+        
+    res = calculate_global_metrics(rdir, dataset_path)
+    if "error" in res:
+        raise HTTPException(status_code=500, detail=res["error"])
+    return res
+

@@ -225,16 +225,16 @@ def main():
             config = default_best_config()
 
         if model_type == "transformer":
+            config["explainability_samples"] = 100
             if task in {"next_activity", "custom_activity"}:
-                # Force explainability_method=None to avoid slow full explanation generation,
-                # as the frontend will request it on demand
+                # Re-enabled global explainability for the frontend Global Dashboard
                 metrics = run_next_activity_prediction(
                     dataset_path,
                     artifacts_dir,
                     test_size,
                     val_split,
                     config,
-                    explainability_method=None,
+                    explainability_method=explainability,
                     target_column=target_column if task == "custom_activity" else None,
                     skip_auto_mapping=skip_auto_mapping,
                 )
@@ -254,13 +254,13 @@ def main():
                 raise RuntimeError(f"Unsupported transformer task: {task}")
 
         elif model_type == "gnn":
+            config["explainability_samples"] = 100
             if task not in {"next_activity", "custom_activity", "event_time", "remaining_time", "unified"}:
                 raise RuntimeError(f"Unsupported gnn task: {task}")
 
             gnn_task = "next_activity" if task == "custom_activity" else task
             
-            # Disable global explainability generation for next_activity
-            gnn_explainability = None if gnn_task == "next_activity" else explainability
+            gnn_explainability = explainability
                 
             metrics = run_gnn_unified_prediction(
                 dataset_path,

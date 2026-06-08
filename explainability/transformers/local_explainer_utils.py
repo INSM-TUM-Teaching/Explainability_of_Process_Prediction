@@ -34,3 +34,8 @@ def plot_research_grade_local(df, current_seq_names, output_path, title="Trace H
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, facecolor="white")
     plt.close()
+
+def _ensure_stub_csv(path, columns):
+    import pandas as pd
+    df = pd.DataFrame(columns=columns)
+    df.to_csv(path, index=False)

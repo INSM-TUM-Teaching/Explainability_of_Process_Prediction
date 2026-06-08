@@ -1056,6 +1056,10 @@ class GraphLIMEExplainer:
         y = y_vec.reshape(-1, 1)
         y_dist = y - y.T
         sigma_y = self._median_sigma(np.abs(y_dist))
+        # Prevent division by zero
+        if sigma_y == 0:
+            sigma_y = 1e-5
+            
         l_mat = np.exp(-(y_dist ** 2) / (2 * sigma_y ** 2))
         l_bar = self._center_and_normalize(l_mat)
 
@@ -1064,6 +1068,8 @@ class GraphLIMEExplainer:
             xk = x_mat[:, k].reshape(-1, 1)
             x_dist = xk - xk.T
             sigma_x = self._median_sigma(np.abs(x_dist))
+            if sigma_x == 0:
+                sigma_x = 1e-5
             k_mat = np.exp(-(x_dist ** 2) / (2 * sigma_x ** 2))
             k_bar = self._center_and_normalize(k_mat)
             features.append(k_bar.reshape(-1))
@@ -1071,8 +1077,20 @@ class GraphLIMEExplainer:
         x_feat = np.stack(features, axis=1)
         y_target = l_bar.reshape(-1)
 
-        model = Lasso(alpha=self.hsic_lambda, fit_intercept=False, max_iter=5000)
-        model.fit(x_feat, y_target)
+        import warnings
+        from sklearn.exceptions import ConvergenceWarning
+        
+        alpha = self.hsic_lambda
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=ConvergenceWarning)
+            # Try progressively smaller alphas if coefficients shrink to exactly 0
+            for _ in range(4):
+                model = Lasso(alpha=alpha, fit_intercept=False, max_iter=5000)
+                model.fit(x_feat, y_target)
+                if not np.allclose(model.coef_, 0):
+                    return model.coef_
+                alpha *= 0.1
+                
         return model.coef_
 
     def explain_local(self, graph, task='activity', num_perturbations=200):
@@ -1171,7 +1189,6 @@ class GraphLIMEExplainer:
 
         coefs = self._hsic_lasso(X_perturb, y_perturb)
         if coefs is None or np.allclose(coefs, 0):
-            print(f"[DEBUG GraphLIME] Lasso coefs are None or all zero for sample, task {task}. Falling back to correlation.")
             weights = []
             y_std = np.std(y_perturb)
             for k in range(X_perturb.shape[1]):
@@ -1263,6 +1280,60 @@ class GraphLIMEExplainer:
             true_val=true_val,
             predicted_class=predicted_class,
         )
+
+    def explain_global_importance(self, graphs, task='activity', num_samples=50):
+        import numpy as np
+        import collections
+        
+        sample_count = min(num_samples, len(graphs))
+        sample_indices = np.random.choice(len(graphs), sample_count, replace=False)
+        
+        global_importances = collections.defaultdict(list)
+        for idx in sample_indices:
+            graph = graphs[idx]
+            try:
+                explanation, _, _, _, _ = self.explain_local(graph, task=task)
+                for item in explanation:
+                    name = item['activity']
+                    imp = item['importance']
+                    global_importances[name].append(abs(imp))
+            except Exception as e:
+                pass
+                
+        # Average the scores
+        avg_importances = {}
+        for name, scores in global_importances.items():
+            if len(scores) > 0:
+                avg_importances[name] = np.mean(scores)
+                
+        return avg_importances
+
+    def plot_global_importance(self, importances, output_dir, task='activity'):
+        import os
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if not importances:
+            print(f"[WARNING] No GraphLIME global importances available for {task}.")
+            return
+            
+        data = [{'activity': k, 'importance': v} for k, v in importances.items()]
+        df = pd.DataFrame(data).sort_values('importance', ascending=False).head(15)
+        
+        df.to_csv(os.path.join(output_dir, f'graphlime_global_{task}.csv'), index=False)
+        
+        plt.figure(figsize=(10, 6))
+        sns.barplot(x='importance', y='activity', hue='activity', data=df, palette='viridis', legend=False)
+        plt.title(f'GraphLIME Global Feature Importance - {task.replace("_", " ").capitalize()}')
+        plt.xlabel('Mean Absolute Importance')
+        plt.ylabel('Feature')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'graphlime_global_bar_plot_{task}.png'), dpi=300, facecolor="white")
+        plt.close()
+
 
 
 class ExplainabilityBenchmark:
@@ -1856,22 +1927,23 @@ def generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task='ac
             feature_types[row['activity']] = 'Activity' # Default to Activity, as Type is removed
     
     lime_importance = {}
-    lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv')]
-    if lime_files:
-        lime_aggregated = {}
-        for lime_file in lime_files:
-            lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-            for _, row in lime_df.iterrows():
-                feature = row['activity']
-                weight = abs(row['importance'])
-                if feature not in lime_aggregated:
-                    lime_aggregated[feature] = []
-                lime_aggregated[feature].append(weight)
-        
-        for feature, weights in lime_aggregated.items():
-            lime_importance[feature] = np.mean(weights)
-            if feature not in feature_types:
-                feature_types[feature] = 'Activity'
+    if os.path.exists(lime_dir):
+        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv') and 'global' not in f]
+        if lime_files:
+            lime_aggregated = {}
+            for lime_file in lime_files:
+                lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+                for _, row in lime_df.iterrows():
+                    feature = row['activity']
+                    weight = abs(row['importance'])
+                    if feature not in lime_aggregated:
+                        lime_aggregated[feature] = []
+                    lime_aggregated[feature].append(weight)
+            
+            for feature, weights in lime_aggregated.items():
+                lime_importance[feature] = np.mean(weights)
+                if feature not in feature_types:
+                    feature_types[feature] = 'Activity'
     
     summary_data = []
     all_features = set(grad_importance.keys()) | set(lime_importance.keys())
@@ -2014,20 +2086,8 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
                 explainer.plot_global_importance(imp, grad_dir, task=task)
                 
                 print(f"  Creating individual sample explanations for {task}...")
-                num_individual = min(5, len(graphs))
-                
-                sample_indices = []
-                if len(graphs) > 100:
-                    sample_indices = [
-                        len(graphs) // 4,
-                        len(graphs) // 2,
-                        3 * len(graphs) // 4,
-                        len(graphs) - 100,
-                        len(graphs) - 50,
-                    ]
-                else:
-                    start = min(10, len(graphs) // 3)
-                    sample_indices = list(range(start, min(start + num_individual, len(graphs))))
+                sample_count = min(num_samples, len(graphs))
+                sample_indices = np.random.choice(len(graphs), sample_count, replace=False)
                 
                 for i, idx in enumerate(sample_indices):
                     print(f"  Sample {i} (graph index {idx}):")
@@ -2087,9 +2147,17 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
         lime_explainer = GraphLIMEExplainer(model, device, vocabularies)
         lime_dir = os.path.join(output_dir, 'graphlime')
         
-        max_lime_samples = min(10, len(graphs))
-        step = max(1, len(graphs) // max_lime_samples)
-        sample_ids = list(range(0, len(graphs), step))[:max_lime_samples]
+        for task in tasks:
+            print(f"\n[{task.upper()}] Global GraphLIME")
+            try:
+                print(f"  Creating global summary for {task}...")
+                imp = lime_explainer.explain_global_importance(graphs, task=task, num_samples=num_samples)
+                lime_explainer.plot_global_importance(imp, lime_dir, task=task)
+            except Exception as e:
+                print(f"[ERROR] Failed global GraphLIME for {task}: {e}")
+        
+        sample_count = min(num_samples, len(graphs))
+        sample_ids = np.random.choice(len(graphs), sample_count, replace=False)
         
         print(f"Analyzing {len(sample_ids)} diverse samples: {sample_ids}")
         

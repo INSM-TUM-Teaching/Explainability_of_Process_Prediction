@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import re
 import numpy as np
@@ -1003,16 +1004,100 @@ class LIMEExplainer:
                 self.explanations.append(None)        
         return self.explanations
 
+    def calculate_global_importance(self, num_features=15):
+        """
+        Aggregates local LIME explanations into global feature importances.
+        """
+        feature_scores = defaultdict(float)
+        feature_counts = defaultdict(int)
+
+        for i, exp in enumerate(self.explanations):
+            if exp is None:
+                continue
+
+            exp_list = None
+            if self.task == 'activity':
+                true_class = self.y_true[i] if self.y_true is not None else None
+                if true_class is not None:
+                    try:
+                        exp_list = exp.as_list(label=true_class)
+                    except KeyError:
+                        pass
+                if exp_list is None and getattr(exp, "available_labels", None):
+                    avail = exp.available_labels()
+                    if avail:
+                        try:
+                            exp_list = exp.as_list(label=avail[0])
+                        except KeyError:
+                            pass
+                if exp_list is None:
+                    try:
+                        exp_list = exp.as_list()
+                    except KeyError:
+                        pass
+            else:
+                try:
+                    exp_list = exp.as_list()
+                except KeyError:
+                    pass
+
+            if exp_list:
+                for feature_name_raw, weight in exp_list:
+                    if 'Position_' in feature_name_raw:
+                        import re
+                        match = re.search(r'Position_(\d+)', feature_name_raw)
+                        if match:
+                            pos_idx = int(match.group(1)) - 1
+                            if self.test_data_seq is not None and i < len(self.test_data_seq):
+                                token = self.test_data_seq[i][pos_idx]
+                                feature_name = self._get_activity_name([token])
+                                if isinstance(feature_name, (list, np.ndarray)):
+                                    feature_name = feature_name[0]
+                            else:
+                                feature_name = feature_name_raw
+                        else:
+                            feature_name = feature_name_raw
+                    else:
+                        feature_name = feature_name_raw
+
+                    feature_scores[feature_name] += abs(weight)
+                    feature_counts[feature_name] += 1
+        
+        averaged_scores = {
+            feat: score / feature_counts[feat]
+            for feat, score in feature_scores.items() if feature_counts[feat] > 0
+        }
+        
+        global_importance_list = [
+            {'activity': feat, 'Mean_Impact': score}
+            for feat, score in averaged_scores.items()
+        ]
+        print(f"[LIME] Processed {len(self.explanations)} local explanations.")
+        global_importance_list.sort(key=lambda x: x['Mean_Impact'], reverse=True)
+        
+        self.global_importance = global_importance_list[:num_features]
+        print(f"[LIME] Calculated global importance for {len(self.global_importance)} features.")
+        return self.global_importance
+
+
     def _get_activity_name(self, token_idx):
-        if token_idx == 0: 
+        import numpy as np
+        if isinstance(token_idx, (list, np.ndarray)) and len(token_idx) > 0:
+            token_val = int(token_idx[0])
+        else:
+            try:
+                token_val = int(token_idx)
+            except Exception:
+                return f"activity_{token_idx}"
+
+        if token_val == 0: 
             return "[PAD]"
         if self.label_encoder:
             try: 
-                return self.label_encoder.inverse_transform([int(token_idx)-1])[0]
+                return self.label_encoder.inverse_transform([token_val - 1])[0]
             except Exception as e:
-                print(f"[WARNING] Failed to decode activity token {int(token_idx)}: {e}")
                 pass
-        return f"activity_{int(token_idx)}"
+        return f"activity_{token_val}"
 
     def _decode_activity_class(self, class_idx):
         if class_idx is None:
@@ -1102,7 +1187,13 @@ class LIMEExplainer:
         except Exception as e:
             print(f"Warning: Could not extract full LIME details: {e}")
             title = f"LIME Explanation (Sample {display_idx})"
-            lime_list = exp.as_list()
+            try:
+                lime_list = exp.as_list(label=exp.available_labels()[0]) if getattr(exp, "available_labels", None) and exp.available_labels() else exp.as_list()
+            except Exception:
+                try:
+                    lime_list = exp.as_list()
+                except Exception:
+                    lime_list = []
 
         activity_stats = {} 
         for rule, weight in lime_list:
@@ -1198,6 +1289,16 @@ class LIMEExplainer:
 
     def save_explanations(self, output_dir):
         print("[OK] LIME computations complete.")
+        lime_global_csv = os.path.join(output_dir, "global_importance_data.csv")
+        if getattr(self, 'global_importance', None):
+            import pandas as pd
+            df = pd.DataFrame(self.global_importance)
+            df.to_csv(lime_global_csv, index=False)
+            print(f"[OK] LIME global importance saved to: {lime_global_csv}")
+        else:
+            print("[WARNING] No LIME global importance data to save. Creating empty stub CSV.")
+            from .local_explainer_utils import _ensure_stub_csv
+            _ensure_stub_csv(lime_global_csv, ["activity", "Mean_Impact"])
 
 
 def generate_comparison_report(output_dir, shap_dir, lime_dir):
@@ -1211,7 +1312,9 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
     shap_importance = {}
     if shap_dir and os.path.exists(os.path.join(shap_dir, 'global_importance_data.csv')):
         shap_df = pd.read_csv(os.path.join(shap_dir, 'global_importance_data.csv'))
-        shap_importance = dict(zip(shap_df['activity'], shap_df['importance']))
+        col_name = 'importance' if 'importance' in shap_df.columns else 'Mean_Impact'
+        if col_name in shap_df.columns:
+            shap_importance = dict(zip(shap_df['activity'], shap_df[col_name]))
     
     # Load LIME results if available (aggregate from multiple samples)
     lime_importance = {}
@@ -2118,6 +2221,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 )
                 print(f"[DEBUG] Generated {len(le.explanations)} explanations")
                 
+                le.calculate_global_importance(num_features=30)
+
                 # Plot all explained samples (now they match 0-9)
                 print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
                 plots_saved = 0
@@ -2143,7 +2248,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 le.save_explanations(lime_dir)
         except Exception as e:
             print(f"[ERROR] LIME explainability failed: {e}")
-        if not _dir_has_png(lime_dir):
+        has_png = any(f.endswith('.png') for f in os.listdir(lime_dir)) if lime_dir and os.path.exists(lime_dir) else False
+        if not has_png:
             print("[WARNING] No LIME plots generated.")
         _ensure_stub_csv(
             os.path.join(lime_dir, "lime_explanation_stub.csv"),
@@ -2209,9 +2315,21 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                         if exp is not None:
                             # Extract feature weights from LIME explanation
                             if task == 'activity' and hasattr(exp, 'top_labels') and exp.top_labels:
-                                exp_list = exp.as_list(label=exp.top_labels[0])
+                                try:
+                                    exp_list = exp.as_list(label=exp.top_labels[0])
+                                except KeyError:
+                                    try:
+                                        exp_list = exp.as_list(label=exp.available_labels()[0]) if getattr(exp, "available_labels", None) and exp.available_labels() else exp.as_list()
+                                    except Exception:
+                                        try:
+                                            exp_list = exp.as_list()
+                                        except KeyError:
+                                            exp_list = []
                             else:
-                                exp_list = exp.as_list()
+                                try:
+                                    exp_list = exp.as_list()
+                                except KeyError:
+                                    exp_list = []
 
                             exp_map = dict(exp_list)
                             weights = np.zeros(seq_len)
