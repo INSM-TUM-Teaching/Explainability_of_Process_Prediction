@@ -188,18 +188,50 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
           <div>
             <strong>Trace History / Sequence:</strong>
             <div className="mt-2 flex flex-wrap items-center gap-2 overflow-x-auto pb-2">
+              {/* Historical Sequence */}
               {selectedRecord.sequence.split(',').map((act, i, arr) => (
                 <div key={i} className="flex items-center gap-2">
                   <div className="bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap">
                     {act.trim()}
                   </div>
-                  {i < arr.length - 1 && (
+                  {/* Arrow: Solid for history, Longer Dashed for the transition to target */}
+                  {i === arr.length - 1 ? (
+                    <svg className="w-10 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 40 24">
+                      {/* The Stem - Dashed */}
+                      <path 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round" 
+                        strokeWidth={2} 
+                        strokeDasharray="6 6"
+                        d="M3 12h34" 
+                      />
+                      {/* The Head - Solid */}
+                      <path 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round" 
+                        strokeWidth={2} 
+                        d="M30 5l7 7-7 7" 
+                      />
+                    </svg>
+                  ) : (
                     <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                      <path 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round" 
+                        strokeWidth={2} 
+                        d="M14 5l7 7-7 7M21 12H3" 
+                      />
                     </svg>
                   )}
                 </div>
               ))}
+              
+              {/* True Next Activity (Target) */}
+              <div className="flex items-center gap-2">
+                <div className="bg-slate-50 border border-slate-400 border-dashed text-slate-600 px-3 py-1.5 rounded-md text-xs font-bold whitespace-nowrap">
+                  {selectedRecord.true_next_activity}
+                </div>
+              </div>
             </div>
           </div>
           

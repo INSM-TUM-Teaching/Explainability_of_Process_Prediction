@@ -68,8 +68,9 @@ class GradientExplainer:
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
-            return name[:12] + ".." if len(name) > 12 else name
-        return f"Resource_{idx}"
+            name = name[:12] + ".." if len(name) > 12 else name
+            return f"{name} [Resource]"
+        return f"Resource_{idx} [Resource]"
 
     def explain_time_series_with_features(self, graphs, task='event_time', num_samples=50):
         self.model.eval()
@@ -690,8 +691,9 @@ class TemporalGradientExplainer:
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
-            return name[:12] + ".." if len(name) > 12 else name
-        return f"Resource_{idx}"
+            name = name[:12] + ".." if len(name) > 12 else name
+            return f"{name} [Resource]"
+        return f"Resource_{idx} [Resource]"
 
     def explain_individual_sample(self, graph, task='event_time'):
         self.model.eval()
@@ -997,8 +999,9 @@ class GraphLIMEExplainer:
     def _get_resource_name(self, idx):
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
-            return inv_vocab.get(int(idx), f"Resource_{idx}")
-        return f"Resource_{idx}"
+            res_name = inv_vocab.get(int(idx), f"Resource_{idx}")
+            return f"{res_name} [Resource]"
+        return f"Resource_{idx} [Resource]"
         
     def _get_feature_name(self, node_type, feature_idx):
         if node_type == 'activity' and 'Activity' in self.vocabs:
@@ -1008,7 +1011,10 @@ class GraphLIMEExplainer:
         elif node_type == 'resource' and 'Resource' in self.vocabs:
             vocab = self.vocabs['Resource']
             inv_vocab = {v: k for k, v in vocab.items()}
-            return inv_vocab.get(int(feature_idx), f"Resource_{feature_idx}")
+            res_name = inv_vocab.get(int(feature_idx), f"Resource_{feature_idx}")
+            return f"{res_name} [Resource]"
+        elif node_type == 'resource':
+            return f"resource_{feature_idx} [Resource]"
         return f"{node_type}_{feature_idx}"
 
     def _aggregate_features(self, explanation):
@@ -1486,20 +1492,36 @@ class ExplainabilityBenchmark:
         return np.array([]), []
 
     def _parse_feature_name(self, name, act_vocab, res_vocab):
-        clean = re.sub(r'\s+\(x\d+\)$', '', name).strip()
+        is_resource_hint = name.endswith(' [Resource]')
+        clean = name.replace(' [Resource]', '')
+        clean = re.sub(r'\s+\(x\d+\)$', '', clean).strip()
+        
+        if is_resource_hint:
+            if clean in res_vocab:
+                return 'resource', res_vocab[clean]
+            if clean.startswith('Resource_'):
+                try:
+                    return 'resource', int(clean.split('_', 1)[1])
+                except ValueError:
+                    return None, None
+            return 'resource', None
+
         if clean in act_vocab:
             return 'activity', act_vocab[clean]
         if clean in res_vocab:
             return 'resource', res_vocab[clean]
-        if clean.startswith('activity_'):
+        if clean.startswith('activity_') or clean.startswith('Act_'):
             try:
-                return 'activity', int(clean.split('_', 1)[1])
-            except ValueError:
+                # Handle both activity_idx and Act_idx
+                parts = clean.split('_', 1)
+                return 'activity', int(parts[1])
+            except (ValueError, IndexError):
                 return None, None
-        if clean.startswith('Resource_'):
+        if clean.startswith('Resource_') or clean.startswith('Res_'):
             try:
-                return 'resource', int(clean.split('_', 1)[1])
-            except ValueError:
+                parts = clean.split('_', 1)
+                return 'resource', int(parts[1])
+            except (ValueError, IndexError):
                 return None, None
         return None, None
 
@@ -1960,9 +1982,10 @@ def generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task='ac
     if os.path.exists(grad_file):
         grad_df = pd.read_csv(grad_file)
         for _, row in grad_df.iterrows():
-            grad_importance[row['activity']] = row['importance']
-            feature_types[row['activity']] = 'Activity' # Default to Activity, as Type is removed
-    
+            name = row['activity']
+            grad_importance[name] = row['importance']
+            feature_types[name] = 'Resource' if ' [Resource]' in name else 'Activity'
+
     lime_importance = {}
     if os.path.exists(lime_dir):
         # Try global file first
@@ -1970,10 +1993,11 @@ def generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task='ac
         if os.path.exists(global_lime_file):
             lime_df = pd.read_csv(global_lime_file)
             for _, row in lime_df.iterrows():
-                lime_importance[row['activity']] = row['importance']
-                if row['activity'] not in feature_types:
-                    feature_types[row['activity']] = 'Activity'
-        
+                name = row['activity']
+                lime_importance[name] = row['importance']
+                if name not in feature_types:
+                    feature_types[name] = 'Resource' if ' [Resource]' in name else 'Activity'
+
         # Fallback to aggregation
         if not lime_importance:
             lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv') and 'global' not in f]
@@ -1987,11 +2011,11 @@ def generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task='ac
                         if feature not in lime_aggregated:
                             lime_aggregated[feature] = []
                         lime_aggregated[feature].append(weight)
-                
+
                 for feature, weights in lime_aggregated.items():
                     lime_importance[feature] = np.mean(weights)
                     if feature not in feature_types:
-                        feature_types[feature] = 'Activity'
+                        feature_types[feature] = 'Resource' if ' [Resource]' in feature else 'Activity'
     
     summary_data = []
     all_features = set(grad_importance.keys()) | set(lime_importance.keys())
