@@ -267,6 +267,12 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     
     for p in preds:
         c_id = str(p.get("case_id"))
+        
+        # Get variant for this case
+        var_sig = variants.get(c_id, "Unknown Variant")
+        v_id = _generate_variant_id(var_sig)
+        p["variant_id"] = v_id
+        
         seq = p.get("sequence", "")
         # For GNN, sequence might not be explicitly stored like transformer, it's prefix_length
         # We need to compute prefix length
@@ -282,8 +288,6 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
         if is_correct:
             overall_correct += 1
             
-        var_sig = variants.get(c_id, "Unknown Variant")
-        
         if var_sig not in variant_stats:
             variant_stats[var_sig] = {"total": 0, "correct": 0}
         variant_stats[var_sig]["total"] += 1
@@ -295,6 +299,16 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
         prefix_stats[prefix_len]["total"] += 1
         if is_correct:
             prefix_stats[prefix_len]["correct"] += 1
+
+    # Save updated predictions with variant IDs back to files
+    try:
+        with open(pred_file, 'w') as f:
+            json.dump(preds, f, indent=2)
+        # Update CSV as well
+        p_df = pd.DataFrame(preds)
+        p_df.to_csv(pred_file.replace(".json", ".csv"), index=False)
+    except Exception as e:
+        print(f"[ERROR] Failed to update predictions with variant IDs: {e}")
 
     # Format output
     variant_list = []
@@ -363,7 +377,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
             except Exception:
                 pass
 
-    return {
+    res = {
         "overall_accuracy": (overall_correct / total_preds * 100) if total_preds > 0 else 0,
         "total_variants": len(case_groups.keys()),
         "unique_variants": len(set(variants.values())),
@@ -371,3 +385,13 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
         "prefix_accuracy": prefix_list,
         "global_explanations": global_explanations
     }
+
+    # Save to file
+    try:
+        global_res_path = os.path.join(artifacts_dir, "global_results.json")
+        with open(global_res_path, 'w') as f:
+            json.dump(res, f, indent=2)
+    except Exception as e:
+        print(f"[ERROR] Failed to save global_results.json: {e}")
+
+    return res

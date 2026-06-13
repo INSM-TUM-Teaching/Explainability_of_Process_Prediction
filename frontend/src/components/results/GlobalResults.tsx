@@ -222,7 +222,7 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
 
   // Format data for charts
   const variantChartData = globalStats.variants.slice(0, 10).map((v: any) => ({
-    name: v.variant.length > 20 ? v.variant.substring(0, 20) + "..." : v.variant,
+    name: `Variant ${v.id}`,
     full_name: v.variant,
     accuracy: Number(v.accuracy.toFixed(2)),
     total: v.total_cases_in_test

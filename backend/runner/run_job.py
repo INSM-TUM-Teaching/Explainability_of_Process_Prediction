@@ -310,7 +310,11 @@ def main():
             "finished_at": utc_now(),
         })
 
-        # final summary.json
+        # Generate global metrics and inject variant IDs into predictions
+        from backend.runner.global_stats import calculate_global_metrics
+        calculate_global_metrics(run_dir, dataset_path)
+
+        # final summary.json (re-list artifacts to include new ones)
         write_json(os.path.join(artifacts_dir, "summary.json"), {
             "run_id": run_id,
             "status": "succeeded",

@@ -38,7 +38,12 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
 
   const caseIds = Array.from(new Set(predictions.map(p => p.case_id)));
   
-  const filteredCases = caseIds.filter(cid => cid.toLowerCase().includes(search.toLowerCase()));
+  const filteredCases = caseIds.filter(cid => {
+    const caseRecs = predictions.filter(p => p.case_id === cid);
+    const vId = String(caseRecs[0]?.variant_id || "");
+    const searchTerm = search.toLowerCase();
+    return cid.toLowerCase().includes(searchTerm) || vId.toLowerCase().includes(searchTerm);
+  });
 
   const config = summary.request.config || {};
   const metrics = summary.metrics || {};
@@ -78,10 +83,10 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
               <h2 className="text-lg font-semibold text-brand-900">Local Prediction Data</h2>
               <input 
                 type="text" 
-                placeholder="Search by Case ID..." 
+                placeholder="Search by Case ID or Variant ID..." 
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="border rounded px-3 py-1 text-sm w-64"
+                className="border rounded px-3 py-1 text-sm w-72"
               />
             </div>
 
@@ -98,7 +103,7 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
                     modelType={summary.request?.model_type}
                   />
                 ))}
-                {filteredCases.length === 0 && <div>No cases found.</div>}
+                {filteredCases.length === 0 && <div>No cases found matching search.</div>}
               </div>
             )}
           </div>
@@ -117,12 +122,13 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: string, records: PredictionRecord[], runId: string, modelType: string }) {
+function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: string, records: any[], runId: string, modelType: string }) {
   const [expanded, setExpanded] = useState(false);
   const maxIndex = Math.max(...records.map(r => r.case_index));
   const [selectedIndex, setSelectedIndex] = useState(maxIndex);
 
   const selectedRecord = records.find(r => r.case_index === selectedIndex) || records[0];
+  const variantId = selectedRecord?.variant_id;
 
   const explains = modelType === "transformer" ? ["SHAP", "LIME"] : ["Gradient", "GraphLIME"];
   const [selectedExplain, setSelectedExplain] = useState(explains[0]);
@@ -155,7 +161,14 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
         className="bg-slate-50 px-4 py-3 cursor-pointer flex justify-between items-center hover:bg-slate-100"
         onClick={() => setExpanded(!expanded)}
       >
-        <div className="font-semibold">Case ID: {caseId}</div>
+        <div className="flex items-center gap-4">
+          <div className="font-semibold">Case ID: {caseId}</div>
+          {variantId && (
+            <div className="px-2 py-0.5 bg-brand-50 border border-brand-200 text-brand-700 text-[10px] font-bold rounded uppercase tracking-wider">
+              Variant: {variantId}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-4 text-sm" onClick={e => e.stopPropagation()}>
           <label>Index:</label>
           <select 
