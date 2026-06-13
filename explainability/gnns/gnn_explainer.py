@@ -1063,29 +1063,41 @@ class GraphLIMEExplainer:
         l_mat = np.exp(-(y_dist ** 2) / (2 * sigma_y ** 2))
         l_bar = self._center_and_normalize(l_mat)
 
-        features = []
-        for k in range(d):
-            xk = x_mat[:, k].reshape(-1, 1)
-            x_dist = xk - xk.T
-            sigma_x = self._median_sigma(np.abs(x_dist))
-            if sigma_x == 0:
-                sigma_x = 1e-5
-            k_mat = np.exp(-(x_dist ** 2) / (2 * sigma_x ** 2))
-            k_bar = self._center_and_normalize(k_mat)
-            features.append(k_bar.reshape(-1))
-
-        x_feat = np.stack(features, axis=1)
+        # Vectorized feature kernel computation
+        # X_dist: (d, n, n)
+        X_trans = x_mat.T
+        X_dist = np.abs(X_trans[:, :, np.newaxis] - X_trans[:, np.newaxis, :])
+        
+        # Calculate sigma for each feature
+        sigmas = np.array([self._median_sigma(X_dist[i]) for i in range(d)])
+        sigmas[sigmas == 0] = 1e-5
+        sigmas = sigmas.reshape(-1, 1, 1)
+        
+        # K_mats: (d, n, n)
+        k_mats = np.exp(-(X_dist ** 2) / (2 * sigmas ** 2))
+        
+        # Center and normalize (batched)
+        h = np.eye(n) - np.ones((n, n)) / n
+        centered = h @ k_mats @ h
+        norms = np.linalg.norm(centered, axis=(1, 2), ord="fro")
+        norms[norms == 0] = 1.0
+        normalized = centered / norms[:, np.newaxis, np.newaxis]
+        
+        # x_feat: (n*n, d)
+        x_feat = normalized.reshape(d, -1).T
         y_target = l_bar.reshape(-1)
 
         import warnings
         from sklearn.exceptions import ConvergenceWarning
+        from sklearn.linear_model import Lasso
         
         alpha = self.hsic_lambda
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=ConvergenceWarning)
             # Try progressively smaller alphas if coefficients shrink to exactly 0
             for _ in range(4):
-                model = Lasso(alpha=alpha, fit_intercept=False, max_iter=5000)
+                # Faster Lasso with fewer iterations
+                model = Lasso(alpha=alpha, fit_intercept=False, max_iter=1000)
                 model.fit(x_feat, y_target)
                 if not np.allclose(model.coef_, 0):
                     return model.coef_
@@ -1093,7 +1105,7 @@ class GraphLIMEExplainer:
                 
         return model.coef_
 
-    def explain_local(self, graph, task='activity', num_perturbations=200):
+    def explain_local(self, graph, task='activity', num_perturbations=100):
         self.model.eval()
         graph = graph.to(self.device)
 
@@ -1129,11 +1141,19 @@ class GraphLIMEExplainer:
         active_features = [("activity", idx) for idx in active_activity] + [
             ("resource", idx) for idx in active_resource
         ]
+        
+        # FIX: Cap features to explain for speed
+        if len(active_features) > 25:
+            active_features = active_features[:25]
+            # Adjust active_activity and active_resource to match the capped active_features
+            active_activity = [idx for t, idx in active_features if t == 'activity']
+            active_resource = [idx for t, idx in active_features if t == 'resource']
+
         if not active_features:
             return [], base_score, true_val, [], predicted_class
 
         X_perturb = []
-        y_perturb = []
+        perturbed_graphs = []
 
         for _ in range(num_perturbations):
             mask_activity = np.ones(activity_features, dtype=np.float32)
@@ -1160,7 +1180,13 @@ class GraphLIMEExplainer:
             combined_mask = np.concatenate([mask_activity_active, mask_resource_active])
             X_perturb.append(combined_mask)
 
-            masked_graph = graph.clone()
+            from torch_geometric.data import HeteroData
+            masked_graph = HeteroData()
+            for key in graph.x_dict:
+                masked_graph[key].x = graph[key].x.detach().clone()
+            for key in graph.edge_types:
+                masked_graph[key].edge_index = graph[key].edge_index
+
             if activity_features > 0:
                 act_mask_tensor = torch.tensor(
                     mask_activity, device=self.device, dtype=torch.float32
@@ -1171,18 +1197,25 @@ class GraphLIMEExplainer:
                     mask_resource, device=self.device, dtype=torch.float32
                 ).view(1, -1)
                 masked_graph['resource'].x = masked_graph['resource'].x * res_mask_tensor
+            
+            perturbed_graphs.append(masked_graph)
 
-            with torch.no_grad():
-                out_p = self.model(masked_graph)
-                if task == 'event_time':
-                    score = out_p[1].item()
-                elif task == 'remaining_time':
-                    score = out_p[2].item()
-                else:
-                    probs = torch.softmax(out_p[0].view(-1), dim=0)
-                    cls = predicted_class if predicted_class is not None else int(torch.argmax(probs).item())
-                    score = float(probs[cls].item())
-                y_perturb.append(score)
+        # Batch inference
+        from torch_geometric.data import Batch
+        batched_graphs = Batch.from_data_list(perturbed_graphs).to(self.device)
+        
+        y_perturb = []
+        with torch.no_grad():
+            out_p = self.model(batched_graphs)
+            if task == 'event_time':
+                y_perturb = out_p[1].cpu().numpy().flatten()
+            elif task == 'remaining_time':
+                y_perturb = out_p[2].cpu().numpy().flatten()
+            else:
+                logits = out_p[0] # (B, num_classes)
+                probs = torch.softmax(logits, dim=1)
+                cls = predicted_class if predicted_class is not None else int(torch.argmax(probs, dim=1)[0].item())
+                y_perturb = probs[:, cls].cpu().numpy()
 
         X_perturb = np.array(X_perturb)
         y_perturb = np.array(y_perturb)
@@ -1284,15 +1317,19 @@ class GraphLIMEExplainer:
     def explain_global_importance(self, graphs, task='activity', num_samples=50):
         import numpy as np
         import collections
+        from tqdm import tqdm
         
         sample_count = min(num_samples, len(graphs))
         sample_indices = np.random.choice(len(graphs), sample_count, replace=False)
         
+        print(f"Computing GraphLIME for {sample_count} graphs ({task})...")
+        
         global_importances = collections.defaultdict(list)
-        for idx in sample_indices:
+        for idx in tqdm(sample_indices, desc=f"GraphLIME ({task})"):
             graph = graphs[idx]
             try:
-                explanation, _, _, _, _ = self.explain_local(graph, task=task)
+                # Use 50 perturbations for global summary as requested
+                explanation, _, _, _, _ = self.explain_local(graph, task=task, num_perturbations=50)
                 for item in explanation:
                     name = item['activity']
                     imp = item['importance']
@@ -1928,22 +1965,33 @@ def generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task='ac
     
     lime_importance = {}
     if os.path.exists(lime_dir):
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv') and 'global' not in f]
-        if lime_files:
-            lime_aggregated = {}
-            for lime_file in lime_files:
-                lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-                for _, row in lime_df.iterrows():
-                    feature = row['activity']
-                    weight = abs(row['importance'])
-                    if feature not in lime_aggregated:
-                        lime_aggregated[feature] = []
-                    lime_aggregated[feature].append(weight)
-            
-            for feature, weights in lime_aggregated.items():
-                lime_importance[feature] = np.mean(weights)
-                if feature not in feature_types:
-                    feature_types[feature] = 'Activity'
+        # Try global file first
+        global_lime_file = os.path.join(lime_dir, f'graphlime_global_{task}.csv')
+        if os.path.exists(global_lime_file):
+            lime_df = pd.read_csv(global_lime_file)
+            for _, row in lime_df.iterrows():
+                lime_importance[row['activity']] = row['importance']
+                if row['activity'] not in feature_types:
+                    feature_types[row['activity']] = 'Activity'
+        
+        # Fallback to aggregation
+        if not lime_importance:
+            lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv') and 'global' not in f]
+            if lime_files:
+                lime_aggregated = {}
+                for lime_file in lime_files:
+                    lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+                    for _, row in lime_df.iterrows():
+                        feature = row['activity']
+                        weight = abs(row['importance'])
+                        if feature not in lime_aggregated:
+                            lime_aggregated[feature] = []
+                        lime_aggregated[feature].append(weight)
+                
+                for feature, weights in lime_aggregated.items():
+                    lime_importance[feature] = np.mean(weights)
+                    if feature not in feature_types:
+                        feature_types[feature] = 'Activity'
     
     summary_data = []
     all_features = set(grad_importance.keys()) | set(lime_importance.keys())
@@ -1991,12 +2039,20 @@ def generate_comparison_report(grad_dir, lime_dir, output_dir, task='activity', 
             f.write(f"Top feature: {grad_df.iloc[-1]['activity']} ({grad_df.iloc[-1]['importance']:.4f})\n")
             f.write("\n")
         
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv')]
-        if lime_files:
-            f.write("GRAPHLIME LOCAL ANALYSIS:\n")
+        global_lime_file = os.path.join(lime_dir, f'graphlime_global_{task}.csv')
+        if os.path.exists(global_lime_file):
+            lime_df = pd.read_csv(global_lime_file)
+            f.write("GRAPHLIME GLOBAL ANALYSIS:\n")
             f.write("-" * 70 + "\n")
-            f.write(f"Samples analyzed: {len(lime_files)}\n")
-            
+            f.write(f"Top feature: {lime_df.iloc[0]['activity']} ({lime_df.iloc[0]['importance']:.4f})\n")
+            f.write("\n")
+        else:
+            lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv')]
+            if lime_files:
+                f.write("GRAPHLIME LOCAL ANALYSIS (Aggregated):\n")
+                f.write("-" * 70 + "\n")
+                f.write(f"Samples analyzed: {len(lime_files)}\n")
+                f.write("\n")
             all_features = []
             for lime_file in lime_files:
                 lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
@@ -2085,59 +2141,15 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
                 imp = explainer.explain_global_importance(graphs, task=task, num_samples=num_samples)
                 explainer.plot_global_importance(imp, grad_dir, task=task)
                 
-                print(f"  Creating individual sample explanations for {task}...")
-                sample_count = min(num_samples, len(graphs))
-                sample_indices = np.random.choice(len(graphs), sample_count, replace=False)
-                
-                for i, idx in enumerate(sample_indices):
-                    print(f"  Sample {i} (graph index {idx}):")
-                    graph = graphs[idx]
-                    contrib, pred, true_val, step_info = explainer.explain_individual_sample(graph, task)
-                    
-                    if contrib is None:
-                        print(f"[DEBUG Gradient] explain_individual_sample returned None contrib for sample {idx}, task {task}.")
-                        continue
-                    if np.allclose(contrib, 0):
-                        print(f"[DEBUG Gradient] explain_individual_sample returned all zero contrib for sample {idx}, task {task}. Skipping plot.")
-                        continue
-                        
-                    c_id = getattr(graph, 'case_id', 'unknown')
-                    c_idx = getattr(graph, 'case_index', 'unknown')
-                    
-                    if c_id != "unknown":
-                        c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
-                    sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{idx}"
-                    
-                    # Only plot if contributions are not all zeros
-                    if not np.allclose(contrib, 0):
-                        explainer.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, grad_dir, task, sample_name)
-                    else:
-                        print(f"[DEBUG Gradient] Skipping plot for sample {idx}, task {task} due to all zero contributions.")
-                    
             except Exception as e:
                 print(f"[ERROR] Failed {task}: {e}")
         if not _dir_has_png(grad_dir):
             print("[WARNING] No gradient plots generated.")
 
     if methods in ['temporal', 'all']:
-        print("\n[Temporal Gradient Attribution]")
-        temporal_explainer = TemporalGradientExplainer(model, device, vocabularies, scaler)
-        temporal_dir = os.path.join(output_dir, 'temporal')
-        
-        for task in tasks:
-            try:
-                temporal_explainer.generate_temporal_plots(
-                    graphs, temporal_dir, task, 
-                    num_samples=min(10, num_samples),
-                    y_true=y_true
-                )
-                print(f"[OK] {task.capitalize()} Temporal Gradient plots saved.")
-            except Exception as e:
-                print(f"[ERROR] Failed temporal {task}: {e}")
-                import traceback
-                traceback.print_exc()
-        if not _dir_has_png(temporal_dir):
-            print("[WARNING] No temporal plots generated.")
+        print("\n[Temporal Gradient Attribution - Global Only]")
+        # Individual temporal plots are skipped in global mode
+        pass
 
     if methods in ['lime', 'all']:
         print("\n" + "─"*70)
@@ -2156,30 +2168,6 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
             except Exception as e:
                 print(f"[ERROR] Failed global GraphLIME for {task}: {e}")
         
-        sample_count = min(num_samples, len(graphs))
-        sample_ids = np.random.choice(len(graphs), sample_count, replace=False)
-        
-        print(f"Analyzing {len(sample_ids)} diverse samples: {sample_ids}")
-        
-        for idx in sample_ids:
-            graph = graphs[idx]
-            print(f"\nSample {idx}:")
-            
-            c_id = getattr(graph, 'case_id', 'unknown')
-            c_idx = getattr(graph, 'case_index', 'unknown')
-            if c_id != "unknown":
-                c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
-            sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{idx}"
-            
-            for task in tasks:
-                try:
-                    print(f"  Processing {task}...")
-                    imp, score, true_val, step_info, pred_class = lime_explainer.explain_local(graph, task)
-                    lime_explainer.plot_local_explanation(imp, score, true_val, step_info, lime_dir, task, sample_name, pred_class)
-                    
-                except Exception as e:
-                    print(f"[ERROR] Failed Sample {idx} {task}: {e}")
-
         if not _dir_has_png(lime_dir):
             print("[WARNING] No GraphLIME plots generated.")
 

@@ -113,7 +113,7 @@ class SHAPExplainer:
                 feature_names.append(f'Position_{pos+1}')
         return feature_names
 
-    def initialize_explainer(self, background_data, max_background=100, max_evals_override=None):
+    def initialize_explainer(self, background_data, max_background=50, max_evals_override=None):
         print("Initializing SHAP Explainer...")
         self._background_data = background_data
         self._max_background = max_background
@@ -133,12 +133,12 @@ class SHAPExplainer:
             temp_features = int(np.prod(background_temp_sample.shape[1:]))
             total_features = num_features + temp_features
 
-            # FIX: Set max_evals to required minimum
+            # FIX: Set max_evals to required minimum, but cap for speed
             computed = 2 * total_features + 1
             if max_evals_override == "auto":
                 self.max_evals = "auto"
             else:
-                self.max_evals = max(computed, max_evals_override or 0)
+                self.max_evals = min(max(computed, max_evals_override or 0), 500)
             print(
                 f"[DEBUG] Total features: {total_features}, Setting max_evals: {self.max_evals}")
 
@@ -194,12 +194,12 @@ class SHAPExplainer:
             background_sample = background_data[indices]
             num_features = int(np.prod(background_sample.shape[1:]))
 
-            # FIX: Set max_evals to required minimum
+            # FIX: Set max_evals to required minimum, but cap for speed
             computed = 2 * num_features + 1
             if max_evals_override == "auto":
                 self.max_evals = "auto"
             else:
-                self.max_evals = max(computed, max_evals_override or 0)
+                self.max_evals = min(max(computed, max_evals_override or 0), 500)
             print(
                 f"[DEBUG] Total features: {num_features}, Setting max_evals: {self.max_evals}")
 
@@ -995,7 +995,8 @@ class LIMEExplainer:
                     self.test_data_seq[i],
                     predict_fn,
                     num_features=len(self.test_data_seq[i]),
-                    top_labels=1
+                    top_labels=1,
+                    num_samples=250
                 )
                 self.explanations.append(exp)
                 
@@ -1296,9 +1297,7 @@ class LIMEExplainer:
             df.to_csv(lime_global_csv, index=False)
             print(f"[OK] LIME global importance saved to: {lime_global_csv}")
         else:
-            print("[WARNING] No LIME global importance data to save. Creating empty stub CSV.")
-            from .local_explainer_utils import _ensure_stub_csv
-            _ensure_stub_csv(lime_global_csv, ["activity", "Mean_Impact"])
+            print("[WARNING] No LIME global importance data to save.")
 
 
 def generate_comparison_report(output_dir, shap_dir, lime_dir):
@@ -1316,24 +1315,33 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
         if col_name in shap_df.columns:
             shap_importance = dict(zip(shap_df['activity'], shap_df[col_name]))
     
-    # Load LIME results if available (aggregate from multiple samples)
+    # Load LIME results if available
     lime_importance = {}
     if lime_dir:
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
-        if lime_files:
-            all_lime_weights = {}
-            for lime_file in lime_files:
-                lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-                for _, row in lime_df.iterrows():
-                    activity = row['activity']
-                    activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
-                    weight = abs(row['importance'])
-                    if activity not in all_lime_weights:
-                        all_lime_weights[activity] = []
-                    all_lime_weights[activity].append(weight)
-            
-            # Average LIME weights
-            lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
+        global_lime_file = os.path.join(lime_dir, 'global_importance_data.csv')
+        if os.path.exists(global_lime_file):
+            lime_df = pd.read_csv(global_lime_file)
+            col_name = 'importance' if 'importance' in lime_df.columns else 'Mean_Impact'
+            if col_name in lime_df.columns:
+                lime_importance = dict(zip(lime_df['activity'], lime_df[col_name]))
+        
+        # Fallback to aggregation if global file is missing but individual files exist
+        if not lime_importance:
+            lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
+            if lime_files:
+                all_lime_weights = {}
+                for lime_file in lime_files:
+                    lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+                    for _, row in lime_df.iterrows():
+                        activity = row['activity']
+                        activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
+                        weight = abs(row['importance'])
+                        if activity not in all_lime_weights:
+                            all_lime_weights[activity] = []
+                        all_lime_weights[activity].append(weight)
+                
+                # Average LIME weights
+                lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
     
     # Combine results
     all_features = set(shap_importance.keys()) | set(lime_importance.keys())
@@ -2158,11 +2166,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                     shap_indices = None
             se.explain_samples(test_data, num_samples, indices=shap_indices, sample_ids=test_case_ids, sample_indexes=test_case_indexes)
             if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
-                print("\n[SHAP] Generating timestep-level visualizations...")
-                for i in range(min(5, num_samples)):
-                    se.plot_temporal_evolution(shap_dir, sample_idx=i, show_prediction=True)
-                for i in range(min(3, num_samples)):
-                    se.plot_timestep_heatmap(shap_dir, sample_idx=i)
+                print("\n[SHAP] Generating global timestep-level summary...")
                 se.plot_global_temporal_importance(shap_dir)
             else:
                 se.plot_bar(shap_dir)
@@ -2172,10 +2176,6 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
             print(f"[ERROR] SHAP explainability failed: {e}")
         if not _dir_has_png(shap_dir):
             print("[WARNING] No SHAP plots generated.")
-        _ensure_stub_csv(
-            os.path.join(shap_dir, "global_importance_data.csv"),
-            ["activity", "Mean_Impact"]
-        )
 
     if methods in ['lime', 'all']:
         print("\n--- Running LIME ---")
@@ -2222,39 +2222,12 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 print(f"[DEBUG] Generated {len(le.explanations)} explanations")
                 
                 le.calculate_global_importance(num_features=30)
-
-                # Plot all explained samples (now they match 0-9)
-                print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
-                plots_saved = 0
-                for i in range(len(le.explanations)):
-                    try:
-                        if le.explanations[i] is not None:
-                            # Use original test set index in filename
-                            original_idx = diverse_samples[i]
-                            case_id = test_case_ids[original_idx] if test_case_ids is not None and original_idx < len(test_case_ids) else None
-                            case_index = test_case_indexes[original_idx] if test_case_indexes is not None and original_idx < len(test_case_indexes) else None
-                            print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
-                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx, case_id=case_id, case_index=case_index)
-                            plots_saved += 1
-                        else:
-                            print(f"[WARNING] Explanation {i} is None, skipping...")
-                    except Exception as e:
-                        print(f"[ERROR] Failed to plot sample {i}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                print(f"[LIME] Successfully saved {plots_saved} plots")
-                
                 le.save_explanations(lime_dir)
         except Exception as e:
             print(f"[ERROR] LIME explainability failed: {e}")
         has_png = any(f.endswith('.png') for f in os.listdir(lime_dir)) if lime_dir and os.path.exists(lime_dir) else False
         if not has_png:
             print("[WARNING] No LIME plots generated.")
-        _ensure_stub_csv(
-            os.path.join(lime_dir, "lime_explanation_stub.csv"),
-            ["activity", "Weight"]
-        )
     
     # -------------------------------------------------------------------------
     # RUN BENCHMARK EVALUATION
@@ -2416,8 +2389,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
     print("\nGenerated outputs:")
     print("  [OK] SHAP global importance plots")
     if task != 'activity' and methods in ['shap', 'all']:
-        print("  [OK] Temporal attribution plots")
-    print(f"  [OK] LIME local explanations ({num_samples} diverse samples)")
+        print("  [OK] SHAP Global temporal attribution plots")
+    print("  [OK] LIME global importance analysis")
     print("  [OK] Feature importance summary CSV")
     print("  [OK] Method comparison report")
     if run_benchmark and benchmark_results:
