@@ -259,7 +259,7 @@ def main():
                 raise RuntimeError(f"Unsupported gnn task: {task}")
 
             gnn_task = "next_activity" if task == "custom_activity" else task
-            
+            config["explainability_samples"] = 100
             gnn_explainability = explainability
                 
             metrics = run_gnn_unified_prediction(
