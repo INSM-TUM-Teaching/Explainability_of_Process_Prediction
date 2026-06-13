@@ -45,35 +45,79 @@ def get_process_map(dataset_path: str):
         # Extract DFG (Directly Follows Graph)
         dfg, start_activities, end_activities = pm4py.discover_dfg(df)
         
+        # Calculate node frequencies
+        node_counts = df[act_col].value_counts().to_dict()
+        total_cases = len(df[case_col].unique())
+        
         nodes_dict = {}
         edges = []
         
+        # Add virtual START node
+        nodes_dict["__START__"] = {
+            "id": "__START__", 
+            "label": "Start", 
+            "type": "start",
+            "count": total_cases
+        }
+        for act, count in start_activities.items():
+            edges.append({
+                "source": "__START__",
+                "target": act,
+                "weight": count,
+                "type": "virtual"
+            })
+            
         # Add edges and track nodes
         for (source, target), count in dfg.items():
             if source not in nodes_dict:
-                nodes_dict[source] = {"id": source, "label": source}
+                nodes_dict[source] = {
+                    "id": source, 
+                    "label": source, 
+                    "type": "activity",
+                    "count": node_counts.get(source, 0)
+                }
             if target not in nodes_dict:
-                nodes_dict[target] = {"id": target, "label": target}
+                nodes_dict[target] = {
+                    "id": target, 
+                    "label": target, 
+                    "type": "activity",
+                    "count": node_counts.get(target, 0)
+                }
                 
             edges.append({
                 "source": source,
                 "target": target,
-                "weight": count
+                "weight": count,
+                "type": "regular"
             })
             
-        # Ensure start and end nodes are also tracked (sometimes they have no edges if trace length 1)
-        for act in start_activities:
+        # Add virtual END node
+        nodes_dict["__END__"] = {
+            "id": "__END__", 
+            "label": "End", 
+            "type": "end",
+            "count": total_cases
+        }
+        for act, count in end_activities.items():
             if act not in nodes_dict:
-                nodes_dict[act] = {"id": act, "label": act}
-        for act in end_activities:
-            if act not in nodes_dict:
-                nodes_dict[act] = {"id": act, "label": act}
+                nodes_dict[act] = {
+                    "id": act, 
+                    "label": act, 
+                    "type": "activity",
+                    "count": node_counts.get(act, 0)
+                }
+            edges.append({
+                "source": act,
+                "target": "__END__",
+                "weight": count,
+                "type": "virtual"
+            })
                 
         return {
             "nodes": list(nodes_dict.values()),
             "edges": edges,
-            "start_activities": start_activities,
-            "end_activities": end_activities
+            "start_activities": list(start_activities.keys()),
+            "end_activities": list(end_activities.keys())
         }
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}

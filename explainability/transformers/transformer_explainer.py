@@ -1080,6 +1080,28 @@ class LIMEExplainer:
         print(f"[LIME] Calculated global importance for {len(self.global_importance)} features.")
         return self.global_importance
 
+    def plot_global_importance(self, output_dir):
+        """Generates a global summary plot for LIME."""
+        if not getattr(self, 'global_importance', None):
+            print("[WARNING] No LIME global importance data to plot.")
+            return
+
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        
+        df = pd.DataFrame(self.global_importance).sort_values('Mean_Impact', ascending=True)
+        
+        plt.figure(figsize=(10, 6))
+        plt.barh(df['activity'], df['Mean_Impact'], color='#82ca9d', edgecolor='black', alpha=0.8)
+        plt.xlabel("Mean Absolute Weight (Impact)", fontweight='bold')
+        plt.title(f"LIME Global Feature Importance ({self.task.capitalize()})", fontweight='bold')
+        plt.grid(axis='x', linestyle='--', alpha=0.4)
+        plt.tight_layout()
+        
+        plt.savefig(os.path.join(output_dir, 'lime_global_importance.png'), dpi=300, facecolor="white")
+        plt.close()
+        print(f"[OK] LIME global importance plot saved.")
+
 
     def _get_activity_name(self, token_idx):
         import numpy as np
@@ -1459,15 +1481,24 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
     if lime_dir:
         if not os.path.isdir(lime_dir):
             raise RuntimeError("LIME output missing: lime directory not found.")
+        
+        lime_global_path = os.path.join(lime_dir, "global_importance_data.csv")
         lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
-        if not lime_files:
-            raise RuntimeError("LIME output missing: no lime_explanation_*.csv files found.")
+        
+        if not os.path.exists(lime_global_path) and not lime_files:
+            raise RuntimeError("LIME output missing: neither global_importance_data.csv nor lime_explanation_*.csv files found.")
+        
         lime_feats = set()
+        if os.path.exists(lime_global_path):
+            ldf = pd.read_csv(lime_global_path)
+            lime_feats.update(ldf['activity'].astype(str).tolist())
+            
         for lime_file in lime_files:
             lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
             for val in lime_df['activity'].astype(str).tolist():
                 name = re.sub(r'\s+\(x\d+\)$', '', val).strip()
                 lime_feats.add(name)
+        
         missing_lime = sorted(expected - lime_feats)
         if missing_lime:
             print(f"[WARNING] LIME missing activities: {', '.join(missing_lime)}")
@@ -2222,6 +2253,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 print(f"[DEBUG] Generated {len(le.explanations)} explanations")
                 
                 le.calculate_global_importance(num_features=30)
+                le.plot_global_importance(lime_dir)
                 le.save_explanations(lime_dir)
         except Exception as e:
             print(f"[ERROR] LIME explainability failed: {e}")

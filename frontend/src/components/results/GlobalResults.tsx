@@ -1,6 +1,9 @@
-import React, { useEffect, useState } from "react";
-import { ReactFlow, Controls, Background, useNodesState, useEdgesState } from "@xyflow/react";
+import React, { useEffect, useState, useMemo } from "react";
+import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import dagre from 'dagre';
+import ProcessMapNode from "./ProcessMapNode";
+import ProcessMapTerminalNode from "./ProcessMapTerminalNode";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 
 interface GlobalResultsProps {
@@ -8,6 +11,87 @@ interface GlobalResultsProps {
   datasetId: string;
   summary: any;
 }
+
+const nodeTypes = {
+  activity: ProcessMapNode,
+  start: ProcessMapTerminalNode,
+  end: ProcessMapTerminalNode,
+};
+
+// Custom styles for highlight
+const edgeStyles = `
+  /* Bring selected edge to front */
+  .react-flow__edge.selected {
+    z-index: 9999 !important;
+  }
+  .react-flow__edge.selected .react-flow__edge-path {
+    stroke: #2563eb !important;
+    transition: all 0.2s ease;
+    /* Create a high-contrast halo */
+    filter: drop-shadow(0 0 3px #fff) drop-shadow(0 0 2px #fff);
+  }
+  /* Target the marker head color and size on selection */
+  .react-flow__edge.selected marker path {
+    fill: #2563eb !important;
+    transition: fill 0.2s ease;
+  }
+  .react-flow__edge.selected .react-flow__edge-text {
+    fill: #1d4ed8 !important;
+    font-weight: 900 !important;
+    font-size: 20px !important;
+  }
+  .react-flow__edge.selected .react-flow__edge-textbg {
+    fill: #ffffff !important;
+    stroke: #2563eb !important;
+    stroke-width: 3px !important;
+    fill-opacity: 1 !important;
+  }
+  .react-flow__edge-path {
+    transition: stroke-width 0.2s ease, stroke 0.2s ease;
+  }
+  /* Optional: Fade other edges when one is selected */
+  .react-flow__edges:has(.selected) .react-flow__edge:not(.selected) {
+    opacity: 0.3;
+    transition: opacity 0.3s ease;
+  }
+`;
+
+const getLayoutedElements = (nodes: any[], edges: any[], direction = 'TB') => {
+  const dagreGraph = new dagre.graphlib.Graph();
+  dagreGraph.setDefaultEdgeLabel(() => ({}));
+
+  const nodeWidth = 180;
+  const nodeHeight = 60;
+
+  dagreGraph.setGraph({ rankdir: direction, ranksep: 120, nodesep: 150 });
+
+  nodes.forEach((node) => {
+    dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+  });
+
+  edges.forEach((edge) => {
+    dagreGraph.setEdge(edge.source, edge.target);
+  });
+
+  dagre.layout(dagreGraph);
+
+  nodes.forEach((node) => {
+    const nodeWithPosition = dagreGraph.node(node.id);
+    node.targetPosition = direction === 'LR' ? 'left' : 'top';
+    node.sourcePosition = direction === 'LR' ? 'right' : 'bottom';
+
+    // We are shifting the dagre node position (which is center) to the top left
+    // so it matches React Flow's expectation
+    node.position = {
+      x: nodeWithPosition.x - nodeWidth / 2,
+      y: nodeWithPosition.y - nodeHeight / 2,
+    };
+
+    return node;
+  });
+
+  return { nodes, edges };
+};
 
 export default function GlobalResults({ runId, datasetId, summary }: GlobalResultsProps) {
   const [globalStats, setGlobalStats] = useState<any>(null);
@@ -35,30 +119,52 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
         if (pmData.error) {
            setError(pmData.error);
         } else {
-            // Layout nodes simply (in a real app you'd use dagre or elkjs for proper directed graph layout)
-            // For now, randomly distribute or grid layout
-            const newNodes = pmData.nodes.map((n: any, idx: number) => ({
+            const initialNodes = pmData.nodes.map((n: any) => ({
               id: n.id,
-              data: { label: n.label },
-              position: { x: (idx % 5) * 200, y: Math.floor(idx / 5) * 150 },
-              style: {
-                  border: '1px solid #784be8',
-                  padding: '10px',
-                  borderRadius: '5px',
-                  background: 'white',
-                  color: '#333'
-              }
+              type: n.type === 'activity' ? 'activity' : (n.type === 'start' ? 'start' : 'end'),
+              data: { label: n.label, count: n.count, type: n.type },
+              position: { x: 0, y: 0 },
             }));
-            const newEdges = pmData.edges.map((e: any, idx: number) => ({
-              id: `e${idx}`,
-              source: e.source,
-              target: e.target,
-              label: String(e.weight),
-              animated: true,
-            }));
+
+            // Calculate max weight for edge thickness scaling
+            const maxWeight = Math.max(...pmData.edges.map((e: any) => e.weight), 1);
+
+            const initialEdges = pmData.edges.map((e: any, idx: number) => {
+              const isSmall = e.weight < (maxWeight * 0.1);
+              return {
+                id: `e${idx}`,
+                source: e.source,
+                target: e.target,
+                label: e.weight.toLocaleString(),
+                type: 'smoothstep',
+                animated: false,
+                style: {
+                  strokeWidth: Math.max(2, (e.weight / maxWeight) * 8),
+                  stroke: e.type === 'virtual' ? '#94a3b8' : '#334155',
+                  strokeDasharray: e.type === 'virtual' ? '5,5' : 'none',
+                },
+                markerEnd: {
+                  type: MarkerType.ArrowClosed,
+                  color: e.type === 'virtual' ? '#94a3b8' : '#334155',
+                  width: isSmall ? 35 : 25, // Specifically larger heads for the smallest arrows
+                  height: isSmall ? 35 : 25,
+                },
+                labelStyle: { fill: '#0f172a', fontWeight: 900, fontSize: 18 }, // Even bigger uniform font
+                labelBgPadding: [8, 6],
+                labelBgBorderRadius: 6,
+                labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, stroke: '#cbd5e1', strokeWidth: 1.5 },
+                interactionWidth: 30,
+                pathOptions: { borderRadius: 20 }, // Smoother rounded corners for 90-degree bends
+              };
+            });
             
-            setNodes(newNodes);
-            setEdges(newEdges);
+            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+              initialNodes,
+              initialEdges
+            );
+
+            setNodes([...layoutedNodes]);
+            setEdges([...layoutedEdges]);
         }
       } catch (err: any) {
         setError(err.message);
@@ -89,6 +195,7 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
 
   return (
     <div className="flex flex-col gap-6 w-full">
+      <style>{edgeStyles}</style>
       {/* KPIs */}
       <div className="grid grid-cols-4 gap-4">
         <div className="rounded border bg-white p-4 text-center shadow-sm">
@@ -146,15 +253,18 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
       {/* Global Process Map */}
       <div className="rounded border bg-white p-4 shadow-sm h-[600px] flex flex-col">
           <h3 className="text-md font-semibold mb-2 text-brand-900">Global Process Map (Dataset Overview)</h3>
-          <div className="flex-1 border rounded bg-slate-50">
+          <div className="flex-1 border rounded bg-slate-50 relative">
             <ReactFlow 
               nodes={nodes} 
               edges={edges} 
+              nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               fitView
+              minZoom={0.2}
+              elevateEdgesOnSelect={true}
             >
-              <Background color="#ccc" gap={16} />
+              <Background color="#cbd5e1" gap={20} />
               <Controls />
             </ReactFlow>
           </div>
