@@ -8,6 +8,11 @@ try:
 except ImportError:
     pm4py = None
 
+def _generate_variant_id(signature: str) -> int:
+    """Generates a stable numeric ID for a variant signature."""
+    import zlib
+    return zlib.crc32(signature.encode()) & 0xffffffff
+
 def get_process_map(dataset_path: str):
     if pm4py is None:
         return {"nodes": [], "edges": [], "error": "pm4py is not installed"}
@@ -48,7 +53,76 @@ def get_process_map(dataset_path: str):
         # Calculate node frequencies
         node_counts = df[act_col].value_counts().to_dict()
         total_cases = len(df[case_col].unique())
+
+        # Group by variant to map edges to variants and collect case IDs
+        case_groups_raw = df.groupby(case_col)[act_col].apply(list).to_dict()
+        variant_data = {} # signature -> {id, count, cases}
         
+        for c_id, trace in case_groups_raw.items():
+            sig = " -> ".join(trace)
+            if sig not in variant_data:
+                # Generate a stable numeric ID for the variant
+                v_id = _generate_variant_id(sig)
+                variant_data[sig] = {"id": v_id, "count": 0, "cases": []}
+            variant_data[sig]["count"] += 1
+            variant_data[sig]["cases"].append(str(c_id))
+
+        # Map each edge and node to its containing variants
+        edge_to_variants = {}
+        node_to_variants = {}
+        
+        for sig, data in variant_data.items():
+            v_id = data["id"]
+            count = data["count"]
+            cases = data["cases"]
+            trace = sig.split(" -> ")
+            
+            # Node mapping
+            unique_activities = set(trace)
+            for act in unique_activities:
+                if act not in node_to_variants:
+                    node_to_variants[act] = []
+                node_to_variants[act].append({
+                    "id": v_id,
+                    "signature": sig,
+                    "count": count,
+                    "cases": cases
+                })
+            
+            # Edge mapping
+            for i in range(len(trace) - 1):
+                edge = (trace[i], trace[i+1])
+                if edge not in edge_to_variants:
+                    edge_to_variants[edge] = []
+                edge_to_variants[edge].append({
+                    "id": v_id,
+                    "signature": sig, 
+                    "count": count,
+                    "cases": cases
+                })
+            
+            # Start/End transitions
+            if trace:
+                start_edge = ("__START__", trace[0])
+                if start_edge not in edge_to_variants:
+                    edge_to_variants[start_edge] = []
+                edge_to_variants[start_edge].append({
+                    "id": v_id,
+                    "signature": sig, 
+                    "count": count,
+                    "cases": cases
+                })
+                
+                end_edge = (trace[-1], "__END__")
+                if end_edge not in edge_to_variants:
+                    edge_to_variants[end_edge] = []
+                edge_to_variants[end_edge].append({
+                    "id": v_id,
+                    "signature": sig, 
+                    "count": count,
+                    "cases": cases
+                })
+
         nodes_dict = {}
         edges = []
         
@@ -64,7 +138,8 @@ def get_process_map(dataset_path: str):
                 "source": "__START__",
                 "target": act,
                 "weight": count,
-                "type": "virtual"
+                "type": "virtual",
+                "variants": sorted(edge_to_variants.get(("__START__", act), []), key=lambda x: x['count'], reverse=True)
             })
             
         # Add edges and track nodes
@@ -74,21 +149,24 @@ def get_process_map(dataset_path: str):
                     "id": source, 
                     "label": source, 
                     "type": "activity",
-                    "count": node_counts.get(source, 0)
+                    "count": node_counts.get(source, 0),
+                    "variants": sorted(node_to_variants.get(source, []), key=lambda x: x['count'], reverse=True)
                 }
             if target not in nodes_dict:
                 nodes_dict[target] = {
                     "id": target, 
                     "label": target, 
                     "type": "activity",
-                    "count": node_counts.get(target, 0)
+                    "count": node_counts.get(target, 0),
+                    "variants": sorted(node_to_variants.get(target, []), key=lambda x: x['count'], reverse=True)
                 }
                 
             edges.append({
                 "source": source,
                 "target": target,
                 "weight": count,
-                "type": "regular"
+                "type": "regular",
+                "variants": sorted(edge_to_variants.get((source, target), []), key=lambda x: x['count'], reverse=True)
             })
             
         # Add virtual END node
@@ -110,7 +188,8 @@ def get_process_map(dataset_path: str):
                 "source": act,
                 "target": "__END__",
                 "weight": count,
-                "type": "virtual"
+                "type": "virtual",
+                "variants": sorted(edge_to_variants.get((act, "__END__"), []), key=lambda x: x['count'], reverse=True)
             })
                 
         return {
@@ -222,6 +301,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     for var_sig, stats in variant_stats.items():
         acc = (stats["correct"] / stats["total"]) * 100 if stats["total"] > 0 else 0
         variant_list.append({
+            "id": _generate_variant_id(var_sig),
             "variant": var_sig,
             "total_cases_in_test": stats["total"],
             "accuracy": acc

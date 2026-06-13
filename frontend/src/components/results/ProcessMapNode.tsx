@@ -3,14 +3,32 @@ import { Handle, Position } from '@xyflow/react';
 
 const ProcessMapNode = ({ data }: any) => {
   return (
-    <div className="px-6 py-3 shadow-lg rounded-xl bg-gradient-to-b from-brand-500 to-brand-700 border-2 border-brand-800 text-white min-w-[180px] text-center transition-all hover:scale-105">
-      <Handle type="target" position={Position.Top} className="w-3 h-3 bg-brand-200 border-2 border-brand-800" />
-      <div className="flex flex-col gap-1">
-        <div className="font-bold text-sm leading-tight">{data.label}</div>
-        <div className="h-px bg-white/20 w-full my-1" />
-        <div className="text-[11px] font-mono opacity-90">{data.count.toLocaleString()}</div>
+    <div className="px-5 py-4 shadow-md rounded-2xl bg-brand-600 border border-brand-700 min-w-[220px] transition-all hover:shadow-lg hover:bg-brand-700 group">
+      {/* Connector dots */}
+      <Handle 
+        type="target" 
+        position={Position.Top} 
+        className="w-2.5 h-2.5 bg-brand-300 border-2 border-brand-600 !-top-1.5" 
+      />
+      
+      <div className="flex flex-col gap-1.5 text-center text-white">
+        <div className="font-bold text-[14px] leading-tight px-2">
+          {data.label}
+        </div>
+        
+        <div className="flex items-center justify-center gap-2 mt-1">
+          <div className="px-2 py-0.5 rounded bg-white/20 text-white text-[10px] font-bold uppercase tracking-wider border border-white/30">
+            {data.count.toLocaleString()} 
+          </div>
+          <span className="text-white/60 text-[10px] font-medium uppercase tracking-tight">Total Events</span>
+        </div>
       </div>
-      <Handle type="source" position={Position.Bottom} className="w-3 h-3 bg-brand-200 border-2 border-brand-800" />
+
+      <Handle 
+        type="source" 
+        position={Position.Bottom} 
+        className="w-2.5 h-2.5 bg-brand-300 border-2 border-brand-600 !-bottom-1.5" 
+      />
     </div>
   );
 };

@@ -97,8 +97,48 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
   const [globalStats, setGlobalStats] = useState<any>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [selectedEdge, setSelectedEdge] = useState<any>(null);
+  const [selectedNode, setSelectedNode] = useState<any>(null);
+  const [expandedVariant, setExpandedVariant] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const onSelectionChange = React.useCallback(({ nodes: sNodes, edges: sEdges }: any) => {
+    // Clear sidebar if nothing is selected
+    if (sNodes.length === 0 && sEdges.length === 0) {
+      setSelectedEdge(null);
+      setSelectedNode(null);
+      setExpandedVariant(null);
+    }
+    
+    setEdges((eds) =>
+      eds.map((e) => {
+        const isSelected = sEdges.some((s: any) => s.id === e.id);
+        const baseColor = e.data?.type === 'virtual' ? '#94a3b8' : '#334155';
+        return {
+          ...e,
+          markerEnd: {
+            ...e.markerEnd,
+            color: isSelected ? '#2563eb' : baseColor,
+          },
+        };
+      })
+    );
+  }, [setEdges]);
+
+  const onEdgeClick = React.useCallback((event: React.MouseEvent, edge: any) => {
+    setSelectedEdge(edge);
+    setSelectedNode(null);
+    setExpandedVariant(null);
+  }, []);
+
+  const onNodeClick = React.useCallback((event: React.MouseEvent, node: any) => {
+    if (node.type === 'activity') {
+      setSelectedNode(node);
+      setSelectedEdge(null);
+      setExpandedVariant(null);
+    }
+  }, []);
 
   useEffect(() => {
     async function loadData() {
@@ -122,7 +162,7 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
             const initialNodes = pmData.nodes.map((n: any) => ({
               id: n.id,
               type: n.type === 'activity' ? 'activity' : (n.type === 'start' ? 'start' : 'end'),
-              data: { label: n.label, count: n.count, type: n.type },
+              data: { label: n.label, count: n.count, type: n.type, variants: n.variants },
               position: { x: 0, y: 0 },
             }));
 
@@ -155,6 +195,7 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
                 labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, stroke: '#cbd5e1', strokeWidth: 1.5 },
                 interactionWidth: 30,
                 pathOptions: { borderRadius: 20 }, // Smoother rounded corners for 90-degree bends
+                data: { type: e.type, variants: e.variants },
               };
             });
             
@@ -251,22 +292,136 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
       </div>
 
       {/* Global Process Map */}
-      <div className="rounded border bg-white p-4 shadow-sm h-[600px] flex flex-col">
+      <div className="rounded border bg-white p-4 shadow-sm h-[700px] flex flex-col">
           <h3 className="text-md font-semibold mb-2 text-brand-900">Global Process Map (Dataset Overview)</h3>
-          <div className="flex-1 border rounded bg-slate-50 relative">
-            <ReactFlow 
-              nodes={nodes} 
-              edges={edges} 
-              nodeTypes={nodeTypes}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              fitView
-              minZoom={0.2}
-              elevateEdgesOnSelect={true}
-            >
-              <Background color="#cbd5e1" gap={20} />
-              <Controls />
-            </ReactFlow>
+          <div className="flex-1 flex gap-4 overflow-hidden">
+            <div className="flex-1 border rounded bg-slate-50 relative">
+              <ReactFlow 
+                nodes={nodes} 
+                edges={edges} 
+                nodeTypes={nodeTypes}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onSelectionChange={onSelectionChange}
+                onEdgeClick={onEdgeClick}
+                onNodeClick={onNodeClick}
+                fitView
+                minZoom={0.1}
+                elevateEdgesOnSelect={true}
+              >
+                <Background color="#cbd5e1" gap={20} />
+                <Controls />
+              </ReactFlow>
+            </div>
+
+            {/* Sidebar for Variants */}
+            {(selectedEdge || selectedNode) && (
+              <div className="w-80 border rounded bg-white flex flex-col shadow-sm animate-in slide-in-from-right duration-300">
+                <div className="p-3 border-b bg-slate-50">
+                  <div className="flex justify-between items-start mb-1">
+                    <h4 className="text-sm font-bold text-slate-800">
+                      {selectedEdge ? "Transition Variants" : "Activity Variants"}
+                    </h4>
+                    <button 
+                      onClick={() => {
+                        setSelectedEdge(null);
+                        setSelectedNode(null);
+                        setExpandedVariant(null);
+                      }}
+                      className="text-slate-400 hover:text-slate-600 p-1"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-slate-500 font-medium break-all">
+                    {selectedEdge ? (
+                      <>{selectedEdge.source} <span className="text-brand-500 mx-1">→</span> {selectedEdge.target}</>
+                    ) : (
+                      <span className="text-brand-600 font-bold px-1.5 py-0.5 bg-brand-50 rounded border border-brand-100">{selectedNode.data.label}</span>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-3">
+                  <div className="space-y-3">
+                    {((selectedEdge?.data?.variants) || (selectedNode?.data?.variants))?.length > 0 ? (
+                      ((selectedEdge?.data?.variants) || (selectedNode?.data?.variants)).map((v: any, idx: number) => {
+                        const isExpanded = expandedVariant === idx;
+                        return (
+                          <div 
+                            key={idx} 
+                            className={`p-3 rounded-lg border transition-all cursor-pointer ${
+                              isExpanded ? 'border-brand-300 bg-brand-50/30' : 'border-slate-100 bg-slate-50/50 hover:border-brand-200 hover:bg-white'
+                            }`}
+                            onClick={() => setExpandedVariant(isExpanded ? null : idx)}
+                          >
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-[10px] font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded-full border border-brand-100">
+                                {v.count} case(s)
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] text-slate-400 font-mono font-bold uppercase">Variant {v.id}</span>
+                                <svg 
+                                  className={`transition-transform duration-200 text-slate-400 ${isExpanded ? 'rotate-180' : ''}`}
+                                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+                                >
+                                  <polyline points="6 9 12 15 18 9"></polyline>
+                                </svg>
+                              </div>
+                            </div>
+                            
+                            <div className={`text-[11px] leading-relaxed text-slate-600 font-medium ${isExpanded ? '' : 'line-clamp-2'}`}>
+                              {v.signature.split(" -> ").map((step: string, sIdx: number, arr: string[]) => {
+                                let isHighlighted = false;
+                                if (selectedEdge) {
+                                  const isStartTransition = selectedEdge.source === '__START__';
+                                  const isSource = !isStartTransition && step === selectedEdge.source;
+                                  const isTarget = (isStartTransition && sIdx === 0 && step === selectedEdge.target) || 
+                                                 (step === selectedEdge.target && sIdx > 0 && arr[sIdx-1] === selectedEdge.source);
+                                  isHighlighted = isSource || isTarget;
+                                } else if (selectedNode) {
+                                  isHighlighted = step === selectedNode.data.label;
+                                }
+                                
+                                return (
+                                  <React.Fragment key={sIdx}>
+                                    <span className={isHighlighted ? "text-brand-600 font-bold bg-brand-50 rounded px-0.5 border border-brand-100" : ""}>
+                                      {step}
+                                    </span>
+                                    {sIdx < arr.length - 1 && <span className="text-slate-300 mx-1">→</span>}
+                                  </React.Fragment>
+                                );
+                              })}
+                            </div>
+
+                            {/* Case IDs List (Visible when expanded) */}
+                            {isExpanded && v.cases && (
+                              <div className="mt-3 pt-3 border-t border-brand-100 animate-in fade-in zoom-in-95 duration-200">
+                                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-2">Contained Cases:</div>
+                                <div className="max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {v.cases.map((cId: string, cIdx: number) => (
+                                      <span key={cIdx} className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[10px] text-slate-600 font-mono font-medium">
+                                        {cId}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="text-center py-8">
+                        <div className="text-slate-300 mb-2">No variants found</div>
+                        <p className="text-[11px] text-slate-400">This could be a virtual transition showing start/end frequencies.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
       </div>
 
