@@ -10,6 +10,7 @@ interface GlobalResultsProps {
   runId: string;
   datasetId: string;
   summary: any;
+  onCaseClick?: (caseId: string) => void;
 }
 
 const nodeTypes = {
@@ -93,10 +94,10 @@ const getLayoutedElements = (nodes: any[], edges: any[], direction = 'TB') => {
   return { nodes, edges };
 };
 
-export default function GlobalResults({ runId, datasetId, summary }: GlobalResultsProps) {
+export default function GlobalResults({ runId, datasetId, summary, onCaseClick }: GlobalResultsProps) {
   const [globalStats, setGlobalStats] = useState<any>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<any>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<any>([]);
   const [selectedEdge, setSelectedEdge] = useState<any>(null);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [expandedVariant, setExpandedVariant] = useState<number | null>(null);
@@ -159,7 +160,7 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
         if (pmData.error) {
            setError(pmData.error);
         } else {
-            const initialNodes = pmData.nodes.map((n: any) => ({
+            const initialNodes = (pmData.nodes || []).map((n: any) => ({
               id: n.id,
               type: n.type === 'activity' ? 'activity' : (n.type === 'start' ? 'start' : 'end'),
               data: { label: n.label, count: n.count, type: n.type, variants: n.variants },
@@ -167,9 +168,10 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
             }));
 
             // Calculate max weight for edge thickness scaling
-            const maxWeight = Math.max(...pmData.edges.map((e: any) => e.weight), 1);
+            const edgesList = pmData.edges || [];
+            const maxWeight = Math.max(...edgesList.map((e: any) => e.weight), 1);
 
-            const initialEdges = pmData.edges.map((e: any, idx: number) => {
+            const initialEdges = edgesList.map((e: any, idx: number) => {
               const isSmall = e.weight < (maxWeight * 0.1);
               return {
                 id: `e${idx}`,
@@ -221,14 +223,14 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
   if (!globalStats) return null;
 
   // Format data for charts
-  const variantChartData = globalStats.variants.slice(0, 10).map((v: any) => ({
+  const variantChartData = (globalStats.variants || []).slice(0, 10).map((v: any) => ({
     name: `Variant ${v.id}`,
     full_name: v.variant,
     accuracy: Number(v.accuracy.toFixed(2)),
     total: v.total_cases_in_test
   }));
 
-  const prefixChartData = globalStats.prefix_accuracy.map((p: any) => ({
+  const prefixChartData = (globalStats.prefix_accuracy || []).map((p: any) => ({
     prefix_length: `Length ${p.prefix_length}`,
     accuracy: Number(p.accuracy.toFixed(2)),
     total: p.total_cases
@@ -401,7 +403,14 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
                                 <div className="max-h-32 overflow-y-auto pr-1 custom-scrollbar">
                                   <div className="flex flex-wrap gap-1.5">
                                     {v.cases.map((cId: string, cIdx: number) => (
-                                      <span key={cIdx} className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[10px] text-slate-600 font-mono font-medium">
+                                      <span 
+                                        key={cIdx} 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (onCaseClick) onCaseClick(cId);
+                                        }}
+                                        className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[10px] text-slate-600 font-mono font-medium cursor-pointer hover:bg-brand-50 hover:text-brand-600 hover:border-brand-300 transition-colors"
+                                      >
                                         {cId}
                                       </span>
                                     ))}

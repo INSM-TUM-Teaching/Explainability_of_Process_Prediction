@@ -11,12 +11,15 @@ type PredictionRecord = {
   true_next_activity: string;
   predicted_next_activity: string;
   confidence_percent: number;
+  variant_id?: number;
 };
 
-export default function NextActivityResults({ runId, summary, onBackToPipeline }: any) {
+export default function NextActivityResults({ runId, summary, uploadedFileName, configMode, onStartOver, onBackToPipeline }: any) {
   const [predictions, setPredictions] = useState<PredictionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [isExactSearch, setIsExactSearch] = useState(false);
+  const [activeTab, setActiveTab] = useState("global");
   
   useEffect(() => {
     async function loadData() {
@@ -39,43 +42,72 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
   const caseIds = Array.from(new Set(predictions.map(p => p.case_id)));
   
   const filteredCases = caseIds.filter(cid => {
-    const caseRecs = predictions.filter(p => p.case_id === cid);
+    const caseRecs = predictions.filter(p => p.case_id === String(cid));
     const vId = String(caseRecs[0]?.variant_id || "");
-    const searchTerm = search.toLowerCase();
-    return cid.toLowerCase().includes(searchTerm) || vId.toLowerCase().includes(searchTerm);
+    const searchTerm = String(search).toLowerCase().replace(/^case\s+/i, '').trim();
+    
+    if (isExactSearch && searchTerm) {
+      return String(cid).toLowerCase() === searchTerm || vId.toLowerCase() === searchTerm;
+    }
+    
+    return String(cid).toLowerCase().includes(searchTerm) || vId.toLowerCase().includes(searchTerm);
   });
 
   const config = summary.request.config || {};
   const metrics = summary.metrics || {};
   
+  const handleCaseClick = (caseId: string) => {
+    setActiveTab("local");
+    const cleanCaseId = String(caseId).replace(/^case\s+/i, '').trim();
+    setSearch(cleanCaseId);
+    setIsExactSearch(true);
+  };
+
   return (
     <div className="flex flex-col gap-6 w-full">
       {/* Top Section */}
-      <div className="flex flex-col gap-4 rounded-2xl border border-brand-100 bg-white p-6 shadow-sm md:flex-row md:items-start md:justify-between">
-        <div>
+      <div className="flex flex-col gap-4 rounded-2xl border border-brand-100 bg-white p-6 shadow-sm md:flex-row md:items-center md:justify-between">
+        <div className="flex-1 min-w-0 pr-4">
           <div className="text-sm font-medium uppercase tracking-[0.18em] text-brand-500">
-            Next Activity Prediction Results
+            Prediction and Explainability Results
           </div>
           <h1 className="mt-2 text-2xl font-semibold text-brand-900">Run {runId}</h1>
-          <p className="mt-2 max-w-3xl text-sm text-slate-600">
-            Uploaded file: <strong>{summary.dataset?.filename}</strong> | Model: <strong>{summary.request?.model_type}</strong>
-          </p>
+          <div className="mt-3 text-sm text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span>Uploaded file: <strong>{uploadedFileName || summary.dataset?.filename || "Unknown"}</strong></span>
+            <span className="text-slate-300">|</span>
+            <span>Model: <strong className="capitalize">{summary.request?.model_type || "Unknown"}</strong></span>
+            <span className="text-slate-300">|</span>
+            <span>Prediction Task: <strong className="capitalize">{summary.request?.task?.replace('_', ' ') || "Next Activity"}</strong></span>
+            <span className="text-slate-300">|</span>
+            <span>Configuration: <strong className="capitalize">{configMode || "default"}</strong></span>
+            <span className="text-slate-300">|</span>
+            <span>Explainability: <strong className="uppercase">{summary.request?.explainability || "none"}</strong></span>
+          </div>
         </div>
-        <div className="flex gap-3">
-          <button onClick={onBackToPipeline} className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-slate-50">Back</button>
+        <div className="flex gap-3 mt-4 md:mt-0 items-center shrink-0">
           <a href={artifactsZipUrl(runId)} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700">
-            Download all artifacts
+            Download
           </a>
         </div>
       </div>
 
-      <Tabs defaultValue="global" className="w-full mt-2">
-        <TabsList className="mb-4">
-          <TabsTrigger value="global">Global Overview</TabsTrigger>
-          <TabsTrigger value="local">Local Case Analysis</TabsTrigger>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full mt-4">
+        <TabsList className="mb-6 h-auto p-1.5 bg-slate-100 border border-slate-200 rounded-xl shadow-inner inline-flex">
+          <TabsTrigger 
+            value="global"
+            className="text-base px-8 py-2.5 rounded-lg data-[state=active]:bg-white data-[state=active]:text-brand-700 data-[state=active]:shadow-md data-[state=active]:font-bold text-slate-500 font-medium transition-all duration-300 hover:text-brand-600"
+          >
+            Global Overview
+          </TabsTrigger>
+          <TabsTrigger 
+            value="local"
+            className="text-base px-8 py-2.5 rounded-lg data-[state=active]:bg-white data-[state=active]:text-brand-700 data-[state=active]:shadow-md data-[state=active]:font-bold text-slate-500 font-medium transition-all duration-300 hover:text-brand-600"
+          >
+            Local Case Analysis
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="global">
-          <GlobalResults runId={runId} datasetId={summary.dataset?.dataset_id} summary={summary} />
+          <GlobalResults runId={runId} datasetId={summary.dataset?.dataset_id} summary={summary} onCaseClick={handleCaseClick} />
         </TabsContent>
         <TabsContent value="local">
           <div className="rounded-2xl border border-brand-100 bg-white p-6 shadow-sm mt-4">
@@ -85,7 +117,10 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
                 type="text" 
                 placeholder="Search by Case ID or Variant ID..." 
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setIsExactSearch(false);
+                }}
                 className="border rounded px-3 py-1 text-sm w-72"
               />
             </div>
@@ -101,9 +136,21 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
                     records={predictions.filter(p => p.case_id === cid)} 
                     runId={runId}
                     modelType={summary.request?.model_type}
+                    autoExpand={search === cid}
                   />
                 ))}
-                {filteredCases.length === 0 && <div>No cases found matching search.</div>}
+                {filteredCases.length === 0 && (
+                  <div className="text-center py-10 bg-slate-50 border rounded-lg text-slate-500">
+                    <p className="text-lg font-medium text-slate-700 mb-2">
+                      {search ? `Case or Variant "${search}" not found in test set` : "No cases found"}
+                    </p>
+                    {search && (
+                      <p className="text-sm">
+                        This could mean the case (or all cases in this variant) belonged to the training set. Local predictions are only generated for the test set.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -122,9 +169,15 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: string, records: any[], runId: string, modelType: string }) {
-  const [expanded, setExpanded] = useState(false);
+function CasePredictionBlock({ caseId, records, runId, modelType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, autoExpand?: boolean }) {
+  const [expanded, setExpanded] = useState(autoExpand);
   const maxIndex = Math.max(...records.map(r => r.case_index));
+
+  useEffect(() => {
+    if (autoExpand) {
+      setExpanded(true);
+    }
+  }, [autoExpand]);
   const [selectedIndex, setSelectedIndex] = useState(maxIndex);
 
   const selectedRecord = records.find(r => r.case_index === selectedIndex) || records[0];
@@ -152,6 +205,8 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
       setExplaining(false);
     }
   };
+
+  if (!selectedRecord) return null;
 
   const isCorrect = selectedRecord.true_next_activity === selectedRecord.predicted_next_activity;
 
@@ -189,7 +244,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
             <strong>Trace History / Sequence:</strong>
             <div className="mt-2 flex flex-wrap items-center gap-2 overflow-x-auto pb-2">
               {/* Historical Sequence */}
-              {selectedRecord.sequence.split(',').map((act, i, arr) => (
+              {selectedRecord.sequence.split(',').map((act: string, i: number, arr: string[]) => (
                 <div key={i} className="flex items-center gap-2">
                   <div className="bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap">
                     {act.trim()}
