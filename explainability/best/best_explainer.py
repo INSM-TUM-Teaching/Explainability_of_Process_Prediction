@@ -163,19 +163,23 @@ class BESTExplainer:
                 seq_indices = [int(idx) for idx in pattern_seq.split(",")]
                 decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
                 
-                # Filter out padding tokens for UI
-                filtered_seq = [act for act in decoded_seq if act not in ["START", "END"]]
-                
-                # Single-activity patterns (after filtering) are not useful for UI patterns dictionary
-                if len(filtered_seq) < 2:
-                    continue
-                
                 # Predicted next activity for this pattern
                 center_idx = len(seq_indices) // 2
                 predicted_next = decoded_seq[center_idx + 1] if (center_idx + 1) < len(decoded_seq) else None
                 
-                if predicted_next in ["START", "END"]:
-                    continue # Skip if the prediction itself is a padding token
+                # Check if prediction is None, empty, whitespace-only, or a padding token
+                if not predicted_next or not str(predicted_next).strip() or predicted_next in ["START", "END"]:
+                    continue
+
+                # Extract only the history (the left side of the pattern up to the center)
+                history_seq = decoded_seq[:center_idx + 1]
+
+                # Filter out padding tokens for UI
+                filtered_seq = [act for act in history_seq if act not in ["START", "END"]]
+                
+                # Single-activity histories are valid, but 0-length is not
+                if len(filtered_seq) < 1:
+                    continue
 
                 visible_seq_str = json.dumps(filtered_seq)
                 internal_to_visible[pattern_seq] = {

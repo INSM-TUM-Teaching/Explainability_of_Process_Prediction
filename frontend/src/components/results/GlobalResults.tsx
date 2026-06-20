@@ -122,12 +122,38 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
 
   const filteredPatterns = useMemo(() => {
     if (!searchQuery) return topPatterns;
-    const queries = searchQuery.split(",").map(q => q.trim().toLowerCase()).filter(q => q);
+
     return topPatterns.filter(p => {
-       const seqStr = String(p.sequence).toLowerCase();
-       const nextStr = String(p.predicted_next_activity).toLowerCase();
-       const idStr = String(p.pattern_id).toLowerCase();
-       return queries.every(lowerQ => seqStr.includes(lowerQ) || nextStr.includes(lowerQ) || idStr.includes(lowerQ));
+      // Format sequence the same way it's displayed in the table
+      let seqStr = String(p.sequence);
+      try {
+        const parsed = JSON.parse(seqStr);
+        if (Array.isArray(parsed)) {
+          seqStr = parsed.join(" → ");
+        }
+      } catch (e) { }
+
+      seqStr = seqStr.toLowerCase();
+      const nextStr = String(p.predicted_next_activity).toLowerCase();
+      const idStr = String(p.pattern_id).toLowerCase();
+      const rawQuery = searchQuery.trim().toLowerCase();
+
+      // 1. ID Search: if the query is just a number
+      if (/^\d+$/.test(rawQuery)) {
+        return idStr === rawQuery;
+      }
+
+      // 2. Exact Sequence Search: if the query is wrapped in parentheses
+      if (rawQuery.startsWith("(") && rawQuery.endsWith(")")) {
+        const innerQuery = rawQuery.slice(1, -1).trim();
+        // Replace commas with arrows for comparison
+        const queryAsSeq = innerQuery.replace(/,\s*/g, " → ");
+        // Check for EXACT match of the entire sequence
+        return seqStr === queryAsSeq;
+      }
+
+      // 3. Predicted Next Activity Search: default fallback for text
+      return nextStr === rawQuery || nextStr.includes(rawQuery);
     });
   }, [topPatterns, searchQuery]);
 
@@ -142,44 +168,44 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
       if (pRes.ok) {
         const text = await pRes.text();
         const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-        
+
         let pSeq: string[] = [];
-        try { pSeq = JSON.parse(pattern.sequence); } catch(e) {}
-        
+        try { pSeq = JSON.parse(pattern.sequence); } catch (e) { }
+
         if (pSeq.length === 0) {
-           setPatternCases([]);
-           return;
+          setPatternCases([]);
+          return;
         }
 
         const casesWithPattern = new Set<string>();
-        
+
         (parsed.data as any[]).forEach(row => {
           if (!row.sequence) return;
           let cSeq: string[] = [];
-          try { cSeq = JSON.parse(row.sequence); } catch(e) { return; }
-          
+          try { cSeq = JSON.parse(row.sequence); } catch (e) { return; }
+
           let hasMatch = false;
           for (let i = 0; i <= cSeq.length - pSeq.length; i++) {
-             let match = true;
-             for (let j = 0; j < pSeq.length; j++) {
-                if (cSeq[i+j] !== pSeq[j]) {
-                   match = false;
-                   break;
-                }
-             }
-             if (match) {
-                hasMatch = true;
+            let match = true;
+            for (let j = 0; j < pSeq.length; j++) {
+              if (cSeq[i + j] !== pSeq[j]) {
+                match = false;
                 break;
-             }
+              }
+            }
+            if (match) {
+              hasMatch = true;
+              break;
+            }
           }
           if (hasMatch && row.case_id) {
-             casesWithPattern.add(row.case_id);
+            casesWithPattern.add(row.case_id);
           }
         });
-        
+
         setPatternCases(Array.from(casesWithPattern));
       }
-    } catch(e) {
+    } catch (e) {
       console.error(e);
     } finally {
       setLoadingCases(false);
@@ -193,7 +219,7 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
       setSelectedNode(null);
       setExpandedVariant(null);
     }
-    
+
     setEdges((eds) =>
       eds.map((e) => {
         const isSelected = sEdges.some((s: any) => s.id === e.id);
@@ -238,7 +264,7 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
               const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
               setTopPatterns(parsed.data as any[]);
             }
-          } catch(e) { console.error("Could not load top patterns", e); }
+          } catch (e) { console.error("Could not load top patterns", e); }
         }
 
         // Fetch global stats for ALL models (including best)
@@ -253,55 +279,55 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
         const pmData = await pmRes.json();
 
         if (pmData.error) {
-           setError(pmData.error);
+          setError(pmData.error);
         } else {
-            const initialNodes = pmData.nodes.map((n: any) => ({
-              id: n.id,
-              type: n.type === 'activity' ? 'activity' : (n.type === 'start' ? 'start' : 'end'),
-              data: { label: n.label, count: n.count, type: n.type, variants: n.variants },
-              position: { x: 0, y: 0 },
-            }));
+          const initialNodes = pmData.nodes.map((n: any) => ({
+            id: n.id,
+            type: n.type === 'activity' ? 'activity' : (n.type === 'start' ? 'start' : 'end'),
+            data: { label: n.label, count: n.count, type: n.type, variants: n.variants },
+            position: { x: 0, y: 0 },
+          }));
 
-            // Calculate max weight for edge thickness scaling
-            const maxWeight = Math.max(...pmData.edges.map((e: any) => e.weight), 1);
+          // Calculate max weight for edge thickness scaling
+          const maxWeight = Math.max(...pmData.edges.map((e: any) => e.weight), 1);
 
-            const initialEdges = pmData.edges.map((e: any, idx: number) => {
-              const isSmall = e.weight < (maxWeight * 0.1);
-              return {
-                id: `e${idx}`,
-                source: e.source,
-                target: e.target,
-                label: e.weight.toLocaleString(),
-                type: 'smoothstep',
-                animated: false,
-                style: {
-                  strokeWidth: Math.max(2, (e.weight / maxWeight) * 8),
-                  stroke: e.type === 'virtual' ? '#94a3b8' : '#334155',
-                  strokeDasharray: e.type === 'virtual' ? '5,5' : 'none',
-                },
-                markerEnd: {
-                  type: MarkerType.ArrowClosed,
-                  color: e.type === 'virtual' ? '#94a3b8' : '#334155',
-                  width: isSmall ? 35 : 25, // Specifically larger heads for the smallest arrows
-                  height: isSmall ? 35 : 25,
-                },
-                labelStyle: { fill: '#0f172a', fontWeight: 900, fontSize: 18 }, // Even bigger uniform font
-                labelBgPadding: [8, 6],
-                labelBgBorderRadius: 6,
-                labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, stroke: '#cbd5e1', strokeWidth: 1.5 },
-                interactionWidth: 30,
-                pathOptions: { borderRadius: 20 }, // Smoother rounded corners for 90-degree bends
-                data: { type: e.type, variants: e.variants },
-              };
-            });
-            
-            const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-              initialNodes,
-              initialEdges
-            );
+          const initialEdges = pmData.edges.map((e: any, idx: number) => {
+            const isSmall = e.weight < (maxWeight * 0.1);
+            return {
+              id: `e${idx}`,
+              source: e.source,
+              target: e.target,
+              label: e.weight.toLocaleString(),
+              type: 'smoothstep',
+              animated: false,
+              style: {
+                strokeWidth: Math.max(2, (e.weight / maxWeight) * 8),
+                stroke: e.type === 'virtual' ? '#94a3b8' : '#334155',
+                strokeDasharray: e.type === 'virtual' ? '5,5' : 'none',
+              },
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                color: e.type === 'virtual' ? '#94a3b8' : '#334155',
+                width: isSmall ? 35 : 25, // Specifically larger heads for the smallest arrows
+                height: isSmall ? 35 : 25,
+              },
+              labelStyle: { fill: '#0f172a', fontWeight: 900, fontSize: 18 }, // Even bigger uniform font
+              labelBgPadding: [8, 6],
+              labelBgBorderRadius: 6,
+              labelBgStyle: { fill: '#ffffff', fillOpacity: 0.95, stroke: '#cbd5e1', strokeWidth: 1.5 },
+              interactionWidth: 30,
+              pathOptions: { borderRadius: 20 }, // Smoother rounded corners for 90-degree bends
+              data: { type: e.type, variants: e.variants },
+            };
+          });
 
-            setNodes([...layoutedNodes]);
-            setEdges([...layoutedEdges]);
+          const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
+            initialNodes,
+            initialEdges
+          );
+
+          setNodes([...layoutedNodes]);
+          setEdges([...layoutedEdges]);
         }
       } catch (err: any) {
         setError(err.message);
@@ -344,8 +370,8 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
       total: p.total_cases || p.sample_count
     }));
   } else {
-     // from summary.json if we can find it
-     // Wait, we didn't fetch explainability/summary.json here. Will do it in useEffect
+    // from summary.json if we can find it
+    // Wait, we didn't fetch explainability/summary.json here. Will do it in useEffect
   }
 
   return (
@@ -354,189 +380,188 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
       {/* KPIs */}
       <div className="grid grid-cols-4 gap-4">
         <div className="rounded border bg-white p-4 text-center shadow-sm">
-            <div className="text-sm text-slate-500 uppercase tracking-wide">Test Accuracy</div>
-            <div className="mt-1 text-2xl font-semibold text-brand-700">{globalStats.overall_accuracy.toFixed(2)}%</div>
+          <div className="text-sm text-slate-500 uppercase tracking-wide">Test Accuracy</div>
+          <div className="mt-1 text-2xl font-semibold text-brand-700">{globalStats.overall_accuracy.toFixed(2)}%</div>
         </div>
         <div className="rounded border bg-white p-4 text-center shadow-sm">
-            <div className="text-sm text-slate-500 uppercase tracking-wide" title="Total number of cases in the original dataset (Train + Test)">Total Cases (Dataset)</div>
-            <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_cases || "N/A"}</div>
+          <div className="text-sm text-slate-500 uppercase tracking-wide" title="Total number of cases in the original dataset (Train + Test)">Total Cases (Dataset)</div>
+          <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_cases || "N/A"}</div>
         </div>
         <div className="rounded border bg-white p-4 text-center shadow-sm">
-            <div className="text-sm text-slate-500 uppercase tracking-wide">Total Events</div>
-            <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_events || "N/A"}</div>
+          <div className="text-sm text-slate-500 uppercase tracking-wide">Total Events</div>
+          <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_events || "N/A"}</div>
         </div>
         <div className="rounded border bg-white p-4 text-center shadow-sm">
-            <div className="text-sm text-slate-500 uppercase tracking-wide">Unique Variants</div>
-            <div className="mt-1 text-2xl font-semibold text-brand-700">{globalStats.unique_variants}</div>
+          <div className="text-sm text-slate-500 uppercase tracking-wide">Unique Variants</div>
+          <div className="mt-1 text-2xl font-semibold text-brand-700">{globalStats.unique_variants}</div>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Top Variants Error Rate */}
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-              <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants - Accuracy vs Volume</h3>
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{fontSize: 12}} />
-                  <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
-                  <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
-                  <Tooltip />
-                  <Legend verticalAlign="top" />
-                  <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
-                  <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
-                </BarChart>
-              </ResponsiveContainer>
-          </div>
+        {/* Top Variants Error Rate */}
+        <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
+          <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants - Accuracy vs Volume</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
+              <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
+              <Tooltip />
+              <Legend verticalAlign="top" />
+              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
+              <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
 
-          {/* Accuracy by Prefix Length */}
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-              <h3 className="text-md font-semibold mb-4 text-brand-900">Accuracy by Prefix Length</h3>
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={prefixChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="prefix_length" angle={-45} textAnchor="end" height={60} tick={{fontSize: 12}} />
-                  <YAxis domain={[0, 100]} />
-                  <Tooltip />
-                  <Legend verticalAlign="top" />
-                  <Line type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#ff7300" strokeWidth={3} />
-                </LineChart>
-              </ResponsiveContainer>
-          </div>
+        {/* Accuracy by Prefix Length */}
+        <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
+          <h3 className="text-md font-semibold mb-4 text-brand-900">Accuracy by Prefix Length</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={prefixChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="prefix_length" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 12 }} />
+              <YAxis domain={[0, 100]} />
+              <Tooltip />
+              <Legend verticalAlign="top" />
+              <Line type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#ff7300" strokeWidth={3} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       {/* Global Process Map */}
       <div className="rounded border bg-white p-4 shadow-sm h-[700px] flex flex-col">
-          <h3 className="text-md font-semibold mb-2 text-brand-900">Global Process Map (Dataset Overview)</h3>
-          <div className="flex-1 flex gap-4 overflow-hidden">
-            <div className="flex-1 border rounded bg-slate-50 relative">
-              <ReactFlow 
-                nodes={nodes} 
-                edges={edges} 
-                nodeTypes={nodeTypes}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onSelectionChange={onSelectionChange}
-                onEdgeClick={onEdgeClick}
-                onNodeClick={onNodeClick}
-                fitView
-                minZoom={0.1}
-                elevateEdgesOnSelect={true}
-              >
-                <Background color="#cbd5e1" gap={20} />
-                <Controls />
-              </ReactFlow>
-            </div>
+        <h3 className="text-md font-semibold mb-2 text-brand-900">Global Process Map (Dataset Overview)</h3>
+        <div className="flex-1 flex gap-4 overflow-hidden">
+          <div className="flex-1 border rounded bg-slate-50 relative">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onSelectionChange={onSelectionChange}
+              onEdgeClick={onEdgeClick}
+              onNodeClick={onNodeClick}
+              fitView
+              minZoom={0.1}
+              elevateEdgesOnSelect={true}
+            >
+              <Background color="#cbd5e1" gap={20} />
+              <Controls />
+            </ReactFlow>
+          </div>
 
-            {/* Sidebar for Variants */}
-            {(selectedEdge || selectedNode) && (
-              <div className="w-80 border rounded bg-white flex flex-col shadow-sm animate-in slide-in-from-right duration-300">
-                <div className="p-3 border-b bg-slate-50">
-                  <div className="flex justify-between items-start mb-1">
-                    <h4 className="text-sm font-bold text-slate-800">
-                      {selectedEdge ? "Transition Variants" : "Activity Variants"}
-                    </h4>
-                    <button 
-                      onClick={() => {
-                        setSelectedEdge(null);
-                        setSelectedNode(null);
-                        setExpandedVariant(null);
-                      }}
-                      className="text-slate-400 hover:text-slate-600 p-1"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                    </button>
-                  </div>
-                  <div className="text-[11px] text-slate-500 font-medium break-all">
-                    {selectedEdge ? (
-                      <>{selectedEdge.source} <span className="text-brand-500 mx-1">→</span> {selectedEdge.target}</>
-                    ) : (
-                      <span className="text-brand-600 font-bold px-1.5 py-0.5 bg-brand-50 rounded border border-brand-100">{selectedNode.data.label}</span>
-                    )}
-                  </div>
+          {/* Sidebar for Variants */}
+          {(selectedEdge || selectedNode) && (
+            <div className="w-80 border rounded bg-white flex flex-col shadow-sm animate-in slide-in-from-right duration-300">
+              <div className="p-3 border-b bg-slate-50">
+                <div className="flex justify-between items-start mb-1">
+                  <h4 className="text-sm font-bold text-slate-800">
+                    {selectedEdge ? "Transition Variants" : "Activity Variants"}
+                  </h4>
+                  <button
+                    onClick={() => {
+                      setSelectedEdge(null);
+                      setSelectedNode(null);
+                      setExpandedVariant(null);
+                    }}
+                    className="text-slate-400 hover:text-slate-600 p-1"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
                 </div>
-                
-                <div className="flex-1 overflow-y-auto p-3">
-                  <div className="space-y-3">
-                    {((selectedEdge?.data?.variants) || (selectedNode?.data?.variants))?.length > 0 ? (
-                      ((selectedEdge?.data?.variants) || (selectedNode?.data?.variants)).map((v: any, idx: number) => {
-                        const isExpanded = expandedVariant === idx;
-                        return (
-                          <div 
-                            key={idx} 
-                            className={`p-3 rounded-lg border transition-all cursor-pointer ${
-                              isExpanded ? 'border-brand-300 bg-brand-50/30' : 'border-slate-100 bg-slate-50/50 hover:border-brand-200 hover:bg-white'
-                            }`}
-                            onClick={() => setExpandedVariant(isExpanded ? null : idx)}
-                          >
-                            <div className="flex justify-between items-center mb-2">
-                              <span className="text-[10px] font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded-full border border-brand-100">
-                                {v.count} case(s)
-                              </span>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[9px] text-slate-400 font-mono font-bold uppercase">Variant {v.id}</span>
-                                <svg 
-                                  className={`transition-transform duration-200 text-slate-400 ${isExpanded ? 'rotate-180' : ''}`}
-                                  width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
-                                >
-                                  <polyline points="6 9 12 15 18 9"></polyline>
-                                </svg>
-                              </div>
-                            </div>
-                            
-                            <div className={`text-[11px] leading-relaxed text-slate-600 font-medium ${isExpanded ? '' : 'line-clamp-2'}`}>
-                              {v.signature.split(" -> ").map((step: string, sIdx: number, arr: string[]) => {
-                                let isHighlighted = false;
-                                if (selectedEdge) {
-                                  const isStartTransition = selectedEdge.source === '__START__';
-                                  const isSource = !isStartTransition && step === selectedEdge.source;
-                                  const isTarget = (isStartTransition && sIdx === 0 && step === selectedEdge.target) || 
-                                                 (step === selectedEdge.target && sIdx > 0 && arr[sIdx-1] === selectedEdge.source);
-                                  isHighlighted = isSource || isTarget;
-                                } else if (selectedNode) {
-                                  isHighlighted = step === selectedNode.data.label;
-                                }
-                                
-                                return (
-                                  <React.Fragment key={sIdx}>
-                                    <span className={isHighlighted ? "text-brand-600 font-bold bg-brand-50 rounded px-0.5 border border-brand-100" : ""}>
-                                      {step}
-                                    </span>
-                                    {sIdx < arr.length - 1 && <span className="text-slate-300 mx-1">→</span>}
-                                  </React.Fragment>
-                                );
-                              })}
-                            </div>
-
-                            {/* Case IDs List (Visible when expanded) */}
-                            {isExpanded && v.cases && (
-                              <div className="mt-3 pt-3 border-t border-brand-100 animate-in fade-in zoom-in-95 duration-200">
-                                <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-2">Contained Cases:</div>
-                                <div className="max-h-32 overflow-y-auto pr-1 custom-scrollbar">
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {v.cases.map((cId: string, cIdx: number) => (
-                                      <span key={cIdx} className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[10px] text-slate-600 font-mono font-medium">
-                                        {cId}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div className="text-center py-8">
-                        <div className="text-slate-300 mb-2">No variants found</div>
-                        <p className="text-[11px] text-slate-400">This could be a virtual transition showing start/end frequencies.</p>
-                      </div>
-                    )}
-                  </div>
+                <div className="text-[11px] text-slate-500 font-medium break-all">
+                  {selectedEdge ? (
+                    <>{selectedEdge.source} <span className="text-brand-500 mx-1">→</span> {selectedEdge.target}</>
+                  ) : (
+                    <span className="text-brand-600 font-bold px-1.5 py-0.5 bg-brand-50 rounded border border-brand-100">{selectedNode.data.label}</span>
+                  )}
                 </div>
               </div>
-            )}
-          </div>
+
+              <div className="flex-1 overflow-y-auto p-3">
+                <div className="space-y-3">
+                  {((selectedEdge?.data?.variants) || (selectedNode?.data?.variants))?.length > 0 ? (
+                    ((selectedEdge?.data?.variants) || (selectedNode?.data?.variants)).map((v: any, idx: number) => {
+                      const isExpanded = expandedVariant === idx;
+                      return (
+                        <div
+                          key={idx}
+                          className={`p-3 rounded-lg border transition-all cursor-pointer ${isExpanded ? 'border-brand-300 bg-brand-50/30' : 'border-slate-100 bg-slate-50/50 hover:border-brand-200 hover:bg-white'
+                            }`}
+                          onClick={() => setExpandedVariant(isExpanded ? null : idx)}
+                        >
+                          <div className="flex justify-between items-center mb-2">
+                            <span className="text-[10px] font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded-full border border-brand-100">
+                              {v.count} case(s)
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[9px] text-slate-400 font-mono font-bold uppercase">Variant {v.id}</span>
+                              <svg
+                                className={`transition-transform duration-200 text-slate-400 ${isExpanded ? 'rotate-180' : ''}`}
+                                width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"
+                              >
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                              </svg>
+                            </div>
+                          </div>
+
+                          <div className={`text-[11px] leading-relaxed text-slate-600 font-medium ${isExpanded ? '' : 'line-clamp-2'}`}>
+                            {v.signature.split(" -> ").map((step: string, sIdx: number, arr: string[]) => {
+                              let isHighlighted = false;
+                              if (selectedEdge) {
+                                const isStartTransition = selectedEdge.source === '__START__';
+                                const isSource = !isStartTransition && step === selectedEdge.source;
+                                const isTarget = (isStartTransition && sIdx === 0 && step === selectedEdge.target) ||
+                                  (step === selectedEdge.target && sIdx > 0 && arr[sIdx - 1] === selectedEdge.source);
+                                isHighlighted = isSource || isTarget;
+                              } else if (selectedNode) {
+                                isHighlighted = step === selectedNode.data.label;
+                              }
+
+                              return (
+                                <React.Fragment key={sIdx}>
+                                  <span className={isHighlighted ? "text-brand-600 font-bold bg-brand-50 rounded px-0.5 border border-brand-100" : ""}>
+                                    {step}
+                                  </span>
+                                  {sIdx < arr.length - 1 && <span className="text-slate-300 mx-1">→</span>}
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+
+                          {/* Case IDs List (Visible when expanded) */}
+                          {isExpanded && v.cases && (
+                            <div className="mt-3 pt-3 border-t border-brand-100 animate-in fade-in zoom-in-95 duration-200">
+                              <div className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-2">Contained Cases:</div>
+                              <div className="max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                                <div className="flex flex-wrap gap-1.5">
+                                  {v.cases.map((cId: string, cIdx: number) => (
+                                    <span key={cIdx} className="px-2 py-0.5 bg-white border border-slate-200 rounded text-[10px] text-slate-600 font-mono font-medium">
+                                      {cId}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="text-center py-8">
+                      <div className="text-slate-300 mb-2">No variants found</div>
+                      <p className="text-[11px] text-slate-400">This could be a virtual transition showing start/end frequencies.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -548,7 +573,7 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
               <BarChart layout="vertical" data={globalStats.global_explanations.shap_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
+                <YAxis dataKey="feature" type="category" width={100} tick={{ fontSize: 12 }} />
                 <Tooltip />
                 <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
               </BarChart>
@@ -564,7 +589,7 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
               <BarChart layout="vertical" data={globalStats.global_explanations.lime_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
+                <YAxis dataKey="feature" type="category" width={100} tick={{ fontSize: 12 }} />
                 <Tooltip />
                 <Bar dataKey="importance" fill="#82ca9d" name="Mean Impact" />
               </BarChart>
@@ -580,7 +605,7 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
               <BarChart layout="vertical" data={globalStats.global_explanations.gnn_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
+                <YAxis dataKey="feature" type="category" width={100} tick={{ fontSize: 12 }} />
                 <Tooltip />
                 <Bar dataKey="importance" fill="#ffc658" name="Mean Impact" />
               </BarChart>
@@ -596,10 +621,10 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
             <h3 className="text-md font-semibold text-brand-900">Top Patterns</h3>
             <input
               type="text"
-              placeholder="Search patterns (comma separated)..."
+              placeholder="Search: ID Number, Predicted Activity, or (A, B, C) for Exact Sequence..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 w-80"
+              className="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 w-[500px]"
             />
           </div>
           <div className="overflow-x-auto">
@@ -621,17 +646,17 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
                     if (Array.isArray(sequence)) {
                       sequence = sequence.join(" → ");
                     }
-                  } catch(e) {
+                  } catch (e) {
                     // Keep original if parsing fails
                   }
-                  
-                  const accuracy = parseFloat(pattern.global_accuracy) > 1 
+
+                  const accuracy = parseFloat(pattern.global_accuracy) > 1
                     ? parseFloat(pattern.global_accuracy).toFixed(2)
                     : (parseFloat(pattern.global_accuracy) * 100).toFixed(2);
-                  
+
                   return (
-                    <tr 
-                      key={idx} 
+                    <tr
+                      key={idx}
                       className="border-b hover:bg-brand-50 cursor-pointer transition-colors"
                       onClick={() => handlePatternClick(pattern)}
                       title="Click to see cases with this pattern"
@@ -663,28 +688,28 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
               <h3 className="text-lg font-semibold text-brand-900">
                 Cases for Pattern {selectedPattern.pattern_id}
               </h3>
-              <button 
+              <button
                 onClick={() => setIsModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600 text-xl font-bold"
               >
                 ✕
               </button>
             </div>
-            
+
             <div className="mb-4 p-3 bg-slate-50 rounded border text-sm">
               <div className="font-semibold text-slate-700 mb-1">Sequence:</div>
               <div className="font-mono text-slate-600">{(() => {
-                  try {
-                    const parsed = JSON.parse(selectedPattern.sequence);
-                    if (Array.isArray(parsed)) return parsed.join(" → ");
-                  } catch(e) {}
-                  return selectedPattern.sequence;
+                try {
+                  const parsed = JSON.parse(selectedPattern.sequence);
+                  if (Array.isArray(parsed)) return parsed.join(" → ");
+                } catch (e) { }
+                return selectedPattern.sequence;
               })()}</div>
               <div className="mt-2 text-brand-700 font-medium">Predicts: {selectedPattern.predicted_next_activity}</div>
             </div>
-            
+
             <h4 className="font-medium text-slate-700 mb-2">Matching Cases:</h4>
-            
+
             <div className="flex-1 overflow-y-auto border rounded bg-white p-4">
               {loadingCases ? (
                 <div className="flex items-center justify-center py-8">
@@ -694,8 +719,8 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
               ) : patternCases.length > 0 ? (
                 <div className="flex flex-wrap gap-2">
                   {patternCases.map(cid => (
-                    <span 
-                      key={cid} 
+                    <span
+                      key={cid}
                       onClick={() => {
                         setIsModalOpen(false);
                         onNavigateToCase && onNavigateToCase(cid);
@@ -712,9 +737,9 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
                 </div>
               )}
             </div>
-            
+
             <div className="mt-4 pt-3 border-t text-right">
-              <button 
+              <button
                 className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-medium rounded-md shadow-sm transition-colors"
                 onClick={() => setIsModalOpen(false)}
               >
