@@ -1,7 +1,9 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MarkerType } from "@xyflow/react";
+import Papa from "papaparse";
+import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MarkerType, Node, Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import dagre from 'dagre';
+import { artifactUrl } from "../../lib/api";
 import ProcessMapNode from "./ProcessMapNode";
 import ProcessMapTerminalNode from "./ProcessMapTerminalNode";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
@@ -10,6 +12,7 @@ interface GlobalResultsProps {
   runId: string;
   datasetId: string;
   summary: any;
+  onNavigateToCase?: (cid: string) => void;
 }
 
 const nodeTypes = {
@@ -93,15 +96,95 @@ const getLayoutedElements = (nodes: any[], edges: any[], direction = 'TB') => {
   return { nodes, edges };
 };
 
-export default function GlobalResults({ runId, datasetId, summary }: GlobalResultsProps) {
-  const [globalStats, setGlobalStats] = useState<any>(null);
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+export default function GlobalResults({ runId, datasetId, summary, onNavigateToCase }: GlobalResultsProps) {
+  const [globalStats, setGlobalStats] = useState<any>({
+    overall_accuracy: 0,
+    total_variants: 0,
+    unique_variants: 0,
+    variants: [],
+    prefix_accuracy: [],
+    global_explanations: {}
+  });
+  const [topPatterns, setTopPatterns] = useState<any[]>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedEdge, setSelectedEdge] = useState<any>(null);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [expandedVariant, setExpandedVariant] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedPattern, setSelectedPattern] = useState<any>(null);
+  const [patternCases, setPatternCases] = useState<string[]>([]);
+  const [loadingCases, setLoadingCases] = useState(false);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  const filteredPatterns = useMemo(() => {
+    if (!searchQuery) return topPatterns;
+    const queries = searchQuery.split(",").map(q => q.trim().toLowerCase()).filter(q => q);
+    return topPatterns.filter(p => {
+       const seqStr = String(p.sequence).toLowerCase();
+       const nextStr = String(p.predicted_next_activity).toLowerCase();
+       const idStr = String(p.pattern_id).toLowerCase();
+       return queries.every(lowerQ => seqStr.includes(lowerQ) || nextStr.includes(lowerQ) || idStr.includes(lowerQ));
+    });
+  }, [topPatterns, searchQuery]);
+
+  const handlePatternClick = async (pattern: any) => {
+    setSelectedPattern(pattern);
+    setIsModalOpen(true);
+    setLoadingCases(true);
+    setPatternCases([]);
+
+    try {
+      const pRes = await fetch(artifactUrl(runId, "best_predictions.csv"));
+      if (pRes.ok) {
+        const text = await pRes.text();
+        const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+        
+        let pSeq: string[] = [];
+        try { pSeq = JSON.parse(pattern.sequence); } catch(e) {}
+        
+        if (pSeq.length === 0) {
+           setPatternCases([]);
+           return;
+        }
+
+        const casesWithPattern = new Set<string>();
+        
+        (parsed.data as any[]).forEach(row => {
+          if (!row.sequence) return;
+          let cSeq: string[] = [];
+          try { cSeq = JSON.parse(row.sequence); } catch(e) { return; }
+          
+          let hasMatch = false;
+          for (let i = 0; i <= cSeq.length - pSeq.length; i++) {
+             let match = true;
+             for (let j = 0; j < pSeq.length; j++) {
+                if (cSeq[i+j] !== pSeq[j]) {
+                   match = false;
+                   break;
+                }
+             }
+             if (match) {
+                hasMatch = true;
+                break;
+             }
+          }
+          if (hasMatch && row.case_id) {
+             casesWithPattern.add(row.case_id);
+          }
+        });
+        
+        setPatternCases(Array.from(casesWithPattern));
+      }
+    } catch(e) {
+      console.error(e);
+    } finally {
+      setLoadingCases(false);
+    }
+  };
 
   const onSelectionChange = React.useCallback(({ nodes: sNodes, edges: sEdges }: any) => {
     // Clear sidebar if nothing is selected
@@ -114,11 +197,12 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
     setEdges((eds) =>
       eds.map((e) => {
         const isSelected = sEdges.some((s: any) => s.id === e.id);
-        const baseColor = e.data?.type === 'virtual' ? '#94a3b8' : '#334155';
+        const baseColor = (e.data as any)?.type === 'virtual' ? '#94a3b8' : '#334155';
+        const markerEnd = e.markerEnd as any || {};
         return {
           ...e,
           markerEnd: {
-            ...e.markerEnd,
+            ...markerEnd,
             color: isSelected ? '#2563eb' : baseColor,
           },
         };
@@ -145,7 +229,19 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
       setLoading(true);
       setError(null);
       try {
-        // Fetch global stats
+        if (summary?.request?.model_type === "best") {
+          // For best model, fetch top_patterns.csv
+          try {
+            const tpRes = await fetch(artifactUrl(runId, "explainability/top_patterns.csv"));
+            if (tpRes.ok) {
+              const text = await tpRes.text();
+              const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+              setTopPatterns(parsed.data as any[]);
+            }
+          } catch(e) { console.error("Could not load top patterns", e); }
+        }
+
+        // Fetch global stats for ALL models (including best)
         const statsRes = await fetch(`http://localhost:8000/runs/${runId}/global`);
         if (!statsRes.ok) throw new Error("Failed to load global metrics");
         const statsData = await statsRes.json();
@@ -221,18 +317,36 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
   if (!globalStats) return null;
 
   // Format data for charts
-  const variantChartData = globalStats.variants.slice(0, 10).map((v: any) => ({
-    name: `Variant ${v.id}`,
-    full_name: v.variant,
-    accuracy: Number(v.accuracy.toFixed(2)),
-    total: v.total_cases_in_test
-  }));
+  let variantChartData = [];
+  if (globalStats.variants && globalStats.variants.length > 0) {
+    variantChartData = globalStats.variants.slice(0, 10).map((v: any) => ({
+      name: `Variant ${v.id}`,
+      full_name: v.variant,
+      accuracy: Number(v.accuracy.toFixed(2)),
+      total: v.total_cases_in_test
+    }));
+  } else if (topPatterns.length > 0) {
+    // Top patterns used for variantChartData if best model
+    variantChartData = topPatterns.slice(0, 10).map((p: any, idx: number) => ({
+      name: `Variant ${p.pattern_id || (idx + 1)}`,
+      full_name: p.sequence,
+      accuracy: p.global_accuracy ? Number((parseFloat(p.global_accuracy) * 100).toFixed(2)) : 0,
+      total: parseInt(p.global_frequency || "0", 10)
+    }));
+  }
 
-  const prefixChartData = globalStats.prefix_accuracy.map((p: any) => ({
-    prefix_length: `Length ${p.prefix_length}`,
-    accuracy: Number(p.accuracy.toFixed(2)),
-    total: p.total_cases
-  }));
+  // Handle prefix stats
+  let prefixChartData = [];
+  if (globalStats.prefix_accuracy && globalStats.prefix_accuracy.length > 0) {
+    prefixChartData = globalStats.prefix_accuracy.map((p: any) => ({
+      prefix_length: `Length ${p.prefix_length}`,
+      accuracy: p.accuracy > 1 ? Number(p.accuracy.toFixed(2)) : Number((p.accuracy * 100).toFixed(2)),
+      total: p.total_cases || p.sample_count
+    }));
+  } else {
+     // from summary.json if we can find it
+     // Wait, we didn't fetch explainability/summary.json here. Will do it in useEffect
+  }
 
   return (
     <div className="flex flex-col gap-6 w-full">
@@ -244,7 +358,7 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
             <div className="mt-1 text-2xl font-semibold text-brand-700">{globalStats.overall_accuracy.toFixed(2)}%</div>
         </div>
         <div className="rounded border bg-white p-4 text-center shadow-sm">
-            <div className="text-sm text-slate-500 uppercase tracking-wide">Total Cases</div>
+            <div className="text-sm text-slate-500 uppercase tracking-wide" title="Total number of cases in the original dataset (Train + Test)">Total Cases (Dataset)</div>
             <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_cases || "N/A"}</div>
         </div>
         <div className="rounded border bg-white p-4 text-center shadow-sm">
@@ -474,6 +588,142 @@ export default function GlobalResults({ runId, datasetId, summary }: GlobalResul
           </div>
         )}
       </div>
+
+      {/* Top Patterns Table (for BEST model) */}
+      {summary?.request?.model_type === "best" && topPatterns.length > 0 && (
+        <div className="rounded border bg-white p-4 shadow-sm">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-md font-semibold text-brand-900">Top Patterns</h3>
+            <input
+              type="text"
+              placeholder="Search patterns (comma separated)..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 w-80"
+            />
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-slate-50">
+                  <th className="text-left py-2 px-3 font-semibold text-slate-700">ID</th>
+                  <th className="text-left py-2 px-3 font-semibold text-slate-700">Sequence</th>
+                  <th className="text-left py-2 px-3 font-semibold text-slate-700">Predicted Activity</th>
+                  <th className="text-center py-2 px-3 font-semibold text-slate-700">Frequency</th>
+                  <th className="text-center py-2 px-3 font-semibold text-slate-700">Accuracy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPatterns.slice(0, 20).map((pattern: any, idx: number) => {
+                  let sequence = pattern.sequence;
+                  try {
+                    sequence = JSON.parse(pattern.sequence);
+                    if (Array.isArray(sequence)) {
+                      sequence = sequence.join(" → ");
+                    }
+                  } catch(e) {
+                    // Keep original if parsing fails
+                  }
+                  
+                  const accuracy = parseFloat(pattern.global_accuracy) > 1 
+                    ? parseFloat(pattern.global_accuracy).toFixed(2)
+                    : (parseFloat(pattern.global_accuracy) * 100).toFixed(2);
+                  
+                  return (
+                    <tr 
+                      key={idx} 
+                      className="border-b hover:bg-brand-50 cursor-pointer transition-colors"
+                      onClick={() => handlePatternClick(pattern)}
+                      title="Click to see cases with this pattern"
+                    >
+                      <td className="py-2 px-3 font-mono text-slate-600">{pattern.pattern_id}</td>
+                      <td className="py-2 px-3 text-slate-700 font-medium text-xs">{sequence}</td>
+                      <td className="py-2 px-3">
+                        <span className="inline-block px-2 py-1 rounded bg-brand-50 border border-brand-100 text-brand-700 font-medium">
+                          {pattern.predicted_next_activity}
+                        </span>
+                      </td>
+                      <td className="py-2 px-3 text-center text-slate-600">{parseInt(pattern.global_frequency || "0", 10).toLocaleString()}</td>
+                      <td className="py-2 px-3 text-center">
+                        <span className="text-green-600 font-semibold">{accuracy}%</span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {isModalOpen && selectedPattern && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50" onClick={() => setIsModalOpen(false)}>
+          <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[80vh] flex flex-col shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-brand-900">
+                Cases for Pattern {selectedPattern.pattern_id}
+              </h3>
+              <button 
+                onClick={() => setIsModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-xl font-bold"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="mb-4 p-3 bg-slate-50 rounded border text-sm">
+              <div className="font-semibold text-slate-700 mb-1">Sequence:</div>
+              <div className="font-mono text-slate-600">{(() => {
+                  try {
+                    const parsed = JSON.parse(selectedPattern.sequence);
+                    if (Array.isArray(parsed)) return parsed.join(" → ");
+                  } catch(e) {}
+                  return selectedPattern.sequence;
+              })()}</div>
+              <div className="mt-2 text-brand-700 font-medium">Predicts: {selectedPattern.predicted_next_activity}</div>
+            </div>
+            
+            <h4 className="font-medium text-slate-700 mb-2">Matching Cases:</h4>
+            
+            <div className="flex-1 overflow-y-auto border rounded bg-white p-4">
+              {loadingCases ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="w-6 h-6 border-2 border-brand-600 border-t-transparent rounded-full animate-spin mr-2"></div>
+                  <span className="text-slate-500 font-medium">Scanning predictions...</span>
+                </div>
+              ) : patternCases.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {patternCases.map(cid => (
+                    <span 
+                      key={cid} 
+                      onClick={() => {
+                        setIsModalOpen(false);
+                        onNavigateToCase && onNavigateToCase(cid);
+                      }}
+                      className="px-3 py-1.5 bg-brand-50 hover:bg-brand-100 text-brand-700 text-sm font-medium rounded border border-brand-200 shadow-sm cursor-pointer transition-colors"
+                    >
+                      {String(cid).startsWith("Case") ? cid : `Case ${cid}`}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-slate-500 bg-slate-50 rounded border border-dashed">
+                  No cases found containing this pattern.
+                </div>
+              )}
+            </div>
+            
+            <div className="mt-4 pt-3 border-t text-right">
+              <button 
+                className="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white font-medium rounded-md shadow-sm transition-colors"
+                onClick={() => setIsModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

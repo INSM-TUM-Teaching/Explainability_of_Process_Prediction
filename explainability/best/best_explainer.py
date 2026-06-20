@@ -287,10 +287,10 @@ class BESTExplainer:
                 pid = pattern_id_map.get(pattern_name)
                 if pid:
                     pattern_len = len(pattern_name.split(","))
-                    # BEST patterns match with their center at the last prefix activity.
+                    # BEST patterns match with their center as the prediction.
                     # A pattern of length L has (L // 2) activities to the left of the center.
-                    # Including the center, it covers (L // 2) + 1 activities of the prefix.
-                    num_prefix_elements = (pattern_len // 2) + 1
+                    # These (L // 2) activities are matched against the prefix.
+                    num_prefix_elements = pattern_len // 2
                     start_offset = max(0, case_index - num_prefix_elements)
                     end_offset = case_index - 1
                     

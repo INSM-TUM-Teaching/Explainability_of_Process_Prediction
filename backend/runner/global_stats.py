@@ -223,10 +223,22 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
         pred_file = os.path.join(artifacts_dir, "best_predictions.json")
         
     if not os.path.exists(pred_file):
-        return {"error": "Predictions not found"}
-        
-    with open(pred_file, 'r') as f:
-        preds = json.load(f)
+        # Fallback to CSV (BEST model outputs CSV by default)
+        csv_file = pred_file.replace(".json", ".csv")
+        if os.path.exists(csv_file):
+            try:
+                preds_df = pd.read_csv(csv_file)
+                # Ensure sequence is treated safely if empty
+                if 'sequence' in preds_df.columns:
+                    preds_df['sequence'] = preds_df['sequence'].fillna("")
+                preds = preds_df.to_dict(orient="records")
+            except Exception as e:
+                return {"error": f"Could not read predictions CSV: {e}"}
+        else:
+            return {"error": "Predictions not found"}
+    else:
+        with open(pred_file, 'r') as f:
+            preds = json.load(f)
         
     # Read original dataset to compute variants
     try:
@@ -236,64 +248,82 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
         
     case_col = None
     case_patterns = ['CaseID', 'case:id', 'case:concept:name', 'case_id', 'caseid', 'Case ID', 'Case_ID']
-    for col in df.columns:
-        if col in case_patterns:
-            case_col = col
+    for pattern in case_patterns:
+        if pattern in df.columns:
+            case_col = pattern
             break
             
     act_col = None
     act_patterns = ['Activity', 'concept:name', 'Action', 'activity', 'event', 'Event', 'task', 'Task']
-    for col in df.columns:
-        if col in act_patterns:
-            act_col = col
+    for pattern in act_patterns:
+        if pattern in df.columns:
+            act_col = pattern
             break
 
     if not case_col or not act_col:
         return {"error": f"Could not find case or activity column in dataset. Found: {list(df.columns)}"}
-    
-    # Identify variant for each case
-    variants = {} # case_id -> variant signature
+
+    # Build a variants dict that can match any likely format.
+    # Store both the raw key and the cleaned key so lookups are robust.
+    variants = {}  # normalised_case_id -> variant_signature (full trace)
     case_groups = df.groupby(case_col)[act_col].apply(list).to_dict()
     for c_id, trace in case_groups.items():
-        # Clean case ID to match the format in predictions files
-        clean_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
-        variants[clean_id] = " -> ".join(trace)
-        
-    variant_stats = {}
+        sig = " -> ".join(trace)
+        raw_id = str(c_id)
+        # Store under: raw form, stripped "Case "/"case " prefix, and digits-only variant
+        variants[raw_id] = sig
+        stripped = raw_id.replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
+        variants[stripped] = sig
+        # Also store with the original separator style (e.g. "Case_1022")
+        variants[raw_id.replace(" ", "_")] = sig
+
+    variant_stats = {}    # variant_sig -> {total_cases: set of case_ids, correct, total_rows}
     prefix_stats = {}
-    
+    seen_case_variants: dict = {}  # case_id -> variant_sig (to avoid double-counting)
+
     overall_correct = 0
     total_preds = len(preds)
-    
+
     for p in preds:
         c_id = str(p.get("case_id"))
-        
-        # Get variant for this case
-        var_sig = variants.get(c_id, "Unknown Variant")
+
+        # Try multiple normalisation forms to find the variant
+        var_sig = variants.get(c_id)
+        if var_sig is None:
+            var_sig = variants.get(c_id.replace("Case ", "").replace("case ", "").replace(" ", "_").strip())
+        if var_sig is None:
+            var_sig = "Unknown Variant"
+
         v_id = _generate_variant_id(var_sig)
         p["variant_id"] = v_id
-        
+
         seq = p.get("sequence", "")
-        # For GNN, sequence might not be explicitly stored like transformer, it's prefix_length
-        # We need to compute prefix length
         if "prefix_length" in p:
             prefix_len = p["prefix_length"]
         else:
-            prefix_len = len([x for x in seq.split(",") if x.strip()]) if seq else 1
-            
+            try:
+                import json as _json
+                parsed_seq = _json.loads(seq) if seq else []
+                prefix_len = len(parsed_seq) if isinstance(parsed_seq, list) else len([x for x in seq.split(",") if x.strip()])
+            except Exception:
+                prefix_len = len([x for x in seq.split(",") if x.strip()]) if seq else 1
+
         true_act = p.get("true_next_activity") or p.get("actual_next_activity")
         pred_act = p.get("predicted_next_activity")
-        
+
         is_correct = (true_act == pred_act)
         if is_correct:
             overall_correct += 1
-            
+
         if var_sig not in variant_stats:
-            variant_stats[var_sig] = {"total": 0, "correct": 0}
-        variant_stats[var_sig]["total"] += 1
+            variant_stats[var_sig] = {"case_ids": set(), "correct": 0, "total_rows": 0}
+        variant_stats[var_sig]["total_rows"] += 1
         if is_correct:
             variant_stats[var_sig]["correct"] += 1
-            
+        # Track unique cases per variant (not rows)
+        variant_stats[var_sig]["case_ids"].add(c_id)
+        seen_case_variants[c_id] = var_sig
+
         if prefix_len not in prefix_stats:
             prefix_stats[prefix_len] = {"total": 0, "correct": 0}
         prefix_stats[prefix_len]["total"] += 1
@@ -302,25 +332,32 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
 
     # Save updated predictions with variant IDs back to files
     try:
-        with open(pred_file, 'w') as f:
-            json.dump(preds, f, indent=2)
-        # Update CSV as well
+        try:
+            with open(pred_file, 'w') as f:
+                json.dump(preds, f, indent=2)
+        except Exception:
+            pass  # pred_file might not exist (CSV-only model)
+        # Always update CSV
+        csv_path = pred_file.replace(".json", ".csv")
         p_df = pd.DataFrame(preds)
-        p_df.to_csv(pred_file.replace(".json", ".csv"), index=False)
+        p_df.to_csv(csv_path, index=False)
     except Exception as e:
         print(f"[ERROR] Failed to update predictions with variant IDs: {e}")
 
-    # Format output
+    # Format output: count unique cases per variant (not rows)
     variant_list = []
     for var_sig, stats in variant_stats.items():
-        acc = (stats["correct"] / stats["total"]) * 100 if stats["total"] > 0 else 0
+        unique_cases = len(stats["case_ids"])
+        # Accuracy = correct rows / total rows (per-step accuracy)
+        acc = (stats["correct"] / stats["total_rows"]) * 100 if stats["total_rows"] > 0 else 0
         variant_list.append({
             "id": _generate_variant_id(var_sig),
             "variant": var_sig,
-            "total_cases_in_test": stats["total"],
+            "total_cases_in_test": unique_cases,
             "accuracy": acc
         })
     variant_list.sort(key=lambda x: x["total_cases_in_test"], reverse=True)
+
     
     prefix_list = []
     for plen, stats in prefix_stats.items():
@@ -380,7 +417,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     res = {
         "overall_accuracy": (overall_correct / total_preds * 100) if total_preds > 0 else 0,
         "total_variants": len(case_groups.keys()),
-        "unique_variants": len(set(variants.values())),
+        "unique_variants": len(variant_stats),
         "variants": variant_list,
         "prefix_accuracy": prefix_list,
         "global_explanations": global_explanations
