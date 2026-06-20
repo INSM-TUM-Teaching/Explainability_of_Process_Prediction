@@ -42,6 +42,7 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
               .filter(row => row.case_id && row.case_index)
               .map(row => ({
                 ...row,
+                case_id: String(row.case_id).replace(/^Case\s+/i, ""),
                 case_index: parseInt(String(row.case_index), 10),
                 confidence: parseFloat(String(row.confidence)) || 0
               }));
@@ -66,13 +67,15 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
   const caseIds = Array.from(new Set(predictions.map(p => p.case_id))).sort();
   
   const filteredCases = caseIds.filter(cid => {
-    const searchTerm = search.toLowerCase();
-    if (cid.toLowerCase().includes(searchTerm)) return true;
+    const searchTerm = search.trim().toLowerCase();
+    if (!searchTerm) return true;
+
+    if (cid.toLowerCase() === searchTerm) return true;
     
     // Check variant ID
     const caseRecords = predictions.filter(p => p.case_id === cid);
     const varId = caseRecords.length > 0 ? caseRecords[0].variant_id : null;
-    if (varId && String(varId).toLowerCase().includes(searchTerm)) return true;
+    if (varId && String(varId).toLowerCase() === searchTerm) return true;
     
     return false;
   });
@@ -112,7 +115,7 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
             datasetId={summary.dataset?.dataset_id} 
             summary={summary} 
             onNavigateToCase={(cid: string) => {
-              setSearch(cid);
+              setSearch(cid.replace(/^Case\s+/i, ""));
               setActiveTab("local");
             }}
           />
@@ -144,6 +147,7 @@ export default function NextActivityResults({ runId, summary, onBackToPipeline }
                     records={predictions.filter(p => p.case_id === cid)} 
                     runId={runId}
                     modelType={summary.request?.model_type}
+                    explainabilityType={summary.request?.explainability || "none"}
                   />
                 ))}
               </div>
@@ -164,7 +168,7 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: string, records: any[], runId: string, modelType: string }) {
+function CasePredictionBlock({ caseId, records, runId, modelType, explainabilityType }: { caseId: string, records: any[], runId: string, modelType: string, explainabilityType: string }) {
   const [expanded, setExpanded] = useState(false);
   const maxIndex = Math.max(...records.map(r => r.case_index));
   const [selectedIndex, setSelectedIndex] = useState(maxIndex);
@@ -403,22 +407,23 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
             </div>
           </div>
 
-          <div className="mt-4 pt-4 border-t flex flex-col gap-3">
-            <div className="flex gap-3 items-center">
-              <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
-              {!isBestModel && (
-                <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
-                  {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
-                </select>
-              )}
-              <button 
-                onClick={handleExplain} 
-                disabled={explaining}
-                className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
-              >
-                {explaining ? "Generating..." : "Generate"}
-              </button>
-            </div>
+          {explainabilityType !== "none" && (
+            <div className="mt-4 pt-4 border-t flex flex-col gap-3">
+              <div className="flex gap-3 items-center">
+                <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
+                {!isBestModel && (
+                  <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
+                    {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
+                  </select>
+                )}
+                <button 
+                  onClick={handleExplain} 
+                  disabled={explaining}
+                  className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {explaining ? "Generating..." : "Generate"}
+                </button>
+              </div>
             
             {explainResult && (
               <div className="mt-4 border rounded p-4 bg-slate-50">
@@ -489,6 +494,38 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
                         );
                       })}
                     </div>
+                    
+                    {/* List of influencing patterns */}
+                    <div className="mt-6 border-t border-slate-200 pt-4">
+                      <h5 className="font-semibold text-sm text-slate-800 mb-3">Influencing Patterns:</h5>
+                      <div className="flex flex-col gap-2">
+                        {Array.from(new Set((explainResult.matches as any[]).map(m => m.pattern_id)))
+                          .sort((a, b) => {
+                            const freqA = explainResult.patternMap[a]?.frequency || 0;
+                            const freqB = explainResult.patternMap[b]?.frequency || 0;
+                            return freqB - freqA;
+                          })
+                          .map(pId => {
+                          const pInfo = explainResult.patternMap[pId];
+                          let seqStr = pInfo ? pInfo.sequence : "";
+                          try {
+                            const parsed = JSON.parse(seqStr);
+                            if (Array.isArray(parsed)) seqStr = parsed.join(" → ");
+                          } catch(e) {}
+                          return (
+                            <div key={pId} className="text-[11px] bg-white border border-slate-200 shadow-sm rounded-md p-2.5 text-slate-600">
+                              <span className="font-bold text-slate-800">Pattern {pId}:</span> {seqStr} 
+                              <span className="mx-2 text-slate-300">→</span> 
+                              <span className="font-bold text-brand-600">{pInfo?.predicted_next}</span>
+                              <span className="ml-3 font-mono text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">Freq: {pInfo?.frequency}</span>
+                            </div>
+                          );
+                        })}
+                        {explainResult.matches.length === 0 && (
+                          <div className="text-xs text-slate-500 italic">No exact patterns matched this sequence.</div>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 ) : (
                   <div>
@@ -501,6 +538,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType }: { caseId: st
               </div>
             )}
           </div>
+          )}
         </div>
       )}
     </div>

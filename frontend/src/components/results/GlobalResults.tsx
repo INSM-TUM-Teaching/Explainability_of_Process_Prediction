@@ -618,7 +618,7 @@ export default function GlobalResults({ runId, datasetId, summary, onNavigateToC
       {summary?.request?.model_type === "best" && topPatterns.length > 0 && (
         <div className="rounded border bg-white p-4 shadow-sm">
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-md font-semibold text-brand-900">Top Patterns</h3>
+            <h3 className="text-md font-semibold text-brand-900">Top 20 Patterns</h3>
             <input
               type="text"
               placeholder="Search: ID Number, Predicted Activity, or (A, B, C) for Exact Sequence..."
