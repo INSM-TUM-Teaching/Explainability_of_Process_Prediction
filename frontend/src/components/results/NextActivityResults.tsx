@@ -81,7 +81,12 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
             <span className="text-slate-300">|</span>
             <span>Configuration: <strong className="capitalize">{configMode || "default"}</strong></span>
             <span className="text-slate-300">|</span>
-            <span>Explainability: <strong className="uppercase">{summary.request?.explainability || "none"}</strong></span>
+            <span>Explainability: <strong>
+              {summary.request?.explainability === "all"
+                ? (summary.request?.model_type === "transformer" ? "SHAP and LIME" : "Gradient and GraphLIME")
+                : (summary.request?.explainability === "graphlime" ? "GraphLIME" 
+                   : String(summary.request?.explainability || "None").toUpperCase())}
+            </strong></span>
           </div>
         </div>
         <div className="flex gap-3 mt-4 md:mt-0 items-center shrink-0">
