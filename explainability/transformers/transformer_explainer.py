@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import re
 import numpy as np
@@ -41,6 +42,7 @@ class ExplainabilityConfig:
     # Options: 'auto', 'per_timestep', 'original'
     MODEL_TYPE = 'auto'
 
+
 class SHAPExplainer:
     def __init__(self, model, task='activity', label_encoder=None, scaler=None):
         self.model = model
@@ -56,24 +58,29 @@ class SHAPExplainer:
         self.max_evals = None
         self._background_data = None
         self._max_background = None
-        
+        self.sample_indices = None
+        self.sample_case_ids = None
+
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
-            print("[WARNING] label_encoder is None - will show generic Activity labels!")
+            print(
+                "[WARNING] label_encoder is None - will show generic activity labels!")
             print("[FIX] Pass label_encoder to run_transformer_explainability()")
         else:
-            print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
-        
+            print(
+                f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
+
     def _get_activity_names_for_sample(self, sequence):
         if self.label_encoder is None:
-            return [f'Activity_{int(t)}' if t > 0 else '[PAD]' for t in sequence]
-        
+            return [f'activity_{int(t)}' if t > 0 else '[PAD]' for t in sequence]
+
         names = []
         for token in sequence:
             if token > 0:
                 try:
                     # Token indices are offset by +1 (0 is padding)
-                    actual_activity = self.label_encoder.inverse_transform([int(token)-1])[0]
+                    actual_activity = self.label_encoder.inverse_transform(
+                        [int(token)-1])[0]
                     names.append(actual_activity)
                 except Exception as e:
                     names.append(f'Token_{int(token)}')
@@ -91,59 +98,68 @@ class SHAPExplainer:
                 token = sample[pos]
                 if token > 0:
                     try:
-                        activity = self.label_encoder.inverse_transform([int(token) - 1])[0]
+                        activity = self.label_encoder.inverse_transform(
+                            [int(token) - 1])[0]
                         activities_at_pos.append(activity)
                     except Exception as e:
-                        print(f"[WARNING] Failed to decode activity token {int(token)}: {e}")
+                        print(
+                            f"[WARNING] Failed to decode activity token {int(token)}: {e}")
                         pass
             if activities_at_pos:
-                most_common = max(set(activities_at_pos), key=activities_at_pos.count)
+                most_common = max(set(activities_at_pos),
+                                  key=activities_at_pos.count)
                 feature_names.append(most_common)
             else:
                 feature_names.append(f'Position_{pos+1}')
         return feature_names
 
-    def initialize_explainer(self, background_data, max_background=100, max_evals_override=None):
+    def initialize_explainer(self, background_data, max_background=50, max_evals_override=None):
         print("Initializing SHAP Explainer...")
         self._background_data = background_data
         self._max_background = max_background
-        
+
         if isinstance(background_data, (list, tuple)):
             self.is_multi_input = True
             bg_seq = background_data[0]
             bg_temp = background_data[1]
-            indices = np.random.choice(len(bg_seq), min(max_background, len(bg_seq)), replace=False)
+            indices = np.random.choice(len(bg_seq), min(
+                max_background, len(bg_seq)), replace=False)
             background_seq_sample = bg_seq[indices]
             background_temp_sample = bg_temp[indices]
             self.background_temp = np.mean(bg_temp, axis=0).reshape(1, -1)
-            
+
             # Calculate total features correctly
             num_features = int(np.prod(background_seq_sample.shape[1:]))
             temp_features = int(np.prod(background_temp_sample.shape[1:]))
             total_features = num_features + temp_features
-            
-            # FIX: Set max_evals to required minimum
+
+            # FIX: Set max_evals to required minimum, but cap for speed
             computed = 2 * total_features + 1
             if max_evals_override == "auto":
                 self.max_evals = "auto"
             else:
-                self.max_evals = max(computed, max_evals_override or 0)
-            print(f"[DEBUG] Total features: {total_features}, Setting max_evals: {self.max_evals}")
-            
+                self.max_evals = min(max(computed, max_evals_override or 0), 500)
+            print(
+                f"[DEBUG] Total features: {total_features}, Setting max_evals: {self.max_evals}")
+
             # For multi-input models, we need to flatten inputs for SHAP
             # SHAP's PermutationExplainer expects a 2D array, not a list of arrays
             self._bg_seq_sample = background_seq_sample
             self._bg_temp_sample = background_temp_sample
-            self._seq_shape = background_seq_sample.shape[1:]  # (seq_len,) or (seq_len, features)
-            self._temp_shape = background_temp_sample.shape[1:]  # (temp_features,)
+            # (seq_len,) or (seq_len, features)
+            self._seq_shape = background_seq_sample.shape[1:]
+            # (temp_features,)
+            self._temp_shape = background_temp_sample.shape[1:]
             self._seq_flat_size = int(np.prod(self._seq_shape))
             self._temp_flat_size = int(np.prod(self._temp_shape))
-            
+
             # Create flattened background data for SHAP
-            bg_seq_flat = background_seq_sample.reshape(len(background_seq_sample), -1)
-            bg_temp_flat = background_temp_sample.reshape(len(background_temp_sample), -1)
+            bg_seq_flat = background_seq_sample.reshape(
+                len(background_seq_sample), -1)
+            bg_temp_flat = background_temp_sample.reshape(
+                len(background_temp_sample), -1)
             background_flat = np.hstack([bg_seq_flat, bg_temp_flat])
-            
+
             def predict_fn_flat(x_flat):
                 """Prediction function that takes flattened input and returns model output."""
                 n_samples = x_flat.shape[0]
@@ -155,10 +171,10 @@ class SHAPExplainer:
                 x_temp = x_temp_flat.reshape((n_samples,) + self._temp_shape)
                 preds = self.model.predict([x_seq, x_temp], verbose=0)
                 return preds if self.task == 'activity' else preds.flatten()
-            
+
             self._predict_fn_flat = predict_fn_flat
             self._background_flat = background_flat
-            
+
             try:
                 # Use PermutationExplainer with flattened data
                 self.explainer = shap.PermutationExplainer(
@@ -173,26 +189,31 @@ class SHAPExplainer:
                     background_flat,
                 )
         else:
-            indices = np.random.choice(len(background_data), min(max_background, len(background_data)), replace=False)
+            indices = np.random.choice(len(background_data), min(
+                max_background, len(background_data)), replace=False)
             background_sample = background_data[indices]
             num_features = int(np.prod(background_sample.shape[1:]))
-            
-            # FIX: Set max_evals to required minimum
+
+            # FIX: Set max_evals to required minimum, but cap for speed
             computed = 2 * num_features + 1
             if max_evals_override == "auto":
                 self.max_evals = "auto"
             else:
-                self.max_evals = max(computed, max_evals_override or 0)
-            print(f"[DEBUG] Total features: {num_features}, Setting max_evals: {self.max_evals}")
-            
+                self.max_evals = min(max(computed, max_evals_override or 0), 500)
+            print(
+                f"[DEBUG] Total features: {num_features}, Setting max_evals: {self.max_evals}")
+
             try:
-                self.explainer = shap.Explainer(self.model, background_sample, max_evals=self.max_evals)
+                self.explainer = shap.Explainer(
+                    self.model, background_sample, max_evals=self.max_evals)
             except Exception as e:
                 print(f"[WARNING] SHAP explainer init fallback: {e}")
+
                 def predict_fn_single(x):
                     preds = self.model.predict(x, verbose=0)
                     return preds if self.task == 'activity' else preds.flatten()
-                self.explainer = shap.Explainer(predict_fn_single, background_sample, max_evals=self.max_evals)
+                self.explainer = shap.Explainer(
+                    predict_fn_single, background_sample, max_evals=self.max_evals)
 
     def _retry_with_required_max_evals(self, err):
         msg = str(err)
@@ -202,7 +223,8 @@ class SHAPExplainer:
         if not numbers:
             return False
         required = max(numbers)
-        current = self.max_evals if isinstance(self.max_evals, (int, float)) else 0
+        current = self.max_evals if isinstance(
+            self.max_evals, (int, float)) else 0
         self.max_evals = max(current, required)
         # Rebuild explainer to ensure max_evals is applied internally.
         if self._background_data is not None:
@@ -235,7 +257,8 @@ class SHAPExplainer:
             )
             return 2 * len(fm) + 1
         except Exception as e:
-            print(f"[WARNING] Could not compute required max_evals from masker: {e}")
+            print(
+                f"[WARNING] Could not compute required max_evals from masker: {e}")
             return None
 
     def _call_explainer(self, inputs, max_evals=None):
@@ -246,7 +269,7 @@ class SHAPExplainer:
         except TypeError:
             return self.explainer(inputs)
 
-    def explain_samples(self, test_data, num_samples=20, indices=None):
+    def explain_samples(self, test_data, num_samples=20, indices=None, sample_ids=None, sample_indexes=None):
         if isinstance(test_data, (list, tuple)):
             if indices is not None and len(indices) > 0:
                 test_sample = test_data[0][indices]
@@ -263,7 +286,29 @@ class SHAPExplainer:
             else:
                 test_sample = test_data[:num_samples]
                 self.test_data = test_sample
-            
+
+        if indices is not None and len(indices) > 0:
+            self.sample_indices = list(indices)
+        else:
+            self.sample_indices = list(range(len(test_sample)))
+
+        if sample_ids is not None:
+            if indices is not None and len(indices) > 0:
+                self.sample_case_ids = [sample_ids[i] for i in indices]
+            else:
+                self.sample_case_ids = list(sample_ids[:len(test_sample)])
+        else:
+            self.sample_case_ids = None
+
+        if sample_indexes is not None:
+            if indices is not None and len(indices) > 0:
+                self.sample_case_indexes = [sample_indexes[i] for i in indices]
+            else:
+                self.sample_case_indexes = list(
+                    sample_indexes[:len(test_sample)])
+        else:
+            self.sample_case_indexes = None
+
         print(f"Computing SHAP values for {len(test_sample)} samples...")
 
         # For multi-input models, flatten the test data
@@ -276,7 +321,7 @@ class SHAPExplainer:
             test_seq_flat = test_sample.reshape(len(test_sample), -1)
             test_temp_flat = test_temp.reshape(len(test_temp), -1)
             test_flat = np.hstack([test_seq_flat, test_temp_flat])
-            
+
             try:
                 self.shap_values = self.explainer(test_flat)
             except Exception as e:
@@ -285,30 +330,33 @@ class SHAPExplainer:
                 n_features = test_flat.shape[1]
                 required_max_evals = 2 * n_features + 1
                 print(f"[DEBUG] Retrying with max_evals={required_max_evals}")
-                self.shap_values = self.explainer(test_flat, max_evals=required_max_evals)
+                self.shap_values = self.explainer(
+                    test_flat, max_evals=required_max_evals)
         else:
             try:
-                self.shap_values = self._call_explainer(test_sample, max_evals=self.max_evals)
+                self.shap_values = self._call_explainer(
+                    test_sample, max_evals=self.max_evals)
             except ValueError as e:
                 if self._retry_with_required_max_evals(e):
                     self._set_explainer_max_evals(self.max_evals)
-                    self.shap_values = self._call_explainer(test_sample, max_evals=self.max_evals)
+                    self.shap_values = self._call_explainer(
+                        test_sample, max_evals=self.max_evals)
                 else:
                     raise
         return self.shap_values
 
     def _aggregate_by_activity(self):
-        if self.shap_values is None: 
+        if self.shap_values is None:
             return None, None, None
 
         values = self.shap_values.values
         if isinstance(values, list):
             values = values[0]
-        
+
         seq_len = self.test_data.shape[1] if self.test_data is not None else None
         if seq_len is None:
             return None, None, None
-        
+
         # Handle flattened multi-input case: SHAP values are (n_samples, total_flat_features)
         # where total_flat_features = seq_flat_size + temp_flat_size
         if self.is_multi_input and hasattr(self, '_seq_flat_size'):
@@ -321,38 +369,43 @@ class SHAPExplainer:
                     pass
                 else:
                     # Reshape to original sequence shape
-                    values = values.reshape((values.shape[0],) + self._seq_shape)
-        
+                    values = values.reshape(
+                        (values.shape[0],) + self._seq_shape)
+
         seq_axis = None
         for axis in range(1, values.ndim):
             if values.shape[axis] == seq_len:
                 seq_axis = axis
                 break
-        
+
         if seq_axis is None:
-            print(f"[DEBUG] Cannot find seq_axis. values.shape={values.shape}, seq_len={seq_len}")
+            print(
+                f"[DEBUG] Cannot find seq_axis. values.shape={values.shape}, seq_len={seq_len}")
             return None, None, None
-        
+
         values = np.moveaxis(values, seq_axis, 1)
-        
+
         if values.ndim > 2:
             if self.task == 'activity':
-                values = np.abs(values).mean(axis=tuple(range(2, values.ndim)))
+                max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                values = np.take_along_axis(
+                    values, max_abs_idx, axis=-1).squeeze(axis=-1)
             else:
                 values = values.mean(axis=tuple(range(2, values.ndim)))
-        
+
         # Collect all unique activity names across all samples
         unique_names = set()
         for seq in self.test_data:
-            unique_names.update([n for n in self._get_activity_names_for_sample(seq) if n != '[PAD]'])
-        
+            unique_names.update(
+                [n for n in self._get_activity_names_for_sample(seq) if n != '[PAD]'])
+
         sorted_names = sorted(list(unique_names))
         name_map = {name: i for i, name in enumerate(sorted_names)}
-        
+
         num_samples = values.shape[0]
         agg_shap_matrix = np.zeros((num_samples, len(sorted_names)))
-        agg_feat_matrix = np.zeros((num_samples, len(sorted_names))) 
-        
+        agg_feat_matrix = np.zeros((num_samples, len(sorted_names)))
+
         # Aggregate SHAP values by activity name
         for i in range(num_samples):
             seq_names = self._get_activity_names_for_sample(self.test_data[i])
@@ -361,26 +414,118 @@ class SHAPExplainer:
                     col_idx = name_map[name]
                     agg_shap_matrix[i, col_idx] += values[i, j]
                     agg_feat_matrix[i, col_idx] += 1
-                    
+
         return agg_shap_matrix, agg_feat_matrix, sorted_names
 
     def plot_bar(self, output_dir):
-        print("Generating Global Importance Plot (Bar)...")
+        print("Generating Global importance Plot (Bar)...")
         agg_values, _, names = self._aggregate_by_activity()
         if agg_values is None:
             print("[WARNING] SHAP values unavailable or invalid for plotting.")
             return
-        
+
         mean_impact = np.abs(agg_values).mean(axis=0)
-        df = pd.DataFrame({'Activity': names, 'Mean_Impact': mean_impact}).sort_values('Mean_Impact', ascending=False)
-        df.to_csv(os.path.join(output_dir, 'global_importance_data.csv'), index=False)
-        
+        df = pd.DataFrame({'activity': names, 'importance': mean_impact}).sort_values(
+            'importance', ascending=False)
+        df.to_csv(os.path.join(
+            output_dir, 'global_importance_data.csv'), index=False)
+
         plt.figure(figsize=(10, 6))
-        shap.summary_plot(agg_values, feature_names=names, plot_type="bar", show=False, max_display=15)
-        plt.title(f"Global Feature Importance ({self.task.capitalize()})", fontsize=14, fontweight='bold')
+        shap.summary_plot(agg_values, feature_names=names,
+                          plot_type="bar", show=False, max_display=15)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'shap_bar_plot.png'), dpi=300)
         plt.close()
+
+    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None, case_id=None, case_index=None):
+        if self.shap_values is None:
+            print("SHAP explanation not generated.")
+            return
+
+        values = self.shap_values.values
+        if isinstance(values, list):
+            values = values[0]
+
+        seq_len = self.test_data.shape[1] if self.test_data is not None else None
+
+        # Handle flattened multi-input case: SHAP values are (n_samples, total_flat_features)
+        if self.is_multi_input and hasattr(self, '_seq_flat_size'):
+            if values.ndim == 2 and values.shape[1] >= self._seq_flat_size:
+                values = values[:, :self._seq_flat_size]
+                if self._seq_shape != (seq_len,):
+                    values = values.reshape(
+                        (values.shape[0],) + self._seq_shape)
+
+        seq_axis = None
+        for axis in range(1, values.ndim):
+            if values.shape[axis] == seq_len:
+                seq_axis = axis
+                break
+
+        if seq_axis is not None:
+            values = np.moveaxis(values, seq_axis, 1)
+
+        # Aggregate logic for Local Sample
+        if values.ndim > 2:
+            if self.task == 'activity':
+                max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                sample_values = np.take_along_axis(
+                    values, max_abs_idx, axis=-1).squeeze(axis=-1)[sample_idx]
+            else:
+                sample_values = values.mean(axis=tuple(
+                    range(2, values.ndim)))[sample_idx]
+        else:
+            sample_values = values[sample_idx]
+
+        current_seq = self.test_data[sample_idx]
+
+        activity_stats = {}
+        names = self._get_activity_names_for_sample(current_seq)
+        for pos, token in enumerate(current_seq):
+            if token == 0: # PAD
+                continue
+            name = names[pos]
+            if name == "[PAD]":
+                continue
+
+            weight = sample_values[pos]
+            if name not in activity_stats:
+                activity_stats[name] = {'weight': 0.0, 'count': 0}
+            activity_stats[name]['weight'] += weight
+            activity_stats[name]['count'] += 1
+
+        data = []
+        for name, stats in activity_stats.items():
+            label = f"{name} (x{stats['count']})" if stats['count'] > 1 else name
+            data.append({
+                'activity': label,
+                'importance': stats['weight']
+            })
+
+        if not data:
+            print("No valid SHAP features found to plot.")
+            return
+
+        df = pd.DataFrame(data)
+        df["_abs_importance"] = df["importance"].abs()
+        df = df.sort_values("_abs_importance", ascending=True)
+        df = df.drop(columns=["_abs_importance"])
+
+        display_idx = original_idx if original_idx is not None else sample_idx
+        if case_id is not None and case_index is not None:
+            clean_case_id = str(case_id).replace("Case ", "").replace(
+                "case ", "").replace(" ", "_").strip()
+            file_suffix = f"case_{clean_case_id}_idx_{case_index}"
+        else:
+            file_suffix = f"sample_{display_idx}"
+
+        from .local_explainer_utils import plot_research_grade_local
+
+        current_seq_names = [n for n in self._get_activity_names_for_sample(current_seq) if n != '[PAD]']
+
+        plot_research_grade_local(df, current_seq_names, os.path.join(
+            output_dir, f'shap_explanation_{file_suffix}.png'), title="Trace History")
+
 
     def plot_summary(self, output_dir):
         print("Generating Global Summary Plot...")
@@ -388,12 +533,22 @@ class SHAPExplainer:
         if agg_shap is None:
             print("[WARNING] SHAP values unavailable or invalid for plotting.")
             return
-        pd.DataFrame(agg_shap, columns=names).to_csv(os.path.join(output_dir, 'shap_values_matrix.csv'), index=False)
+        shap_df = pd.DataFrame(agg_shap, columns=names)
+
+        insert_idx = 0
+        if getattr(self, 'sample_case_ids', None) is not None:
+            shap_df.insert(insert_idx, 'case_id', self.sample_case_ids)
+            insert_idx += 1
+        if getattr(self, 'sample_case_indexes', None) is not None:
+            shap_df.insert(insert_idx, 'case_index', self.sample_case_indexes)
+
+        pd.DataFrame(shap_df).to_csv(os.path.join(
+            output_dir, 'shap_values_matrix.csv'), index=False)
 
         # Use aggregated activity-level summary to avoid repeated position names.
         plt.figure(figsize=(13.5, 8))
-        shap.summary_plot(agg_shap, features=agg_feat, feature_names=names, show=False, max_display=15)
-        plt.title(f"Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
+        shap.summary_plot(agg_shap, features=agg_feat,
+                          feature_names=names, show=False, max_display=15)
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'shap_summary_plot.png'), dpi=300)
         plt.close()
@@ -402,13 +557,16 @@ class SHAPExplainer:
         if isinstance(self.shap_values.values, list) and self.test_data_temp is not None:
             temp_values = self.shap_values.values[1]
             if temp_values.ndim > 2:
-                temp_values = temp_values.mean(axis=tuple(range(2, temp_values.ndim)))
-            temp_feature_names = [f"Temp_{i+1}" for i in range(self.test_data_temp.shape[1])]
+                temp_values = temp_values.mean(
+                    axis=tuple(range(2, temp_values.ndim)))
+            temp_feature_names = [
+                f"Temp_{i+1}" for i in range(self.test_data_temp.shape[1])]
             plt.figure(figsize=(10, 6))
-            shap.summary_plot(temp_values, features=self.test_data_temp, feature_names=temp_feature_names, show=False, max_display=15)
-            plt.title(f"Temporal Feature Impact Distribution ({self.task.capitalize()})", fontsize=14, fontweight='bold')
+            shap.summary_plot(temp_values, features=self.test_data_temp,
+                              feature_names=temp_feature_names, show=False, max_display=15)
             plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, 'shap_summary_plot_temp.png'), dpi=300)
+            plt.savefig(os.path.join(
+                output_dir, 'shap_summary_plot_temp.png'), dpi=300)
             plt.close()
 
     def save_explanations(self, output_dir):
@@ -458,7 +616,11 @@ class TimestepSHAPExplainer(SHAPExplainer):
                 else:
                     values = values.reshape((values.shape[0],) + self._seq_shape)
                     if values.ndim > 2:
-                        values = values.mean(axis=tuple(range(2, values.ndim)))
+                        if self.task == 'activity':
+                            max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                            values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(axis=-1)
+                        else:
+                            values = values.mean(axis=tuple(range(2, values.ndim)))
 
         if values.ndim > 2:
             seq_axis = None
@@ -469,7 +631,11 @@ class TimestepSHAPExplainer(SHAPExplainer):
             if seq_axis is not None:
                 values = np.moveaxis(values, seq_axis, 1)
                 if values.ndim > 2:
-                    values = values.mean(axis=tuple(range(2, values.ndim)))
+                    if self.task == 'activity':
+                        max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
+                        values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(axis=-1)
+                    else:
+                        values = values.mean(axis=tuple(range(2, values.ndim)))
 
         return values
 
@@ -558,14 +724,18 @@ class TimestepSHAPExplainer(SHAPExplainer):
             except Exception as e:
                 print(f"Could not add prediction overlay: {e}")
 
-        plt.title(f'Transformer Model - SHAP Explainability (Sample {sample_idx})',
-                  fontsize=14, fontweight='bold')
+        c_id = self.sample_case_ids[sample_idx] if getattr(self, 'sample_case_ids', None) and sample_idx < len(self.sample_case_ids) else "unknown"
+        if c_id != "unknown":
+            c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_")
+        c_idx = self.sample_case_indexes[sample_idx] if getattr(self, 'sample_case_indexes', None) and sample_idx < len(self.sample_case_indexes) else "unknown"
+        sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{sample_idx}"
+
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_sample_{sample_idx}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'shap_temporal_evolution_{sample_name}.png'), dpi=300)
         plt.close()
 
         df_data = {
-            'Activity': filtered_activities,
+            'activity': filtered_activities,
             'SHAP_Value': filtered_shap
         }
         if use_timestamps:
@@ -574,7 +744,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
             df_data['Timestep'] = x_values
 
         df = pd.DataFrame(df_data)
-        df.to_csv(os.path.join(output_dir, f'shap_timestep_data_sample_{sample_idx}.csv'), index=False)
+        df.to_csv(os.path.join(output_dir, f'shap_timestep_data_{sample_name}.csv'), index=False)
 
     def plot_timestep_heatmap(self, output_dir, sample_idx=0):
         if self.shap_values is None:
@@ -610,11 +780,16 @@ class TimestepSHAPExplainer(SHAPExplainer):
         ax.set_xticks(timesteps)
         ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=8)
         ax.axhline(0, color='black', linewidth=1)
-        ax.set_xlabel('Event (Activity + Timestamp)' if self.timestamps else 'Timestep (Activity)',
+        ax.set_xlabel('Event (activity + Timestamp)' if self.timestamps else 'Timestep (activity)',
                       fontsize=12, fontweight='bold')
         ax.set_ylabel('SHAP Value (Contribution)', fontsize=12, fontweight='bold')
-        ax.set_title(f'Timestep-Level SHAP Attribution - Sample {sample_idx}',
-                     fontsize=14, fontweight='bold')
+        
+        c_id = self.sample_case_ids[sample_idx] if getattr(self, 'sample_case_ids', None) and sample_idx < len(self.sample_case_ids) else "unknown"
+        if c_id != "unknown":
+            c_id = str(c_id).replace("Case ", "").replace("case ", "").replace(" ", "_")
+        c_idx = self.sample_case_indexes[sample_idx] if getattr(self, 'sample_case_indexes', None) and sample_idx < len(self.sample_case_indexes) else "unknown"
+        sample_name = f"case_{c_id}_idx_{c_idx}" if c_id != "unknown" else f"sample_{sample_idx}"
+
         ax.grid(axis='y', linestyle='--', alpha=0.3)
 
         from matplotlib.patches import Patch
@@ -625,7 +800,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
         ax.legend(handles=legend_elements, loc='upper right')
 
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'shap_timestep_heatmap_sample_{sample_idx}.png'), dpi=300)
+        plt.savefig(os.path.join(output_dir, f'shap_timestep_heatmap_{sample_name}.png'), dpi=300)
         plt.close()
 
     def plot_global_temporal_importance(self, output_dir):
@@ -636,7 +811,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
         if seq_values is None:
             return
 
-        print("Generating Global Temporal Importance Plot...")
+        print("Generating Global Temporal importance Plot...")
 
         mean_shap_per_timestep = np.mean(np.abs(seq_values), axis=0)
 
@@ -663,8 +838,6 @@ class TimestepSHAPExplainer(SHAPExplainer):
                edgecolor='black', linewidth=0.5)
         ax.set_xlabel('Timestep Position', fontsize=12, fontweight='bold')
         ax.set_ylabel('Mean Absolute SHAP Value', fontsize=12, fontweight='bold')
-        ax.set_title('Global Timestep Importance (Averaged Across All Samples)',
-                     fontsize=14, fontweight='bold')
         ax.grid(axis='y', linestyle='--', alpha=0.3)
 
         top_n = 10
@@ -679,7 +852,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
 
         df = pd.DataFrame({
             'Timestep': timesteps,
-            'Most_Common_Activity': activity_labels,
+            'Most_Common_activity': activity_labels,
             'Mean_Absolute_SHAP': mean_shap_per_timestep
         })
         df.to_csv(os.path.join(output_dir, 'shap_global_temporal_data.csv'), index=False)
@@ -697,38 +870,38 @@ class LIMEExplainer:
         self.is_multi_input = False
         self.vocab_size = None
         self.y_true = None
+        self.sample_indices = None
+        self.sample_case_ids = None
         # DEBUG: Print whether label_encoder is available
         if self.label_encoder is None:
-            print("[WARNING] label_encoder is None - LIME will show generic Activity labels!")
+            print("[WARNING] label_encoder is None - LIME will show generic activity labels!")
             print("[FIX] Pass label_encoder to run_transformer_explainability()")
         else:
             print(f"[OK] label_encoder available with {len(self.label_encoder.classes_)} activities")
         
-    def _aggregate_feature_names(self, data):
+    def _get_activity_names_for_sample(self, sequence):
         if self.label_encoder is None:
-            return [f'Position_{i+1}' for i in range(data.shape[1])]
-        feature_names = []
-        for pos in range(data.shape[1]):
-            activities_at_pos = []
-            for sample in data:
-                token = sample[pos]
-                if token > 0:
-                    try:
-                        # Token indices are offset by +1 (0 is padding)
-                        activity = self.label_encoder.inverse_transform([int(token) - 1])[0]
-                        activities_at_pos.append(activity)
-                    except Exception as e:
-                        print(f"[WARNING] Failed to decode activity token {int(token)}: {e}")
-                        pass
-    
-            if activities_at_pos:
-                # Find most common activity at this position
-                most_common = max(set(activities_at_pos), key=activities_at_pos.count)
-                feature_names.append(most_common)
+            return [f'activity_{int(t)}' if t > 0 else '[PAD]' for t in sequence]
+        
+        names = []
+        for token in sequence:
+            if token > 0:
+                try:
+                    # Token indices are offset by +1 (0 is padding)
+                    actual_activity = self.label_encoder.inverse_transform(
+                        [int(token)-1])[0]
+                    names.append(actual_activity)
+                except Exception as e:
+                    names.append(f'Token_{int(token)}')
             else:
-                # Fallback for padding-only positions
-                feature_names.append(f'Position_{pos+1}')
-        return feature_names
+                names.append('[PAD]')
+        return names
+
+    def _aggregate_feature_names(self, data):
+        # We must use unique position names so LimeTabularExplainer doesn't confuse
+        # different timestep positions as the same feature when generating perturbations.
+        # The mapping to actual activity names will happen during plot generation.
+        return [f'Position_{i+1}' for i in range(data.shape[1])]
         
     def initialize_explainer(self, training_data, num_classes=None):
         print("Initializing LIME Explainer...")
@@ -760,11 +933,12 @@ class LIMEExplainer:
             mode=mode,
             feature_names=feature_names,
             class_names=class_names,
+            categorical_features=list(range(init_data.shape[1])),
             discretize_continuous=False,
             verbose=False
         )
     
-    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None):
+    def explain_samples(self, test_data, num_samples=10, num_features=15, y_true=None, sample_indices=None, sample_case_ids=None, sample_indexes=None):
         print(f"Generating LIME explanations for {num_samples} samples...")
         
         if isinstance(test_data, (list, tuple)):
@@ -778,6 +952,25 @@ class LIMEExplainer:
             print(f"[DEBUG explain_samples] Processing {len(self.test_data_seq)} samples")
         if y_true is not None:
             self.y_true = y_true[:num_samples]
+        if sample_indices is not None:
+            self.sample_indices = list(sample_indices[:num_samples])
+        else:
+            self.sample_indices = list(range(num_samples))
+        if sample_case_ids is not None:
+            if sample_indices is not None:
+                self.sample_case_ids = [sample_case_ids[i] for i in sample_indices[:num_samples]]
+            else:
+                self.sample_case_ids = list(sample_case_ids[:num_samples])
+        else:
+            self.sample_case_ids = None
+
+        if sample_indexes is not None:
+            if sample_indices is not None:
+                self.sample_case_indexes = [sample_indexes[i] for i in sample_indices[:num_samples]]
+            else:
+                self.sample_case_indexes = list(sample_indexes[:num_samples])
+        else:
+            self.sample_case_indexes = None
             
         vocab_size = self.vocab_size if self.vocab_size is not None else int(np.max(self.test_data_seq)) + 1
         
@@ -801,8 +994,9 @@ class LIMEExplainer:
                 exp = self.explainer.explain_instance(
                     self.test_data_seq[i],
                     predict_fn,
-                    num_features=num_features,
-                    top_labels=1
+                    num_features=len(self.test_data_seq[i]),
+                    top_labels=1,
+                    num_samples=250
                 )
                 self.explanations.append(exp)
                 
@@ -811,25 +1005,167 @@ class LIMEExplainer:
                 self.explanations.append(None)        
         return self.explanations
 
+    def calculate_global_importance(self, num_features=15):
+        """
+        Aggregates local LIME explanations into global feature importances.
+        """
+        feature_scores = defaultdict(float)
+        feature_counts = defaultdict(int)
+
+        for i, exp in enumerate(self.explanations):
+            if exp is None:
+                continue
+
+            exp_list = None
+            if self.task == 'activity':
+                true_class = self.y_true[i] if self.y_true is not None else None
+                if true_class is not None:
+                    try:
+                        exp_list = exp.as_list(label=true_class)
+                    except KeyError:
+                        pass
+                if exp_list is None and getattr(exp, "available_labels", None):
+                    avail = exp.available_labels()
+                    if avail:
+                        try:
+                            exp_list = exp.as_list(label=avail[0])
+                        except KeyError:
+                            pass
+                if exp_list is None:
+                    try:
+                        exp_list = exp.as_list()
+                    except KeyError:
+                        pass
+            else:
+                try:
+                    exp_list = exp.as_list()
+                except KeyError:
+                    pass
+
+            if exp_list:
+                for feature_name_raw, weight in exp_list:
+                    if 'Position_' in feature_name_raw:
+                        import re
+                        match = re.search(r'Position_(\d+)', feature_name_raw)
+                        if match:
+                            pos_idx = int(match.group(1)) - 1
+                            if self.test_data_seq is not None and i < len(self.test_data_seq):
+                                token = self.test_data_seq[i][pos_idx]
+                                feature_name = self._get_activity_name([token])
+                                if isinstance(feature_name, (list, np.ndarray)):
+                                    feature_name = feature_name[0]
+                            else:
+                                feature_name = feature_name_raw
+                        else:
+                            feature_name = feature_name_raw
+                    else:
+                        feature_name = feature_name_raw
+
+                    feature_scores[feature_name] += abs(weight)
+                    feature_counts[feature_name] += 1
+        
+        averaged_scores = {
+            feat: score / feature_counts[feat]
+            for feat, score in feature_scores.items() if feature_counts[feat] > 0
+        }
+        
+        global_importance_list = [
+            {'activity': feat, 'Mean_Impact': score}
+            for feat, score in averaged_scores.items()
+        ]
+        print(f"[LIME] Processed {len(self.explanations)} local explanations.")
+        global_importance_list.sort(key=lambda x: x['Mean_Impact'], reverse=True)
+        
+        self.global_importance = global_importance_list[:num_features]
+        print(f"[LIME] Calculated global importance for {len(self.global_importance)} features.")
+        return self.global_importance
+
+    def plot_global_importance(self, output_dir):
+        """Generates a global summary plot for LIME."""
+        if not getattr(self, 'global_importance', None):
+            print("[WARNING] No LIME global importance data to plot.")
+            return
+
+        import matplotlib.pyplot as plt
+        import pandas as pd
+        
+        df = pd.DataFrame(self.global_importance).sort_values('Mean_Impact', ascending=True)
+        
+        plt.figure(figsize=(10, 6))
+        plt.barh(df['activity'], df['Mean_Impact'], color='#82ca9d', edgecolor='black', alpha=0.8)
+        plt.xlabel("Mean Absolute Weight (Impact)", fontweight='bold')
+        plt.title(f"LIME Global Feature Importance ({self.task.capitalize()})", fontweight='bold')
+        plt.grid(axis='x', linestyle='--', alpha=0.4)
+        plt.tight_layout()
+        
+        plt.savefig(os.path.join(output_dir, 'lime_global_importance.png'), dpi=300, facecolor="white")
+        plt.close()
+        print(f"[OK] LIME global importance plot saved.")
+
+
     def _get_activity_name(self, token_idx):
-        if token_idx == 0: 
+        import numpy as np
+        if isinstance(token_idx, (list, np.ndarray)) and len(token_idx) > 0:
+            token_val = int(token_idx[0])
+        else:
+            try:
+                token_val = int(token_idx)
+            except Exception:
+                return f"activity_{token_idx}"
+
+        if token_val == 0: 
             return "[PAD]"
         if self.label_encoder:
             try: 
-                return self.label_encoder.inverse_transform([int(token_idx)-1])[0]
+                return self.label_encoder.inverse_transform([token_val - 1])[0]
             except Exception as e:
-                print(f"[WARNING] Failed to decode activity token {int(token_idx)}: {e}")
                 pass
-        return f"Activity_{int(token_idx)}"
+        return f"activity_{token_val}"
 
-    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None):
+    def _decode_activity_class(self, class_idx):
+        if class_idx is None:
+            return None
+        try:
+            idx = int(class_idx)
+        except Exception:
+            return class_idx
+
+        if self.label_encoder is None:
+            return idx
+
+        if idx <= 0:
+            return f"CLASS_{idx}_UNUSED"
+
+        label_idx = idx - 1
+        if 0 <= label_idx < len(self.label_encoder.classes_):
+            try:
+                return self.label_encoder.inverse_transform([label_idx])[0]
+            except Exception:
+                pass
+
+        return f"CLASS_{idx}"
+
+    def plot_explanation(self, output_dir, sample_idx=0, original_idx=None, case_id=None, case_index=None):
+        import matplotlib.pyplot as plt
+        display_idx = original_idx if original_idx is not None else sample_idx 
+        case_text = f", case {case_id}" if case_id is not None else ""
+        if case_index is not None:
+            case_text += f" (idx {case_index})"
+            clean_case_id = str(case_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
+            file_suffix = f"case_{clean_case_id}_idx_{case_index}"
+        else:
+            file_suffix = f"sample_{display_idx}"
+
         if sample_idx >= len(self.explanations) or self.explanations[sample_idx] is None:
             print(f"LIME Explanation not found for sample {sample_idx}.")
+            plt.figure(figsize=(10, 4))
+            plt.text(0.5, 0.5, f"LIME Explanation Failed\nNo valid LIME data for {file_suffix}", ha='center', va='center')
+            plt.axis('off')
+            plt.savefig(os.path.join(output_dir, f'lime_explanation_{file_suffix}.png'), dpi=300, facecolor="white")
+            plt.close()
             return
     
-        # Use original_idx for filename, sample_idx for data access
-        display_idx = original_idx if original_idx is not None else sample_idx 
-        print(f"Generating Research-Grade LIME Plot for sample {display_idx}...")
+        print(f"Generating Research-Grade LIME Plot for sample {display_idx}{case_text}...")
         exp = self.explanations[sample_idx]
         current_seq = self.test_data_seq[sample_idx]  # Use local index
         
@@ -843,21 +1179,12 @@ class LIMEExplainer:
                 
                 pred_probs = exp.predict_proba
                 confidence = pred_probs[label_to_explain] if pred_probs is not None else 0.0
-                pred_label = label_to_explain
-                if self.label_encoder is not None:
-                    try:
-                        pred_label = self.label_encoder.inverse_transform([int(label_to_explain)])[0]
-                    except Exception:
-                        pred_label = label_to_explain
+                pred_label = self._decode_activity_class(label_to_explain)
                 pred_activity_name = pred_label
                 gt_label = None
                 if self.y_true is not None and sample_idx < len(self.y_true):
                     gt_label = self.y_true[sample_idx]
-                    if self.label_encoder is not None:
-                        try:
-                            gt_label = self.label_encoder.inverse_transform([int(gt_label)])[0]
-                        except Exception:
-                            pass
+                    gt_label = self._decode_activity_class(gt_label)
                 gt_text = f" | Ground Truth: {gt_label}" if gt_label is not None else ""
                 title = f"LIME Explanation (Sample {display_idx})\nPredicted Class: {pred_label} | Confidence: {confidence:.2f}{gt_text}"
                 lime_list = exp.as_list(label=label_to_explain)
@@ -883,7 +1210,13 @@ class LIMEExplainer:
         except Exception as e:
             print(f"Warning: Could not extract full LIME details: {e}")
             title = f"LIME Explanation (Sample {display_idx})"
-            lime_list = exp.as_list()
+            try:
+                lime_list = exp.as_list(label=exp.available_labels()[0]) if getattr(exp, "available_labels", None) and exp.available_labels() else exp.as_list()
+            except Exception:
+                try:
+                    lime_list = exp.as_list()
+                except Exception:
+                    lime_list = []
 
         activity_stats = {} 
         for rule, weight in lime_list:
@@ -901,7 +1234,7 @@ class LIMEExplainer:
                 else:
                     continue
             else:
-                # Activity name from aggregated feature_names
+                # activity name from aggregated feature_names
                 # Extract base name (remove conditions like "<= 3.00")
                 name = rule.split('<=')[0].split('>')[0].strip()
                 # If name still looks like a Position_ label, try mapping or skip.
@@ -916,6 +1249,9 @@ class LIMEExplainer:
                     else:
                         continue
             
+            if name == "[PAD]":
+                continue
+                
             if name not in activity_stats:
                 activity_stats[name] = {'weight': 0.0, 'count': 0}
             activity_stats[name]['weight'] += weight
@@ -925,49 +1261,65 @@ class LIMEExplainer:
         for name, stats in activity_stats.items():
             label = f"{name} (x{stats['count']})" if stats['count'] > 1 else name
             data.append({
-                'Activity': label,
-                'Weight': stats['weight'],
-                'AbsWeight': abs(stats['weight'])
+                'activity': label,
+                'importance': stats['weight']
             })
             
         if not data:
             print("No valid LIME features found to plot.")
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(10, 4))
+            plt.text(0.5, 0.5, f"LIME Explanation Resulted in Empty Data\n(All feature weights 0.0 or unchanged)", ha='center', va='center')
+            plt.axis('off')
+            plt.savefig(os.path.join(output_dir, f'lime_explanation_{file_suffix}.png'), dpi=300, facecolor="white")
+            plt.close()
             return
 
-        df = pd.DataFrame(data).sort_values('AbsWeight', ascending=True)
-        df[['Activity', 'Weight']].to_csv(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.csv'), index=False)
-
-        plt.figure(figsize=(10, 6))
-        colors = ['#2ca02c' if x > 0 else '#d62728' for x in df['Weight']]
+        df = pd.DataFrame(data)
+        df["_abs_importance"] = df["importance"].abs()
+        df = df.sort_values("_abs_importance", ascending=True)
+        df = df.drop(columns=["_abs_importance"])
         
-        bars = plt.barh(df['Activity'], df['Weight'], color=colors, height=0.6)
+        insert_idx = 0
+        if case_id is not None:
+            df.insert(insert_idx, 'case_id', case_id)
+            insert_idx += 1
+        if case_index is not None:
+            df.insert(insert_idx, 'case_index', case_index)
+            insert_idx += 1
+            
+        csv_cols = []
+        if case_id is not None:
+            csv_cols.append('case_id')
+        if case_index is not None:
+            csv_cols.append('case_index')
+        csv_cols.extend(['activity', 'importance'])
         
-        plt.axvline(0, color='black', linewidth=0.8)
-        plt.grid(axis='x', linestyle='--', alpha=0.6)
-        plt.margins(x=0.15)
-        plt.title(title, fontsize=13, fontweight='bold')
-        plt.xlabel("Contribution to Prediction", fontsize=11)
+        if case_id is not None and case_index is not None:
+            clean_case_id = str(case_id).replace("Case ", "").replace("case ", "").replace(" ", "_").strip()
+            file_suffix = f"case_{clean_case_id}_idx_{case_index}"
+        else:
+            file_suffix = f"sample_{display_idx}"
         
-        for rect in bars:
-            w = rect.get_width()
-            y = rect.get_y() + rect.get_height()/2
-            padding = 0.0005 if w > 0 else -0.0005
-            ha = 'left' if w > 0 else 'right'
-            plt.text(w + padding, y, f'{w:.4f}', va='center', ha=ha, fontsize=9, fontweight='bold')
+        df[csv_cols].to_csv(os.path.join(output_dir, f'lime_explanation_{file_suffix}.csv'), index=False)
 
-        from matplotlib.patches import Patch
-        plt.legend(handles=[
-            Patch(facecolor='#2ca02c', label='Supports'),
-            Patch(facecolor='#d62728', label='Contradicts')
-        ], loc='lower right', frameon=True)
-
-        # Add full sample sequence at the bottom with predicted activity highlighted.
-        plt.tight_layout(rect=[0.05, 0.05, 0.98, 1])
-        plt.savefig(os.path.join(output_dir, f'lime_explanation_sample_{display_idx}.png'), dpi=300)
-        plt.close()
+        # Use common local graph renderer
+        from .local_explainer_utils import plot_research_grade_local
+        
+        current_seq_names = [n for n in self._get_activity_names_for_sample(current_seq) if n != '[PAD]']
+                
+        plot_research_grade_local(df, current_seq_names, os.path.join(output_dir, f'lime_explanation_{file_suffix}.png'), title="Trace History")
 
     def save_explanations(self, output_dir):
         print("[OK] LIME computations complete.")
+        lime_global_csv = os.path.join(output_dir, "global_importance_data.csv")
+        if getattr(self, 'global_importance', None):
+            import pandas as pd
+            df = pd.DataFrame(self.global_importance)
+            df.to_csv(lime_global_csv, index=False)
+            print(f"[OK] LIME global importance saved to: {lime_global_csv}")
+        else:
+            print("[WARNING] No LIME global importance data to save.")
 
 
 def generate_comparison_report(output_dir, shap_dir, lime_dir):
@@ -981,26 +1333,37 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
     shap_importance = {}
     if shap_dir and os.path.exists(os.path.join(shap_dir, 'global_importance_data.csv')):
         shap_df = pd.read_csv(os.path.join(shap_dir, 'global_importance_data.csv'))
-        shap_importance = dict(zip(shap_df['Activity'], shap_df['Mean_Impact']))
+        col_name = 'importance' if 'importance' in shap_df.columns else 'Mean_Impact'
+        if col_name in shap_df.columns:
+            shap_importance = dict(zip(shap_df['activity'], shap_df[col_name]))
     
-    # Load LIME results if available (aggregate from multiple samples)
+    # Load LIME results if available
     lime_importance = {}
     if lime_dir:
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_sample_') and f.endswith('.csv')]
-        if lime_files:
-            all_lime_weights = {}
-            for lime_file in lime_files:
-                lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-                for _, row in lime_df.iterrows():
-                    activity = row['Activity']
-                    activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
-                    weight = abs(row['Weight'])
-                    if activity not in all_lime_weights:
-                        all_lime_weights[activity] = []
-                    all_lime_weights[activity].append(weight)
-            
-            # Average LIME weights
-            lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
+        global_lime_file = os.path.join(lime_dir, 'global_importance_data.csv')
+        if os.path.exists(global_lime_file):
+            lime_df = pd.read_csv(global_lime_file)
+            col_name = 'importance' if 'importance' in lime_df.columns else 'Mean_Impact'
+            if col_name in lime_df.columns:
+                lime_importance = dict(zip(lime_df['activity'], lime_df[col_name]))
+        
+        # Fallback to aggregation if global file is missing but individual files exist
+        if not lime_importance:
+            lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
+            if lime_files:
+                all_lime_weights = {}
+                for lime_file in lime_files:
+                    lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+                    for _, row in lime_df.iterrows():
+                        activity = row['activity']
+                        activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
+                        weight = abs(row['importance'])
+                        if activity not in all_lime_weights:
+                            all_lime_weights[activity] = []
+                        all_lime_weights[activity].append(weight)
+                
+                # Average LIME weights
+                lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
     
     # Combine results
     all_features = set(shap_importance.keys()) | set(lime_importance.keys())
@@ -1010,17 +1373,17 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
         lime_score = lime_importance.get(feature, 0)
         avg_score = (shap_score + lime_score) / 2 if shap_score and lime_score else (shap_score or lime_score)
         
+        
         summary_data.append({
-            'Feature': feature,
-            'SHAP_Importance': shap_score,
-            'LIME_Importance': lime_score,
-            'Average_Importance': avg_score,
-            'Agreement': 'Both' if shap_score > 0 and lime_score > 0 else 'SHAP only' if shap_score > 0 else 'LIME only'
+            'activity': feature,
+            'shap_importance': shap_score,
+            'lime_importance': lime_score,
+            'average_importance': avg_score
         })
     
     # Save summary
     summary_df = pd.DataFrame(summary_data)
-    summary_df = summary_df.sort_values('Average_Importance', ascending=False)
+    summary_df = summary_df.sort_values('average_importance', ascending=False)
     summary_df.to_csv(os.path.join(output_dir, 'feature_importance_summary.csv'), index=False)
     
     # Generate text report
@@ -1030,15 +1393,13 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
         f.write("="*70 + "\n\n")
         
         f.write(f"Total features analyzed: {len(all_features)}\n")
-        f.write(f"Features identified by both methods: {len([x for x in summary_data if x['Agreement'] == 'Both'])}\n")
-        f.write(f"Features identified by SHAP only: {len([x for x in summary_data if x['Agreement'] == 'SHAP only'])}\n")
-        f.write(f"Features identified by LIME only: {len([x for x in summary_data if x['Agreement'] == 'LIME only'])}\n\n")
+
         
         f.write("Top 10 Most Important Features (Average):\n")
         f.write("-"*70 + "\n")
         for i, row in enumerate(summary_df.head(10).to_dict('records'), 1):
-            f.write(f"{i:2d}. {row['Feature']:<30} | Avg: {row['Average_Importance']:.4f}\n")
-            f.write(f"    SHAP: {row['SHAP_Importance']:.4f} | LIME: {row['LIME_Importance']:.4f}\n\n")
+            f.write(f"{i:2d}. {row['activity']:<30} | Avg: {row['average_importance']:.4f}\n")
+            f.write(f"    SHAP: {row['shap_importance']:.4f} | LIME: {row['lime_importance']:.4f}\n\n")
     
     print(f"[OK] Feature importance summary saved: feature_importance_summary.csv")
     print(f"[OK] Comparison report saved: comparison_report.txt")
@@ -1112,7 +1473,7 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
         if not os.path.exists(shap_path):
             raise RuntimeError("SHAP output missing: global_importance_data.csv")
         shap_df = pd.read_csv(shap_path)
-        shap_feats = set(shap_df['Activity'].astype(str).tolist())
+        shap_feats = set(shap_df['activity'].astype(str).tolist())
         missing_shap = sorted(expected - shap_feats)
         if missing_shap:
             print(f"[WARNING] SHAP missing activities: {', '.join(missing_shap)}")
@@ -1120,15 +1481,24 @@ def _validate_explainability_coverage(task, label_encoder, shap_dir=None, lime_d
     if lime_dir:
         if not os.path.isdir(lime_dir):
             raise RuntimeError("LIME output missing: lime directory not found.")
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_sample_') and f.endswith('.csv')]
-        if not lime_files:
-            raise RuntimeError("LIME output missing: no lime_explanation_sample_*.csv files found.")
+        
+        lime_global_path = os.path.join(lime_dir, "global_importance_data.csv")
+        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_') and f.endswith('.csv')]
+        
+        if not os.path.exists(lime_global_path) and not lime_files:
+            raise RuntimeError("LIME output missing: neither global_importance_data.csv nor lime_explanation_*.csv files found.")
+        
         lime_feats = set()
+        if os.path.exists(lime_global_path):
+            ldf = pd.read_csv(lime_global_path)
+            lime_feats.update(ldf['activity'].astype(str).tolist())
+            
         for lime_file in lime_files:
             lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-            for val in lime_df['Activity'].astype(str).tolist():
+            for val in lime_df['activity'].astype(str).tolist():
                 name = re.sub(r'\s+\(x\d+\)$', '', val).strip()
                 lime_feats.add(name)
+        
         missing_lime = sorted(expected - lime_feats)
         if missing_lime:
             print(f"[WARNING] LIME missing activities: {', '.join(missing_lime)}")
@@ -1766,6 +2136,16 @@ class ExplainabilityBenchmark:
 def run_transformer_explainability(model, data, output_dir, task='activity', num_samples=50, methods='all', label_encoder=None, scaler=None, timestamps=None, feature_config=None, run_benchmark=True):
     os.makedirs(output_dir, exist_ok=True)
     
+    # Pre-calculate case indexes sequential per case id
+    test_case_ids = data.get('test_case_ids')
+    test_case_indexes = None
+    if test_case_ids is not None:
+        case_counters = {}
+        test_case_indexes = []
+        for cid in test_case_ids:
+            case_counters[cid] = case_counters.get(cid, 0) + 1
+            test_case_indexes.append(case_counters[cid])
+    
     # Initialize explainer references
     se = None  # SHAP explainer
     le = None  # LIME explainer
@@ -1780,7 +2160,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
     if label_encoder is None:
         print("\n" + "!"*60)
         print("WARNING: label_encoder is None!")
-        print("Plots will show generic labels like 'Activity_4'")
+        print("Plots will show generic labels like 'activity_4'")
         print("To fix: Pass predictor.label_encoder to this function")
         print("!"*60 + "\n")
     
@@ -1815,13 +2195,9 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 )
                 if not shap_indices:
                     shap_indices = None
-            se.explain_samples(test_data, num_samples, indices=shap_indices)
+            se.explain_samples(test_data, num_samples, indices=shap_indices, sample_ids=test_case_ids, sample_indexes=test_case_indexes)
             if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
-                print("\n[SHAP] Generating timestep-level visualizations...")
-                for i in range(min(5, num_samples)):
-                    se.plot_temporal_evolution(shap_dir, sample_idx=i, show_prediction=True)
-                for i in range(min(3, num_samples)):
-                    se.plot_timestep_heatmap(shap_dir, sample_idx=i)
+                print("\n[SHAP] Generating global timestep-level summary...")
                 se.plot_global_temporal_importance(shap_dir)
             else:
                 se.plot_bar(shap_dir)
@@ -1831,10 +2207,6 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
             print(f"[ERROR] SHAP explainability failed: {e}")
         if not _dir_has_png(shap_dir):
             print("[WARNING] No SHAP plots generated.")
-        _ensure_stub_csv(
-            os.path.join(shap_dir, "global_importance_data.csv"),
-            ["Activity", "Mean_Impact"]
-        )
 
     if methods in ['lime', 'all']:
         print("\n--- Running LIME ---")
@@ -1873,39 +2245,21 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                     diverse_test_data,
                     num_samples=len(diverse_samples),
                     num_features=30,
-                    y_true=y_true_diverse
+                    y_true=y_true_diverse,
+                    sample_indices=diverse_samples,
+                    sample_case_ids=test_case_ids,
+                    sample_indexes=test_case_indexes
                 )
                 print(f"[DEBUG] Generated {len(le.explanations)} explanations")
                 
-                # Plot all explained samples (now they match 0-9)
-                print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
-                plots_saved = 0
-                for i in range(len(le.explanations)):
-                    try:
-                        if le.explanations[i] is not None:
-                            # Use original test set index in filename
-                            original_idx = diverse_samples[i]
-                            print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
-                            le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx)
-                            plots_saved += 1
-                        else:
-                            print(f"[WARNING] Explanation {i} is None, skipping...")
-                    except Exception as e:
-                        print(f"[ERROR] Failed to plot sample {i}: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                print(f"[LIME] Successfully saved {plots_saved} plots")
-                
+                le.calculate_global_importance(num_features=30)
+                le.plot_global_importance(lime_dir)
                 le.save_explanations(lime_dir)
         except Exception as e:
             print(f"[ERROR] LIME explainability failed: {e}")
-        if not _dir_has_png(lime_dir):
+        has_png = any(f.endswith('.png') for f in os.listdir(lime_dir)) if lime_dir and os.path.exists(lime_dir) else False
+        if not has_png:
             print("[WARNING] No LIME plots generated.")
-        _ensure_stub_csv(
-            os.path.join(lime_dir, "lime_explanation_sample_0.csv"),
-            ["Activity", "Weight"]
-        )
     
     # -------------------------------------------------------------------------
     # RUN BENCHMARK EVALUATION
@@ -1966,9 +2320,21 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                         if exp is not None:
                             # Extract feature weights from LIME explanation
                             if task == 'activity' and hasattr(exp, 'top_labels') and exp.top_labels:
-                                exp_list = exp.as_list(label=exp.top_labels[0])
+                                try:
+                                    exp_list = exp.as_list(label=exp.top_labels[0])
+                                except KeyError:
+                                    try:
+                                        exp_list = exp.as_list(label=exp.available_labels()[0]) if getattr(exp, "available_labels", None) and exp.available_labels() else exp.as_list()
+                                    except Exception:
+                                        try:
+                                            exp_list = exp.as_list()
+                                        except KeyError:
+                                            exp_list = []
                             else:
-                                exp_list = exp.as_list()
+                                try:
+                                    exp_list = exp.as_list()
+                                except KeyError:
+                                    exp_list = []
 
                             exp_map = dict(exp_list)
                             weights = np.zeros(seq_len)
@@ -2055,8 +2421,8 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
     print("\nGenerated outputs:")
     print("  [OK] SHAP global importance plots")
     if task != 'activity' and methods in ['shap', 'all']:
-        print("  [OK] Temporal attribution plots")
-    print(f"  [OK] LIME local explanations ({num_samples} diverse samples)")
+        print("  [OK] SHAP Global temporal attribution plots")
+    print("  [OK] LIME global importance analysis")
     print("  [OK] Feature importance summary CSV")
     print("  [OK] Method comparison report")
     if run_benchmark and benchmark_results:
