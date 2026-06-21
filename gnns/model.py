@@ -112,7 +112,7 @@ class HeteroGNN(nn.Module):
             }
         
         # ========================================
-        # KEY FIX: Use LAST activity node instead of global mean pool!
+        # Extract the final activity node embedding to represent the sequence state
         # ========================================
         
         # Get activity embeddings (most informative for sequence)

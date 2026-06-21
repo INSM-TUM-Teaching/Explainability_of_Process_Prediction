@@ -1148,10 +1148,10 @@ class GraphLIMEExplainer:
             ("resource", idx) for idx in active_resource
         ]
         
-        # FIX: Cap features to explain for speed
+        # Cap the number of features explained to maintain performance
         if len(active_features) > 25:
             active_features = active_features[:25]
-            # Adjust active_activity and active_resource to match the capped active_features
+            # Truncate activity and resource lists to match the constrained feature set
             active_activity = [idx for t, idx in active_features if t == 'activity']
             active_resource = [idx for t, idx in active_features if t == 'resource']
 
@@ -1334,7 +1334,7 @@ class GraphLIMEExplainer:
         for idx in tqdm(sample_indices, desc=f"GraphLIME ({task})"):
             graph = graphs[idx]
             try:
-                # Use 50 perturbations for global summary as requested
+                # Use 50 perturbations for the global summary baseline
                 explanation, _, _, _, _ = self.explain_local(graph, task=task, num_perturbations=50)
                 for item in explanation:
                     name = item['activity']

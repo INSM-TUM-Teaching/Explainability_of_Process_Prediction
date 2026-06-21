@@ -133,7 +133,7 @@ class SHAPExplainer:
             temp_features = int(np.prod(background_temp_sample.shape[1:]))
             total_features = num_features + temp_features
 
-            # FIX: Set max_evals to required minimum, but cap for speed
+            # Calculate required max_evals based on feature count and cap for speed
             computed = 2 * total_features + 1
             if max_evals_override == "auto":
                 self.max_evals = "auto"
@@ -194,7 +194,7 @@ class SHAPExplainer:
             background_sample = background_data[indices]
             num_features = int(np.prod(background_sample.shape[1:]))
 
-            # FIX: Set max_evals to required minimum, but cap for speed
+            # Calculate required max_evals based on feature count and cap for speed
             computed = 2 * num_features + 1
             if max_evals_override == "auto":
                 self.max_evals = "auto"
@@ -898,9 +898,9 @@ class LIMEExplainer:
         return names
 
     def _aggregate_feature_names(self, data):
-        # We must use unique position names so LimeTabularExplainer doesn't confuse
-        # different timestep positions as the same feature when generating perturbations.
-        # The mapping to actual activity names will happen during plot generation.
+        # Assign unique positional names to prevent LimeTabularExplainer from aliasing
+        # identical activities across different timesteps during perturbation.
+        # Mapping to original activity names is deferred to plot generation.
         return [f'Position_{i+1}' for i in range(data.shape[1])]
         
     def initialize_explainer(self, training_data, num_classes=None):

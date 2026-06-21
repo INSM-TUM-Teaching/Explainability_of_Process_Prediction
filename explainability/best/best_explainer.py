@@ -64,7 +64,7 @@ class BESTExplainer:
         df_rich, n_samples = self._build_prediction_frame()
 
         if df_rich is not None:
-            # New artifact generation (as requested in Best Visualizaiton.docx)
+            # Generate extended visualization artifacts
             self._save_summary_json(df_rich)
             pattern_id_map = self._save_top_patterns_csv() # This is the GLOBAL dictionary
             self._save_pattern_analysis_json(df_rich, pattern_id_map)
@@ -73,9 +73,7 @@ class BESTExplainer:
             self._plot_accuracy_by_prefix_length(df_rich)
             self._plot_confidence_by_class(df_rich)
             self._plot_activity_distribution(df_rich)
-            # DELETED: self._save_top_patterns_enriched(df_rich, distances) 
-            # This was overwriting top_patterns.csv with per-case results.
-            # The per-case results are already in best_predictions.csv.
+            # Note: per-case pattern results are logged via the predictor directly into best_predictions.csv.
             self._write_summary_report_enriched(df_rich, distances)
         else:
             # Fallback: basic tracker charts (pattern length histogram may be degenerate)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 
 export function useLocalStorage<T>(key: string, initialValue: T) {
   // Get from local storage then
@@ -21,8 +21,7 @@ export function useLocalStorage<T>(key: string, initialValue: T) {
   // Pass initial state function to useState so logic is only executed once
   const [storedValue, setStoredValue] = useState<T>(readValue);
 
-  // Return a wrapped version of useState's setter function that ...
-  // ... persists the new value to localStorage.
+  // Return a wrapped version of useState's setter function that persists the new value to localStorage.
   const setValue = useCallback((value: T | ((val: T) => T)) => {
     try {
       // Allow value to be a function so we have same API as useState
