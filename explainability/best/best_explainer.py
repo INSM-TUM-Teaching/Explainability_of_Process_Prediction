@@ -444,6 +444,45 @@ class BESTExplainer:
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
 
+    def _plot_accuracy_by_prefix_length_rtp(self, preds, actuals, prefix_lengths) -> None:
+        """How accuracy changes as more events are seen before the prediction."""
+        acc_by_len = defaultdict(list)
+        for p, a, l in zip(preds, actuals, prefix_lengths):
+            if p is not None and a is not None:
+                acc_by_len[l].append(int(p == a))
+
+        if not acc_by_len:
+            return
+
+        lengths_sorted = sorted(acc_by_len.keys())
+        accuracies = [np.mean(acc_by_len[l]) for l in lengths_sorted]
+        counts     = [len(acc_by_len[l])     for l in lengths_sorted]
+
+        fig, ax1 = plt.subplots(figsize=(10, 5))
+        ax1.plot(lengths_sorted, accuracies, "o-", color="#4C72B0",
+                 linewidth=2, markersize=6, label="Accuracy")
+        ax1.set_xlabel("Real events seen before prediction")
+        ax1.set_ylabel("Accuracy", color="#4C72B0")
+        ax1.tick_params(axis="y", labelcolor="#4C72B0")
+        ax1.set_ylim(0, 1.05)
+        ax1.set_title("Prediction Accuracy by Prefix Length\n"
+                      "How reliable is BEST at different points in a case?")
+        ax1.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+        ax2 = ax1.twinx()
+        ax2.bar(lengths_sorted, counts, alpha=0.2, color="#55A868", label="# samples")
+        ax2.set_ylabel("# samples", color="#55A868")
+        ax2.tick_params(axis="y", labelcolor="#55A868")
+
+        h1, l1 = ax1.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax1.legend(h1 + h2, l1 + l2, loc="lower right")
+
+        fig.tight_layout()
+        path = os.path.join(self.output_dir, "accuracy_by_prefix_length.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
     def _plot_confidence_by_class(self, df: pd.DataFrame) -> None:
         """Horizontal bar chart: mean pattern confidence per predicted activity class."""
         conf_by_class = defaultdict(list)
@@ -792,7 +831,7 @@ class BESTExplainer:
             self._plot_top_matched_patterns(decoded_patterns[:n], correct)
             self._plot_activity_importance(decoded_patterns[:n], correct)
             self._plot_error_patterns(decoded_patterns[:n], correct)
-            self._plot_accuracy_by_prefix_length(decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
+            self._plot_accuracy_by_prefix_length_rtp(decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
             self._write_summary_report(
                 probs[:n], dist_arr[:n],
                 decoded_patterns[:n], correct,
@@ -807,7 +846,7 @@ class BESTExplainer:
                 int(p == a) if p is not None and a is not None else None
                 for p, a in zip(decoded_preds[:n], decoded_actuals[:n])
             ]
-            self._plot_accuracy_by_prefix_length(decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
+            self._plot_accuracy_by_prefix_length_rtp(decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
             self._plot_confidence_distribution(probs)
             self._save_predictions_csv(probs[:n], dist_arr[:n], decoded_preds[:n],
                                        decoded_actuals[:n], prefix_lengths[:n], correct)
