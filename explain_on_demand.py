@@ -44,7 +44,7 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
     })
 
     # Prepare data to get sequence
-    # case_id from the frontend is stripped of "Case ". We will do the same to dataset case variables for matching.
+    # The case_id from the frontend lacks the "Case " prefix, so dataset case variables are stripped for matching.
     case_col_str = df['case:id'].astype(str).str.replace(r'^[Cc]ase\s+', '', regex=True).str.strip()
     
     case_df = df[case_col_str == str(case_id)].copy()
@@ -83,8 +83,7 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
         'TransformerBlock': TransformerBlock
     })
     
-    # We need background data. Let's just use a sample of all data
-    # Wait, fetching all data through prepare_data is expensive. Let's sample directly:
+    # Sample background data directly from the grouped dataset for the explainer baseline
     grouped = df.groupby('case:id')
     bg_seqs = []
     for cid, group in grouped:

@@ -45,7 +45,7 @@ export default function ResultsView({
   const [artifacts, setArtifacts] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Also load summary.json for all runs right away to check if we should use NextActivityResults
+  // Preload summary.json for all runs to determine whether NextActivityResults should be used
   const [summary, setSummary] = useState<any>(null);
 
   useEffect(() => {

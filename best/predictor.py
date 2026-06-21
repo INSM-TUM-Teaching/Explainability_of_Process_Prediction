@@ -35,15 +35,13 @@ class BESTPredictorCustom(BESTPredictor):
         lens_all_children = [len(p['name'].split(',')) for p in all_applying_children]
         applying_children = [c for c, c_len in zip(all_applying_children, lens_all_children) if c_len <= eval_pattern_size]
 
-        # Store these for pattern_analysis.json
-        # We don't have case_id/case_index here easily, so we might need to store them temporarily
-        # and match them later in the predictor loop.
+        # Store temporarily to match with case identifiers in the predictor loop for pattern analysis
         self._last_all_matches = applying_children
 
         if len(applying_children) == 0:
             return [], {}
 
-        # Rest of original logic to pick the best one
+        # Select the best matching child pattern based on probabilities and lengths
         probs = [p['prob'] for p in applying_children]
         global_probs = [p['global_prob'] for p in applying_children]
         dists = [p['total_log_rpif_dist'] for p in applying_children]
@@ -154,9 +152,8 @@ class BESTRunner:
 
         self._prepare_test_data(filter_sequences=filter_seqs)
         
-        # If ncores > 1, the tracker will be hard to implement without more complex sync.
-        # For now, if explainability is needed, we should probably stick to ncores=1 or handle it.
-        # But we will override the loop here to capture matches.
+        # Note: Match tracking for explainability currently only supports single-core execution (ncores=1).
+        # We process predictions sequentially to capture local matches for pattern analysis.
         
         if ncores == 1 and self.task == "nap":
             from tqdm import tqdm
@@ -182,7 +179,7 @@ class BESTRunner:
                     "matches": matches
                 })
         else:
-            # Fallback to original multi-core or RTP prediction (without all-matches tracking for now)
+            # Fallback to multi-core or RTP prediction (match tracking not supported in this mode)
             self.predictions = self.model.predict(
                 eval_pattern_size=eval_pattern_size,
                 task=self.task,
@@ -242,7 +239,7 @@ class BESTRunner:
         os.makedirs(output_dir, exist_ok=True)
 
         if self.task != "nap":
-            # For RTP we keep the old format for now or implement similarly if needed
+            # Preserve the existing format for RTP prediction results
             self._save_results_rtp(output_dir)
             return
 

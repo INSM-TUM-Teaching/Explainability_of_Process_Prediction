@@ -3,10 +3,10 @@ import Papa from "papaparse";
 import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MarkerType, Node, Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import dagre from 'dagre';
-import { artifactUrl } from "../../lib/api";
+import { artifactUrl, API_BASE } from "../../lib/api";
 import ProcessMapNode from "./ProcessMapNode";
 import ProcessMapTerminalNode from "./ProcessMapTerminalNode";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Line } from "recharts";
 
 interface GlobalResultsProps {
   runId: string;
@@ -268,13 +268,13 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
         }
 
         // Fetch global stats for ALL models (including best)
-        const statsRes = await fetch(`http://localhost:8000/runs/${runId}/global`);
+        const statsRes = await fetch(`${API_BASE}/runs/${runId}/global`);
         if (!statsRes.ok) throw new Error("Failed to load global metrics");
         const statsData = await statsRes.json();
         setGlobalStats(statsData);
 
         // Fetch process map
-        const pmRes = await fetch(`http://localhost:8000/datasets/${datasetId}/process_map`);
+        const pmRes = await fetch(`${API_BASE}/datasets/${datasetId}/process_map`);
         if (!pmRes.ok) throw new Error("Failed to load process map");
         const pmData = await pmRes.json();
 
@@ -578,7 +578,7 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
         <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
           <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants - Accuracy vs Volume</h3>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
+            <ComposedChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
               <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
@@ -587,7 +587,7 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
               <Legend verticalAlign="top" />
               <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
               <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
-            </BarChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
 
@@ -595,7 +595,7 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
         <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
           <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants with Lowest Accuracy</h3>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={lowestAccuracyVariantsData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
+            <ComposedChart data={lowestAccuracyVariantsData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
               <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
@@ -604,7 +604,7 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
               <Legend verticalAlign="top" />
               <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
               <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
-            </BarChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       </div>

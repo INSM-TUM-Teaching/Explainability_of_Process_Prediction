@@ -17,7 +17,7 @@ type PredictionRecord = {
   variant_id?: string | number;
 };
 
-export default function NextActivityResults({ runId, summary, uploadedFileName, configMode, onStartOver, onBackToPipeline }: any) {
+export default function NextActivityResults({ runId, summary, uploadedFileName, configMode }: any) {
   const [predictions, setPredictions] = useState<PredictionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -175,18 +175,6 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
                     explainabilityType={summary.request?.explainability || "none"}
                   />
                 ))}
-                {filteredCases.length === 0 && (
-                  <div className="text-center py-10 bg-slate-50 border rounded-lg text-slate-500">
-                    <p className="text-lg font-medium text-slate-700 mb-2">
-                      {search ? `Case or Variant "${search}" not found in test set` : "No cases found"}
-                    </p>
-                    {search && (
-                      <p className="text-sm">
-                        This could mean the case (or all cases in this variant) belonged to the training set. Local predictions are only generated for the test set.
-                      </p>
-                    )}
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -196,14 +184,6 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
   );
 }
 
-function SummaryCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-brand-100 bg-white p-5 shadow-sm">
-      <div className="text-xs font-medium uppercase tracking-wide text-brand-500">{label}</div>
-      <div className="mt-2 text-base font-semibold text-brand-900 break-words">{value}</div>
-    </div>
-  );
-}
 
 function CasePredictionBlock({ caseId, records, runId, modelType, explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, explainabilityType?: string, autoExpand?: boolean }) {
   const [expanded, setExpanded] = useState(autoExpand);

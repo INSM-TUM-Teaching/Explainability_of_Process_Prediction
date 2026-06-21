@@ -416,7 +416,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
 
     res = {
         "overall_accuracy": (overall_correct / total_preds * 100) if total_preds > 0 else 0,
-        "total_variants": len(case_groups.keys()),
+        "total_dataset_cases": len(case_groups.keys()),
         "unique_variants": len(set(variants.values())),
         "total_test_events": total_preds,
         "total_test_cases": len(seen_case_variants),
