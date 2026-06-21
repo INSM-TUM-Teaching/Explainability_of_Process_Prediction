@@ -361,29 +361,40 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
     }));
   }
 
-  // Handle prefix stats
-  let prefixChartData = [];
-  if (globalStats.prefix_accuracy && globalStats.prefix_accuracy.length > 0) {
-    prefixChartData = globalStats.prefix_accuracy.map((p: any) => ({
-      prefix_length: `Length ${p.prefix_length}`,
-      accuracy: p.accuracy > 1 ? Number(p.accuracy.toFixed(2)) : Number((p.accuracy * 100).toFixed(2)),
-      total: p.total_cases || p.sample_count
-    }));
-  } else {
-    // from summary.json if we can find it
-    // Wait, we didn't fetch explainability/summary.json here. Will do it in useEffect
+  // Handle lowest accuracy variants
+  let lowestAccuracyVariantsData: any[] = [];
+  if (globalStats.variants && globalStats.variants.length > 0) {
+    lowestAccuracyVariantsData = [...globalStats.variants]
+      .sort((a: any, b: any) => a.accuracy - b.accuracy)
+      .slice(0, 10)
+      .map((v: any) => ({
+        name: `Variant ${v.id}`,
+        full_name: v.variant,
+        accuracy: Number(v.accuracy.toFixed(2)),
+        total: v.total_cases_in_test
+      }));
+  } else if (topPatterns.length > 0) {
+    lowestAccuracyVariantsData = [...topPatterns]
+      .map((p: any, idx: number) => ({
+        name: `Variant ${p.pattern_id || (idx + 1)}`,
+        full_name: p.sequence,
+        accuracy: p.global_accuracy ? Number((parseFloat(p.global_accuracy) * 100).toFixed(2)) : 0,
+        total: parseInt(p.global_frequency || "0", 10)
+      }))
+      .sort((a: any, b: any) => a.accuracy - b.accuracy)
+      .slice(0, 10);
   }
 
 
   const testSetUniqueVariants = globalStats.variants?.length || 0;
-  const testSetEvents = (globalStats.variants || []).reduce((acc: number, v: any) => acc + v.total_cases_in_test, 0);
-  const testSetCases = Math.max(...(globalStats.prefix_accuracy || []).map((p: any) => p.total_cases), 0);
+  const testSetEvents = globalStats.total_test_events || (globalStats.variants || []).reduce((acc: number, v: any) => acc + v.total_cases_in_test, 0);
+  const testSetCases = globalStats.total_test_cases || testSetEvents;
 
   return (
     <div className="flex flex-col gap-6 w-full">
       <style>{edgeStyles}</style>
       {/* KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-2">
         <div className="rounded border bg-white p-4 text-center shadow-sm">
           <div className="text-sm text-slate-500 uppercase tracking-wide">Total Events</div>
           <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_events || "N/A"}</div>
@@ -396,49 +407,11 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
           <div className="text-sm text-slate-500 uppercase tracking-wide">Unique Variants</div>
           <div className="mt-1 text-2xl font-semibold text-brand-700">{globalStats?.unique_variants || "N/A"}</div>
         </div>
-        <div className="rounded border bg-white p-4 text-center shadow-sm">
-          <div className="text-sm text-slate-500 uppercase tracking-wide">Classes</div>
-          <div className="mt-1 text-2xl font-semibold text-brand-700">{summary?.dataset?.num_classes || "N/A"}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Top Variants Error Rate */}
-        <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-          <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants - Accuracy vs Volume</h3>
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
-              <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
-              <Tooltip />
-              <Legend verticalAlign="top" />
-              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
-              <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Accuracy by Prefix Length */}
-        <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-          <h3 className="text-md font-semibold mb-4 text-brand-900">Accuracy by Prefix Length</h3>
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={prefixChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="prefix_length" angle={-45} textAnchor="end" height={60} tick={{ fontSize: 12 }} />
-              <YAxis domain={[0, 100]} />
-              <Tooltip />
-              <Legend verticalAlign="top" />
-              <Line type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#ff7300" strokeWidth={3} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
       </div>
 
       {/* Global Process Map */}
       <div className="rounded border bg-white p-4 shadow-sm h-[700px] flex flex-col">
-        <h3 className="text-md font-semibold mb-2 text-brand-900">Global Process Map (Dataset Overview)</h3>
+        <h2 className="text-xl font-bold mb-4 text-brand-900 border-b pb-2">Global Process Map (Dataset Overview)</h2>
         <div className="flex-1 flex gap-4 overflow-hidden">
           <div className="flex-1 border rounded bg-slate-50 relative">
             <ReactFlow
@@ -576,63 +549,12 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {globalStats.global_explanations && globalStats.global_explanations.shap_features && globalStats.global_explanations.shap_features.length > 0 && (
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-            <h3 className="text-md font-semibold mb-2 text-brand-900">Global Feature Importance (SHAP)</h3>
-            <p className="text-xs text-slate-500 mb-4">Averaged SHAP impact across a sample of {summary?.request?.config?.explainability_samples || 100} predictions.</p>
-            <ResponsiveContainer width="100%" height="80%">
-              <BarChart layout="vertical" data={globalStats.global_explanations.shap_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {globalStats.global_explanations && globalStats.global_explanations.lime_features && globalStats.global_explanations.lime_features.length > 0 && (
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-            <h3 className="text-md font-semibold mb-2 text-brand-900">Global Feature Importance ({summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"})</h3>
-            <p className="text-xs text-slate-500 mb-4">Averaged {summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"} weights across a sample of {summary?.request?.config?.explainability_samples || 100} predictions.</p>
-            <ResponsiveContainer width="100%" height="80%">
-              <BarChart layout="vertical" data={globalStats.global_explanations.lime_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Bar dataKey="importance" fill="#82ca9d" name="Mean Impact" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-
-        {globalStats.global_explanations && globalStats.global_explanations.gnn_features && globalStats.global_explanations.gnn_features.length > 0 && (
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-            <h3 className="text-md font-semibold mb-2 text-brand-900">Global Feature Importance (Gradient)</h3>
-            <p className="text-xs text-slate-500 mb-4">Averaged Gradient magnitude across a sample of {summary?.request?.config?.explainability_samples || 100} predictions.</p>
-            <ResponsiveContainer width="100%" height="80%">
-              <BarChart layout="vertical" data={globalStats.global_explanations.gnn_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Bar dataKey="importance" fill="#ffc658" name="Mean Impact" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-
-      
       {/* Prediction Results Subsection */}
       <div className="flex flex-col gap-4 mt-4">
         <h2 className="text-xl font-bold text-brand-900 border-b pb-2">Prediction Results (for test set)</h2>
         
         {/* Prediction Metrics */}
-        <div className="grid grid-cols-4 gap-4 mb-2">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-2">
           <div className="rounded border bg-brand-50 border-brand-200 p-4 text-center shadow-sm">
               <div className="text-sm text-brand-600 uppercase tracking-wide font-semibold">Test Accuracy</div>
               <div className="mt-1 text-2xl font-bold text-brand-800">{globalStats.overall_accuracy.toFixed(2)}%</div>
@@ -650,11 +572,46 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
               <div className="mt-1 text-2xl font-semibold text-slate-700">{testSetUniqueVariants}</div>
           </div>
         </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-4">
+        {/* Top Variants Error Rate */}
+        <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
+          <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants - Accuracy vs Volume</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
+              <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
+              <Tooltip />
+              <Legend verticalAlign="top" />
+              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
+              <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Top 10 Variants with Lowest Accuracy */}
+        <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
+          <h3 className="text-md font-semibold mb-4 text-brand-900">Top 10 Variants with Lowest Accuracy</h3>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={lowestAccuracyVariantsData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
+              <YAxis yAxisId="right" orientation="right" stroke="#82ca9d" />
+              <Tooltip />
+              <Legend verticalAlign="top" />
+              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
+              <Line yAxisId="right" type="monotone" dataKey="accuracy" name="Accuracy (%)" stroke="#82ca9d" strokeWidth={3} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </div>
-
-
+      </div>
+      
       {/* Explainability Results Subsection */}
-      {(globalStats.global_explanations?.shap_features?.length > 0 || globalStats.global_explanations?.lime_features?.length > 0 || globalStats.global_explanations?.gnn_features?.length > 0) && (
+      {(globalStats.global_explanations?.shap_features?.length > 0 || globalStats.global_explanations?.lime_features?.length > 0 || globalStats.global_explanations?.gnn_features?.length > 0 || (summary?.request?.model_type === "best" && topPatterns.length > 0)) && (
         <div className="flex flex-col gap-4 mt-4">
           <h2 className="text-xl font-bold text-brand-900 border-b pb-2">Explainability Results (for test set)</h2>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -684,7 +641,7 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
                 <XAxis type="number" />
                 <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
                 <Tooltip />
-                <Bar dataKey="importance" fill="#82ca9d" name="Mean Impact" />
+                <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -699,17 +656,16 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
                 <XAxis type="number" />
                 <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
                 <Tooltip />
-                <Bar dataKey="importance" fill="#ffc658" name="Mean Impact" />
+                <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
               </BarChart>
             </ResponsiveContainer>
           </div>
         )}
         </div>
-      </div>
-      )}
-{/* Top Patterns Table (for BEST model) */}
-      {summary?.request?.model_type === "best" && topPatterns.length > 0 && (
-        <div className="rounded border bg-white p-4 shadow-sm">
+        
+        {/* Top Patterns Table (for BEST model) */}
+        {summary?.request?.model_type === "best" && topPatterns.length > 0 && (
+          <div className="rounded border bg-white p-4 shadow-sm mt-2">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-md font-semibold text-brand-900">Top 20 Patterns</h3>
             <input
@@ -841,6 +797,8 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
             </div>
           </div>
         </div>
+      )}
+      </div>
       )}
     </div>
   );

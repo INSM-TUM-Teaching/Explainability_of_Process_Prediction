@@ -111,7 +111,8 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
               {summary.request?.explainability === "all"
                 ? (summary.request?.model_type === "transformer" ? "SHAP and LIME" : "Gradient and GraphLIME")
                 : (summary.request?.explainability === "graphlime" ? "GraphLIME" 
-                   : String(summary.request?.explainability || "None").toUpperCase())}
+                   : (summary.request?.explainability === "pattern_analysis" ? "Pattern Analysis"
+                   : String(summary.request?.explainability || "None").toUpperCase()))}
             </strong></span>
           </div>
         </div>
@@ -159,7 +160,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
             {loading ? (
               <div>Loading prediction data...</div>
             ) : filteredCases.length === 0 ? (
-              <div className="text-slate-500">No cases found {search && `matching "${search}"`}. Total cases in dataset: {caseIds.length}</div>
+              <div className="text-slate-500">No cases or variants found in test set {search && `matching "${search}"`}</div>
             ) : (
               <div className="flex flex-col gap-4">
                 <div className="text-sm text-slate-600">Showing {filteredCases.length} of {caseIds.length} cases</div>
