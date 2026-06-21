@@ -50,57 +50,297 @@ class BESTExplainer:
         # Decode per-prediction matched patterns (requires patched library)
         decoded_patterns = [self._decode_pattern_name(p) for p in raw_pats] if raw_pats else []
 
-        # Build decoded prediction frame from runner
-        decoded_preds, decoded_actuals, prefix_lengths = self._build_prediction_frame()
+        # Build decoded prediction frame from runner when available
+        df_rich, n_samples = self._build_prediction_frame()
 
         has_patterns = len(decoded_patterns) == len(probs) and len(decoded_patterns) > 0
-        has_preds    = decoded_preds is not None
+        has_preds    = df_rich is not None
 
         # RPIF distance distribution (always produced)
         self._plot_distances(distances)
 
-        if has_patterns and has_preds:
-            n = min(len(decoded_patterns), len(probs),
-                    len(decoded_preds), len(decoded_actuals), len(prefix_lengths))
-            dist_arr = distances if len(distances) == len(probs) else np.full(len(probs), np.nan)
-            correct = [
-                int(p == a) if p is not None and a is not None else None
-                for p, a in zip(decoded_preds[:n], decoded_actuals[:n])
-            ]
-            self._save_matched_patterns_csv(
-                decoded_patterns[:n], probs[:n], dist_arr[:n],
-                decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n], correct,
-            )
-            self._save_top_patterns_summary(decoded_patterns[:n], correct)
-            self._plot_top_matched_patterns(decoded_patterns[:n], correct)
-            self._plot_activity_importance(decoded_patterns[:n], correct)
-            self._plot_error_patterns(decoded_patterns[:n], correct)
-            self._plot_accuracy_by_prefix_length(decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
-            self._write_summary_report(
-                probs[:n], dist_arr[:n],
-                decoded_patterns[:n], correct,
-                decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n],
-            )
+        if has_preds:
+            decoded_preds = df_rich["pred_next"].tolist()
+            decoded_actuals = df_rich["true_next"].tolist()
+            prefix_lengths = df_rich["case_index"].tolist()
+            
+            # New artifact generation (as requested in Best Visualizaiton.docx)
+            self._save_summary_json(df_rich)
+            pattern_id_map = self._save_top_patterns_csv() # This is the GLOBAL dictionary
+            self._save_pattern_analysis_json(df_rich, pattern_id_map)
 
-        elif has_preds:
-            # Pattern names not captured – prediction-level stats only
-            n = min(len(probs), len(decoded_preds), len(decoded_actuals), len(prefix_lengths))
-            dist_arr = distances if len(distances) == len(probs) else np.full(len(probs), np.nan)
-            correct = [
-                int(p == a) if p is not None and a is not None else None
-                for p, a in zip(decoded_preds[:n], decoded_actuals[:n])
-            ]
-            self._plot_accuracy_by_prefix_length(decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
-            self._plot_confidence_distribution(probs)
-            self._save_predictions_csv(probs[:n], dist_arr[:n], decoded_preds[:n],
-                                       decoded_actuals[:n], prefix_lengths[:n], correct)
-            self._write_summary_report_no_patterns(probs, dist_arr,
-                                                   decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
+            # Rich charts using actual predictions and labels (Legacy/Enhanced)
+            self._plot_accuracy_by_prefix_length(df_rich)
+            self._plot_confidence_by_class(df_rich)
+            self._plot_activity_distribution(df_rich)
+            self._write_summary_report_enriched(df_rich, distances)
+
+            if has_patterns:
+                n = min(len(decoded_patterns), len(probs), len(decoded_preds))
+                dist_arr = distances if len(distances) == len(probs) else __import__('numpy').full(len(probs), __import__('numpy').nan)
+                correct = [
+                    int(p == a) if p is not None and a is not None else None
+                    for p, a in zip(decoded_preds[:n], decoded_actuals[:n])
+                ]
+                self._save_matched_patterns_csv(
+                    decoded_patterns[:n], probs[:n], dist_arr[:n],
+                    decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n], correct,
+                )
+                self._save_top_patterns_summary(decoded_patterns[:n], correct)
+                self._plot_top_matched_patterns(decoded_patterns[:n], correct)
+                self._plot_activity_importance(decoded_patterns[:n], correct)
+                self._plot_error_patterns(decoded_patterns[:n], correct)
+                self._write_summary_report(
+                    probs[:n], dist_arr[:n],
+                    decoded_patterns[:n], correct,
+                    decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n],
+                )
+            else:
+                # Pattern names not captured – prediction-level stats only
+                n = min(len(probs), len(decoded_preds))
+                dist_arr = distances if len(distances) == len(probs) else __import__('numpy').full(len(probs), __import__('numpy').nan)
+                correct = [
+                    int(p == a) if p is not None and a is not None else None
+                    for p, a in zip(decoded_preds[:n], decoded_actuals[:n])
+                ]
+                self._plot_confidence_distribution(probs)
+                self._save_predictions_csv(probs[:n], dist_arr[:n], decoded_preds[:n],
+                                           decoded_actuals[:n], prefix_lengths[:n], correct)
+                self._write_summary_report_no_patterns(probs, dist_arr,
+                                                       decoded_preds[:n], decoded_actuals[:n], prefix_lengths[:n])
+
         else:
             self._plot_confidence_distribution(probs)
             self._write_summary_report_minimal(probs, distances)
 
         print(f"[BEST Explainer] Artefacts written to {self.output_dir}")
+
+    # ------------------------------------------------------------------
+    # New Artifact Generation (Phase 3)
+    # ------------------------------------------------------------------
+
+    def _save_summary_json(self, df: pd.DataFrame) -> None:
+        """Saves summary.json with global metrics and prefix stats."""
+        import json
+        
+        correct_flags = (df["true_next"] == df["pred_next"]).dropna()
+        overall_acc = correct_flags.mean() if not correct_flags.empty else 0.0
+        avg_conf = df["confidence"].dropna().mean() if not df["confidence"].dropna().empty else 0.0
+        
+        prefix_stats = []
+        acc_by_len = defaultdict(list)
+        for _, row in df.iterrows():
+            if row["true_next"] is not None and row["pred_next"] is not None:
+                acc_by_len[row["case_index"]].append(int(row["true_next"] == row["pred_next"]))
+        
+        for length in sorted(acc_by_len.keys()):
+            vals = acc_by_len[length]
+            prefix_stats.append({
+                "prefix_length": int(length),
+                "accuracy": float(np.mean(vals)),
+                "sample_count": int(len(vals))
+            })
+
+        summary = {
+            "task_type": self.task,
+            "overall_accuracy": float(overall_acc),
+            "average_confidence": float(avg_conf),
+            "total_test_cases": int(df["case_id"].nunique()),
+            "prefix_stats": prefix_stats
+        }
+
+        path = os.path.join(self.output_dir, "summary.json")
+        with open(path, "w") as f:
+            json.dump(summary, f, indent=2)
+
+    def _extract_patterns_from_tree(self) -> dict:
+        """Helper to recursively extract all patterns from _stage_trees since _unpruned_nodes lacks 'freq'."""
+        seen_patterns = {}
+        
+        def _walk_tree(node):
+            if not node: return
+            name = node.get("name")
+            if name and name not in seen_patterns:
+                seen_patterns[name] = node
+            for child in node.get("children", []):
+                _walk_tree(child)
+
+        for stage, tree in getattr(self.model, "_stage_trees", {}).items():
+            _walk_tree(tree)
+            
+        return seen_patterns
+
+    def _save_top_patterns_csv(self) -> dict:
+        """Saves top_patterns.csv as a global dictionary of patterns.
+        
+        Returns:
+            dict: Mapping from pattern sequence (str) to pattern_id (int)
+        """
+        import json
+        from collections import defaultdict
+        
+        tree_patterns = self._extract_patterns_from_tree()
+        
+        # Map internal sequences to their visible properties
+        internal_to_visible = {}
+        
+        for pattern_seq, node in tree_patterns.items():
+            if not pattern_seq: continue
+            
+            try:
+                seq_indices = [int(idx) for idx in pattern_seq.split(",")]
+                decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
+                
+                # Predicted next activity for this pattern
+                center_idx = len(seq_indices) // 2
+                predicted_next = decoded_seq[center_idx + 1] if (center_idx + 1) < len(decoded_seq) else None
+                
+                # Check if prediction is None, empty, whitespace-only, or a padding token
+                if not predicted_next or not str(predicted_next).strip() or predicted_next in ["START", "END"]:
+                    continue
+
+                # Extract only the history (the left side of the pattern up to the center)
+                history_seq = decoded_seq[:center_idx + 1]
+
+                # Filter out padding tokens for UI
+                filtered_seq = [act for act in history_seq if act not in ["START", "END"]]
+                
+                # Single-activity histories are valid, but 0-length is not
+                if len(filtered_seq) < 1:
+                    continue
+
+                visible_seq_str = json.dumps(filtered_seq)
+                internal_to_visible[pattern_seq] = {
+                    "visible_seq": visible_seq_str,
+                    "pred": predicted_next,
+                    "freq": int(node.get("freq", 0)),
+                    "prob": float(node.get("prob", 0))
+                }
+            except Exception:
+                continue
+
+        # Aggregate by visible sequence
+        aggregated = {}
+        for p_seq, data in internal_to_visible.items():
+            vis_seq = data["visible_seq"]
+            pred = data["pred"]
+            freq = data["freq"]
+            prob = data["prob"]
+            
+            if vis_seq not in aggregated:
+                aggregated[vis_seq] = {
+                    "preds": defaultdict(int),
+                    "total_freq": 0,
+                    "sum_prob": 0.0,
+                    "count": 0
+                }
+                
+            aggregated[vis_seq]["preds"][pred] += freq
+            aggregated[vis_seq]["total_freq"] += freq
+            aggregated[vis_seq]["sum_prob"] += prob
+            aggregated[vis_seq]["count"] += 1
+
+        final_patterns = []
+        visible_to_id = {}
+        pattern_id_map = {}
+        
+        pid_counter = 1
+        for vis_seq, agg_data in aggregated.items():
+            visible_to_id[vis_seq] = pid_counter
+            
+            # Find the most predicted output for this sequence
+            best_pred = max(agg_data["preds"].items(), key=lambda x: x[1])[0] if agg_data["preds"] else None
+            avg_prob = agg_data["sum_prob"] / agg_data["count"] if agg_data["count"] > 0 else 0.0
+            
+            final_patterns.append({
+                "pattern_id": pid_counter,
+                "sequence": vis_seq,
+                "predicted_next_activity": best_pred,
+                "global_frequency": agg_data["total_freq"],
+                "global_accuracy": avg_prob,
+                "avg_confidence": avg_prob
+            })
+            pid_counter += 1
+            
+        # Map internal sequences to the assigned PID so the heatmap bridge knows which ID to use
+        for p_seq, data in internal_to_visible.items():
+            pattern_id_map[p_seq] = visible_to_id[data["visible_seq"]]
+        
+        df_patterns = pd.DataFrame(final_patterns)
+        if not df_patterns.empty:
+            df_patterns = df_patterns.sort_values("global_frequency", ascending=False)
+            
+        path = os.path.join(self.output_dir, "top_patterns.csv")
+        df_patterns.to_csv(path, index=False)
+        
+        return pattern_id_map
+
+
+    def _save_pattern_analysis_json(self, df_rich: pd.DataFrame, pattern_id_map: dict) -> None:
+        """Saves pattern_analysis.json (The Heatmap Bridge)."""
+        import json
+        
+        # Build a map for quick lookup of the full sequence for a case/index
+        seq_map = {}
+        for _, row in df_rich.iterrows():
+            cid = str(row["case_id"])
+            idx = int(row["case_index"])
+            if cid not in seq_map:
+                seq_map[cid] = {}
+            seq_map[cid][idx] = json.loads(row["sequence"])
+
+        tracker = getattr(self.model, "all_matches_tracker", [])
+        if not tracker:
+            with open(os.path.join(self.output_dir, "pattern_analysis.json"), "w") as f:
+                json.dump({}, f)
+            return
+
+        analysis = {}
+        for entry in tracker:
+            case_id = f"case_{entry['case_id']}"
+            # Standardize case_id for internal lookup
+            raw_cid = str(entry['case_id'])
+            
+            # Use 1-indexing if not already ensured
+            case_index = int(entry['case_index'])
+            if case_index == 0: continue # Skip initial padding/start
+            
+            index_key = f"index_{case_index}"
+            
+            if case_id not in analysis:
+                analysis[case_id] = {}
+            
+            full_seq = seq_map.get(raw_cid, {}).get(case_index, [])
+            
+            all_pattern_matches = []
+            matches = entry.get("matches", [])
+            for m in matches:
+                pattern_name = m["name"]
+                pid = pattern_id_map.get(pattern_name)
+                if pid:
+                    pattern_len = len(pattern_name.split(","))
+                    # BEST patterns match with their center as the prediction.
+                    # A pattern of length L has (L // 2) activities to the left of the center.
+                    # These (L // 2) activities are matched against the prefix.
+                    num_prefix_elements = pattern_len // 2
+                    start_offset = max(0, case_index - num_prefix_elements)
+                    end_offset = case_index - 1
+                    
+                    all_pattern_matches.append({
+                        "pattern_id": pid,
+                        "start_offset": int(start_offset),
+                        "end_offset": int(end_offset),
+                        "frequency": int(m.get("freq", 0))
+                    })
+            
+            analysis[case_id][index_key] = {
+                "full_sequence": full_seq,
+                "all_pattern_matches": all_pattern_matches
+            }
+
+        path = os.path.join(self.output_dir, "pattern_analysis.json")
+        with open(path, "w") as f:
+            json.dump(analysis, f, indent=2)
 
     # ------------------------------------------------------------------
     # Tracker retrieval
@@ -153,29 +393,30 @@ class BESTExplainer:
     # ------------------------------------------------------------------
 
     def _build_prediction_frame(self):
+        """Decode predictions and actuals from runner if available.
+
+        Returns:
+            (df, n) where df has columns [case_id, case_index, sequence, true_next, pred_next, confidence]
+        """
         if self.runner is None:
-            return None, None, None
+            return None, 0
         runner = self.runner
         try:
             predictions = runner.predictions
             if predictions is None or len(predictions) == 0:
-                return None, None, None
+                return None, 0
 
-            if self.task == "nap":
+            is_nap = self.task == "nap"
+            prefixes = getattr(runner.test_seq, "relevant_prefixes", [])
+            n = min(len(prefixes), len(predictions)) if prefixes else len(predictions)
+            
+            if is_nap:
+                actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
                 decoded_preds = runner._decode_nap(predictions)
-                actuals_enc   = getattr(runner.test_seq, "next_activities", None)
-                if actuals_enc is None:
-                    return None, None, None
-                n = min(len(decoded_preds), len(actuals_enc))
-                decoded_preds   = decoded_preds[:n]
-                decoded_actuals = [runner._decode_activity(a) for a in actuals_enc[:n]]
+                decoded_actuals = [runner._decode_activity(a) if a is not None else None for a in actuals_enc[:n]]
             else:
+                actuals_enc = getattr(runner.test_seq, "full_future_sequences", [None] * n)
                 decoded_preds = runner._decode_rtp(predictions)
-                actuals_enc   = getattr(runner.test_seq, "full_future_sequences", None)
-                if actuals_enc is None:
-                    return None, None, None
-                n = min(len(decoded_preds), len(actuals_enc))
-                decoded_preds   = decoded_preds[:n]
                 decoded_actuals = []
                 for seq in actuals_enc[:n]:
                     if seq is None:
@@ -186,18 +427,39 @@ class BESTExplainer:
                             for idx in seq if idx is not None
                         ))
 
+            tracker = getattr(self.model, "choice_tracker_nap", {}) if is_nap else getattr(self.model, "choice_tracker_rtp", {})
+            probs = tracker.get("prob", [None] * n)
             padding_size = getattr(self.model, "_padding_size", 0)
-            if hasattr(runner.test_seq, "relevant_prefixes") and runner.test_seq.relevant_prefixes:
-                raw_lens       = [len(p["prefix"]) for p in runner.test_seq.relevant_prefixes[:n]]
-                prefix_lengths = [max(0, raw - padding_size) for raw in raw_lens]
-            else:
-                prefix_lengths = list(range(n))
 
-            return decoded_preds, decoded_actuals, prefix_lengths
+            rows = []
+            import json
+            for i in range(n):
+                prefix_data = prefixes[i]
+                raw_seq = prefix_data["prefix"]
+                real_seq_enc = raw_seq[padding_size:]
+                
+                case_index = len(real_seq_enc)
+                if case_index == 0:
+                    continue
+
+                decoded_seq = [runner._decode_activity(a) for a in real_seq_enc]
+                # Filter out START/END for the UI sequence
+                filtered_seq = [a for a in decoded_seq if a not in ["START", "END"]]
+                
+                rows.append({
+                    "case_id": str(prefix_data["case_id"]),
+                    "case_index": len(filtered_seq), # Update case_index to reflect true length
+                    "sequence": json.dumps(filtered_seq),
+                    "true_next": runner._decode_activity(actuals_enc[i]),
+                    "pred_next": runner._decode_activity(predictions[i]),
+                    "confidence": probs[i] if i < len(probs) else None
+                })
+            
+            return pd.DataFrame(rows), n
 
         except Exception as e:
             print(f"[BEST Explainer] Warning: could not build prediction frame: {e}")
-            return None, None, None
+            return None, 0
 
     # ------------------------------------------------------------------
     # Core explainability: matched-pattern charts
@@ -408,10 +670,12 @@ class BESTExplainer:
 
     def _plot_accuracy_by_prefix_length(self, preds, actuals, prefix_lengths) -> None:
         """How accuracy changes as more events are seen before the prediction."""
+    def _plot_accuracy_by_prefix_length(self, df):
+        """Line chart: accuracy vs number of real events seen before prediction."""
         acc_by_len = defaultdict(list)
-        for p, a, l in zip(preds, actuals, prefix_lengths):
-            if p is not None and a is not None:
-                acc_by_len[l].append(int(p == a))
+        for _, row in df.iterrows():
+            if row["true_next"] is not None and row["pred_next"] is not None:
+                acc_by_len[row["case_index"]].append(int(row["true_next"] == row["pred_next"]))
 
         if not acc_by_len:
             return
@@ -444,6 +708,73 @@ class BESTExplainer:
         fig.savefig(os.path.join(self.output_dir, "accuracy_by_prefix_length.png"),
                     dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
+
+    def _plot_confidence_by_class(self, df: pd.DataFrame) -> None:
+        """Horizontal bar chart: mean pattern confidence per predicted activity class."""
+        conf_by_class = defaultdict(list)
+        for _, row in df.iterrows():
+            if row["pred_next"] is not None and row["confidence"] is not None:
+                conf_by_class[row["pred_next"]].append(row["confidence"])
+
+        if not conf_by_class:
+            return
+
+        classes = sorted(conf_by_class.keys(),
+                         key=lambda c: np.mean(conf_by_class[c]), reverse=True)
+        means = [np.mean(conf_by_class[c]) for c in classes]
+        stds = [np.std(conf_by_class[c]) for c in classes]
+
+        fig, ax = plt.subplots(figsize=(10, max(5, len(classes) * 0.55 + 1.5)))
+        y_pos = range(len(classes))
+        ax.barh(list(y_pos), means, xerr=stds, color="#4C72B0", alpha=0.85,
+                capsize=4, error_kw={"elinewidth": 1.5, "capthick": 1.5})
+        ax.set_yticks(list(y_pos))
+        ax.set_yticklabels(classes)
+        ax.set_xlabel("Mean pattern confidence (+/- std)")
+        ax.set_xlim(0, 1.05)
+        
+        overall_mean = df["confidence"].dropna().mean()
+        ax.axvline(overall_mean, color="red", linestyle="--", linewidth=1.2,
+                   label=f"Overall mean ({overall_mean:.3f})")
+        ax.legend()
+        fig.tight_layout()
+        path = os.path.join(self.output_dir, "confidence_by_predicted_class.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+    def _plot_activity_distribution(self, df: pd.DataFrame) -> None:
+        """Side-by-side bar chart: predicted vs actual activity frequencies."""
+        valid_df = df.dropna(subset=["pred_next", "true_next"])
+        if valid_df.empty:
+            return
+
+        pred_counts = Counter(valid_df["pred_next"])
+        actual_counts = Counter(valid_df["true_next"])
+
+        all_classes = sorted(set(pred_counts) | set(actual_counts))
+        actual_vals = [actual_counts.get(c, 0) for c in all_classes]
+        pred_vals = [pred_counts.get(c, 0) for c in all_classes]
+
+        x = np.arange(len(all_classes))
+        width = 0.38
+
+        fig, ax = plt.subplots(figsize=(max(10, len(all_classes) * 1.1), 6))
+        ax.bar(x - width / 2, actual_vals, width, label="Actual",
+               color="#55A868", alpha=0.85)
+        ax.bar(x + width / 2, pred_vals, width, label="Predicted",
+               color="#4C72B0", alpha=0.85)
+        ax.set_xticks(x)
+        ax.set_xticklabels(all_classes, rotation=35, ha="right", fontsize=9)
+        ax.set_ylabel("Count")
+        ax.legend()
+        fig.tight_layout()
+        path = os.path.join(self.output_dir, "activity_distribution.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+    # ------------------------------------------------------------------
+    # RPIF distances (always generated)
+    # ------------------------------------------------------------------
 
     def _plot_distances(self, distances: np.ndarray) -> None:
         if len(distances) == 0:
@@ -555,6 +886,41 @@ class BESTExplainer:
             lines += ["", "Top 5 patterns with highest error rate (min 3 predictions):"]
             for pat, err_rate, count in worst_by_err:
                 lines.append(f"  [err={err_rate:.0%}, n={count}]  {pat}")
+    def _save_top_patterns_enriched(
+        self,
+        df_rich: pd.DataFrame,
+        distances: np.ndarray,
+    ) -> None:
+        """Save per-prediction table with confidence, correctness, and prefix length."""
+        n = len(df_rich)
+        dist_arr = distances if len(distances) == n else np.full(n, np.nan)
+
+        correct = [
+            int(p == a) if p is not None and a is not None else None
+            for p, a in zip(df_rich["pred_next"], df_rich["true_next"])
+        ]
+
+        df_out = pd.DataFrame({
+            "case_id": df_rich["case_id"],
+            "case_index": df_rich["case_index"],
+            "sequence": df_rich["sequence"],
+            "predicted_activity": df_rich["pred_next"],
+            "actual_activity": df_rich["true_next"],
+            "correct": correct,
+            "pattern_confidence": df_rich["confidence"],
+            "rpif_distance": dist_arr,
+        })
+
+        path = os.path.join(self.output_dir, "top_patterns.csv")
+        df_out.to_csv(path, index=False)
+
+    def _write_summary_report_enriched(
+        self,
+        df_rich: pd.DataFrame,
+        distances: np.ndarray,
+    ) -> None:
+        """Write enriched summary with accuracy, per-class breakdown, prefix length stats."""
+        n = len(df_rich)
 
         lines += ["", "Accuracy by prefix length (real events seen before prediction):"]
         for l in sorted(len_acc.keys()):
@@ -566,15 +932,14 @@ class BESTExplainer:
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
-    def _write_summary_report_no_patterns(self, probs, distances, preds,
-                                           actuals, prefix_lengths) -> None:
+    def _write_summary_report_no_patterns(self, probs, distances, preds, actuals, prefix_lengths) -> None:
         correct_flags = [
             int(p == a) for p, a in zip(preds, actuals)
             if p is not None and a is not None
         ]
-        overall_acc = np.mean(correct_flags) if correct_flags else float("nan")
-        d = distances[np.isfinite(distances)] if len(distances) > 0 else np.array([])
-
+        overall_acc = __import__('numpy').mean(correct_flags) if correct_flags else float("nan")
+        d = distances[__import__('numpy').isfinite(distances)] if len(distances) > 0 else __import__('numpy').array([])
+        
         lines = [
             "=" * 68,
             f"BEST Explainability Report  ·  {self.task.upper()} task",
@@ -585,20 +950,109 @@ class BESTExplainer:
             "",
             "Pattern confidence:",
             f"  Mean   : {probs.mean():.4f}",
-            f"  Median : {float(np.median(probs)):.4f}",
+            f"  Median : {float(__import__('numpy').median(probs)):.4f}",
             f"  Std    : {probs.std():.4f}",
         ]
         if len(d) > 0:
             lines += ["", "RPIF distance:",
                       f"  Mean   : {d.mean():.4f}",
-                      f"  Median : {float(np.median(d)):.4f}"]
+                      f"  Median : {float(__import__('numpy').median(d)):.4f}"]
         lines += ["", "=" * 68]
+        import os
         path = os.path.join(self.output_dir, "pattern_summary_report.txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
 
     def _write_summary_report_minimal(self, probs, distances) -> None:
-        d = distances[np.isfinite(distances)] if len(distances) > 0 else np.array([])
+        d = distances[__import__('numpy').isfinite(distances)] if len(distances) > 0 else __import__('numpy').array([])
+        lines = [
+            "=" * 68,
+            f"BEST Explainability Report  ·  {self.task.upper()} task",
+            "=" * 68,
+            f"Total predictions analysed : {len(probs):,}",
+            "",
+            "Pattern confidence (probability of chosen pattern):",
+        ]
+        if not probs.empty if hasattr(probs, "empty") else len(probs) > 0:
+            lines += [
+                f"  Mean   : {probs.mean():.4f}",
+                f"  Median : {float(__import__('numpy').median(probs)):.4f}",
+                f"  Std    : {probs.std():.4f}",
+            ]
+        if len(d) > 0:
+            lines += ["", "RPIF distance:",
+                      f"  Mean   : {d.mean():.4f}",
+                      f"  Median : {float(__import__('numpy').median(d)):.4f}"]
+        lines += ["", "=" * 68]
+        import os
+        path = os.path.join(self.output_dir, "pattern_summary_report.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # Fallback basic charts (no runner)
+    # ------------------------------------------------------------------
+
+    def _plot_probabilities_basic(self, probs: np.ndarray) -> None:
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.hist(probs, bins=30, color="#4C72B0", edgecolor="white", alpha=0.85)
+        ax.set_xlabel("Pattern conditional probability")
+        ax.set_ylabel("Count")
+        fig.tight_layout()
+        path = os.path.join(self.output_dir, "pattern_probabilities.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+    def _plot_lengths_basic(self, lengths: np.ndarray) -> None:
+        if len(lengths) == 0:
+            return
+        fig, ax = plt.subplots(figsize=(10, 5))
+        unique, counts = np.unique(lengths.astype(int), return_counts=True)
+        ax.bar(unique, counts, color="#55A868", edgecolor="white", alpha=0.85)
+        ax.set_xlabel("Pattern length")
+        ax.set_ylabel("Count")
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+        fig.tight_layout()
+        path = os.path.join(self.output_dir, "pattern_lengths.png")
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+    def _save_top_patterns_basic(
+        self,
+        probs: np.ndarray,
+        lengths: np.ndarray,
+        distances: np.ndarray,
+    ) -> None:
+        n = len(probs)
+        len_arr = lengths if len(lengths) == n else np.full(n, np.nan)
+        dist_arr = distances if len(distances) == n else np.full(n, np.nan)
+
+        df = pd.DataFrame({
+            "probability": probs,
+            "pattern_length": len_arr,
+            "rpif_distance": dist_arr,
+        })
+        df["prob_bucket"] = (df["probability"] * 20).round() / 20
+        summary = (
+            df.groupby("prob_bucket")
+            .agg(
+                count=("probability", "size"),
+                mean_probability=("probability", "mean"),
+                mean_length=("pattern_length", "mean"),
+                mean_distance=("rpif_distance", "mean"),
+            )
+            .sort_values("count", ascending=False)
+            .reset_index()
+        )
+        path = os.path.join(self.output_dir, "top_patterns.csv")
+        summary.to_csv(path, index=False)
+
+    def _write_summary_report_basic(
+        self,
+        probs: np.ndarray,
+        lengths: np.ndarray,
+        distances: np.ndarray,
+    ) -> None:
         lines = [
             "=" * 68,
             f"BEST Explainability Report  ·  {self.task.upper()} task",

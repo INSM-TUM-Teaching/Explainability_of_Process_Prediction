@@ -29,7 +29,7 @@ export default function WizardFooter({
           transition
         "
       >
-        Cancel
+        Start over
       </button>
 
       {/* Previous + Continue */}

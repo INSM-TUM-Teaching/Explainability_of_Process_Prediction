@@ -4,6 +4,7 @@ import Card from "../ui/card";
 import BestPatternsPanel from "./BestPatternsPanel";
 import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import NextActivityResults from "./NextActivityResults";
 import {
   artifactUrl,
   artifactsZipUrl,
@@ -207,6 +208,35 @@ export default function ResultsView({ runId, onBackToPipeline }: ResultsViewProp
             Back to pipeline
           </Button>
         </Card>
+      </div>
+    );
+  }
+
+  if (summaryFile?.request?.task === "next_activity" || summaryFile?.request?.task === "custom_activity") {
+    return (
+      <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
+        <div className="flex-1 overflow-auto min-w-0">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-8 py-8">
+            <NextActivityResults 
+              runId={runId} 
+              summary={summaryFile} 
+              uploadedFileName={summaryFile?.dataset?.filename}
+            />
+          </div>
+        </div>
+        
+        <div className="shrink-0 px-8 pb-6 border-t border-brand-100 bg-white">
+          <div className="flex items-center justify-between pt-6">
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                onClick={onBackToPipeline}
+              >
+                Previous
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

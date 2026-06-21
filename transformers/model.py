@@ -12,9 +12,19 @@ from keras import layers
 
 
 class PositionalEncoding(layers.Layer):
-    def __init__(self, max_len, d_model):
-        super().__init__()
+    def __init__(self, max_len=100, d_model=64, **kwargs):
+        super().__init__(**kwargs)
+        self.max_len = max_len
+        self.d_model = d_model
         self.pos_encoding = self.positional_encoding(max_len, d_model)
+        
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "max_len": self.max_len,
+            "d_model": self.d_model
+        })
+        return config
     
     def positional_encoding(self, max_len, d_model):
         pos = np.arange(max_len)[:, np.newaxis]
@@ -30,8 +40,12 @@ class PositionalEncoding(layers.Layer):
 
 
 class TransformerBlock(layers.Layer):
-    def __init__(self, d_model, num_heads, dff, dropout_rate=0.1):
-        super().__init__()
+    def __init__(self, d_model=64, num_heads=4, dff=128, dropout_rate=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.dff = dff
+        self.dropout_rate = dropout_rate
         self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=d_model)
         self.ffn = keras.Sequential([
             layers.Dense(dff, activation='relu'),
@@ -41,6 +55,16 @@ class TransformerBlock(layers.Layer):
         self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
         self.dropout1 = layers.Dropout(dropout_rate)
         self.dropout2 = layers.Dropout(dropout_rate)
+        
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "d_model": self.d_model,
+            "num_heads": self.num_heads,
+            "dff": self.dff,
+            "dropout_rate": self.dropout_rate
+        })
+        return config
     
     def call(self, x, training=False):
         attn_output = self.att(x, x)

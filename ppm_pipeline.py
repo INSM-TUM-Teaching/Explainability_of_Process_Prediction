@@ -61,7 +61,7 @@ def detect_and_standardize_columns(df, verbose=False):
 
     case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
     activity_patterns = ['concept:name', 'Action', 'activity', 'event', 'Event', 'task', 'Task']
-    timestamp_patterns = ['time:timestamp', 'Timestamp', 'timestamp', 'time', 'Time', 'start_time', 'StartTime', 'complete_time', 'CompleteTime']
+    timestamp_patterns = ['time:timestamp', 'Timestamp', 'timestamp', 'time', 'Time', 'start_time', 'StartTime', 'complete_time', 'CompleteTime', 'Complete Timestamp']
     resource_patterns = ['org:resource', 'Resource', 'resource', 'user', 'User', 'org:role', 'role', 'Role', 'actor', 'Actor']
 
     for col in df.columns:
@@ -264,7 +264,8 @@ def run_next_activity_prediction(
             methods=explainability_method,
             label_encoder=predictor.label_encoder,
             scaler=getattr(predictor, 'scaler', None),
-            feature_config=feature_config
+            feature_config=feature_config,
+            run_benchmark=False
         )
 
     return metrics
@@ -342,7 +343,8 @@ def run_event_time_prediction(
             methods=explainability_method,
             label_encoder=predictor.label_encoder,
             scaler=predictor.scaler,
-            feature_config=feature_config
+            feature_config=feature_config,
+            run_benchmark=False
         )
 
     return metrics
@@ -420,7 +422,8 @@ def run_remaining_time_prediction(
             methods=explainability_method,
             label_encoder=predictor.label_encoder,
             scaler=predictor.scaler,
-            feature_config=feature_config
+            feature_config=feature_config,
+            run_benchmark=False
         )
 
     return metrics
@@ -503,6 +506,8 @@ def run_gnn_unified_prediction(
 
     if explainability_method and EXPLAINABILITY_AVAILABLE:
         explainability_dir = os.path.join(output_dir, 'explainability')
+        explainability_samples = config.get("explainability_samples", 50)
+        
         if task == 'unified':
             tasks_to_explain = ['activity', 'event_time', 'remaining_time']
         elif task == 'next_activity':
@@ -520,9 +525,10 @@ def run_gnn_unified_prediction(
             explainability_dir,
             predictor.device,
             vocabularies=data.get('vocabs'),
-            num_samples=10,
+            num_samples=explainability_samples,
             methods=explainability_method,
             tasks=tasks_to_explain,
+            run_benchmark=False
         )
 
     return metrics

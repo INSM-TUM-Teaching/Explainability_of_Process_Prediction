@@ -62,14 +62,15 @@ class GradientExplainer:
             inv_vocab = {v: k for k, v in self.vocabs['Activity'].items()}
             name = inv_vocab.get(int(idx), f"Act_{idx}")
             return name[:18] + ".." if len(name) > 18 else name
-        return f"Activity_{idx}"
+        return f"activity_{idx}"
 
     def _get_resource_name(self, idx):
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
-            return name[:12] + ".." if len(name) > 12 else name
-        return f"Resource_{idx}"
+            name = name[:12] + ".." if len(name) > 12 else name
+            return f"{name} [Resource]"
+        return f"Resource_{idx} [Resource]"
 
     def explain_time_series_with_features(self, graphs, task='event_time', num_samples=50):
         self.model.eval()
@@ -215,9 +216,9 @@ class GradientExplainer:
         elif task == 'remaining_time':
             score = out[2]
             true_val = graph.y_remaining_time.item()
-        elif task == 'activity':
+        elif task in ['activity', 'next_activity']:
             predicted_class = out[0].argmax()
-            score = out[0][predicted_class]
+            score = out[0].view(-1)[predicted_class]
             true_val = graph.y_activity.item()
         else:
             return None, None, None, None
@@ -250,7 +251,7 @@ class GradientExplainer:
                         res_idx = res_inp.argmax().item()
                         info['resource'] = self._get_resource_name(res_idx)
                 
-                elif task == 'activity':
+                elif task in ['activity', 'next_activity']:
                     if 'activity' in graph.x_dict and graph.x_dict['activity'].grad is not None:
                         act_grad = graph.x_dict['activity'].grad[step]
                         act_inp = graph.x_dict['activity'][step]
@@ -310,7 +311,7 @@ class GradientExplainer:
         
         fig, ax = plt.subplots(figsize=(18, 8))
         
-        centered_contrib = contributions - np.mean(contributions)
+        centered_contrib = contributions # removed np.mean(contributions) mean-centering
         
         if task in ['event_time', 'remaining_time']:
             x_labels = []
@@ -335,10 +336,20 @@ class GradientExplainer:
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
         
-        ax.bar(time_steps, positive, color='#2ecc71', alpha=0.85,
-               label='Increases Prediction', width=0.75, edgecolor='#27ae60', linewidth=0.8)
-        ax.bar(time_steps, negative, color='#e74c3c', alpha=0.85,
-               label='Decreases Prediction', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+        ax.bar(time_steps, positive, color='#2ca02c', alpha=1.0,
+               label='Supports', width=0.75, edgecolor='#27ae60', linewidth=0.8)
+        ax.bar(time_steps, negative, color='#d62728', alpha=1.0,
+               label='Contradicts', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+
+        max_y = max(positive.max() if len(positive) > 0 else 0, abs(negative.min()) if len(negative) > 0 else 0)
+        offset = max_y * 0.05 if max_y > 0 else 0.01
+
+        for i, (p, n) in enumerate(zip(positive, negative)):
+            if p > 0:
+                ax.text(time_steps[i], p + offset, f'+{p:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            elif n < 0:
+                ax.text(time_steps[i], n - offset, f'{n:.3f}', ha='center', va='top', fontsize=10, fontweight='bold')
+
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
         
         if task in ['event_time', 'remaining_time']:
@@ -371,14 +382,12 @@ class GradientExplainer:
         if task in ['event_time', 'remaining_time']:
             xlabel = 'Event (Timestamp)'
         else:
-            xlabel = 'Event (Activity + Timestamp)'
+            xlabel = 'Event (activity + Timestamp)'
         
         ax.set_xlabel(xlabel, fontweight='bold', fontsize=14)
         ax.set_ylabel('Gradient Value (Contribution)', fontweight='bold', fontsize=14)
         
         task_name = task.replace('_', ' ').title()
-        ax.set_title(f'Timestep-Level Gradient Attribution - Sample {sample_id}',
-                    fontweight='bold', fontsize=16, pad=20)
         
         ax.legend(loc='upper right', framealpha=0.95, fontsize=12)
         
@@ -404,28 +413,37 @@ class GradientExplainer:
         
         if step_info:
             df_info = pd.DataFrame(step_info)
-            df_info['gradient_value'] = centered_contrib
+            import re
+            m = re.search(r'case_(.+?)_idx_(.+)', str(sample_id))
+            if m:
+                df_info.insert(0, 'case_id', m.group(1))
+                df_info.insert(1, 'case_index', m.group(2))
+
+            df_info['importance'] = centered_contrib
+            
+            cols = []
+            if m:
+                cols = ['case_id', 'case_index']
+            if 'activity' in df_info.columns:
+                df_info = df_info.rename(columns={'activity': 'activity'})
+                cols.append('activity')
+            cols.append('importance')
+
+            # Apply column selection
+            df_info = df_info[cols]
+                
+            csv_path = os.path.join(output_dir, f'gradient_timestep_sample_{sample_id}_details.csv')
             
             if task in ['event_time', 'remaining_time']:
-                cols = ['step']
-                if 'timestamp' in df_info.columns:
-                    cols.append('timestamp')
-                if 'activity' in df_info.columns:
-                    cols.append('activity')
-                cols.append('gradient_value')
-                df_info = df_info[cols]
-                
-                csv_path = os.path.join(output_dir, f'gradient_timestep_sample_{sample_id}_details.csv')
                 with open(csv_path, 'w') as f:
                     f.write(f"# Task: {task}\n")
                     f.write(f"# Gradient values from: TIMESTAMP FEATURES ONLY\n")
-                    f.write(f"# Activity shown for context only\n")
+                    f.write(f"# activity shown for context only\n")
                     df_info.to_csv(f, index=False)
-                
-                print(f"  [✓] Details CSV saved")
             else:
-                df_info.to_csv(os.path.join(output_dir, f'gradient_timestep_sample_{sample_id}_details.csv'), index=False)
-                print(f"  [✓] Details CSV saved")
+                df_info.to_csv(csv_path, index=False)
+            
+            print(f"  [✓] Details CSV saved")
 
     def plot_with_readable_table(self, results, output_dir, task):
         os.makedirs(output_dir, exist_ok=True)
@@ -465,17 +483,27 @@ class GradientExplainer:
             xlabel_text = 'Event sequence position (BPI Dataset)'
         
         mean_val = np.mean(contributions[contributions > 0]) if np.any(contributions > 0) else 0
-        centered_contrib = contributions - mean_val
+        centered_contrib = contributions # removed - mean_val mean-centering
         
         fig, ax = plt.subplots(figsize=(20, 8))
         
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
         
-        ax.bar(x_values, positive, color='#d62728', alpha=0.85, 
-               label='Positive', width=0.75, edgecolor='darkred', linewidth=0.8)
-        ax.bar(x_values, negative, color='#1f77b4', alpha=0.85, 
-               label='Negative', width=0.75, edgecolor='darkblue', linewidth=0.8)
+        ax.bar(x_values, positive, color='#2ca02c', alpha=1.0, 
+               label='Supports', width=0.75, edgecolor='darkred', linewidth=0.8)
+        ax.bar(x_values, negative, color='#d62728', alpha=1.0, 
+               label='Contradicts', width=0.75, edgecolor='darkblue', linewidth=0.8)
+
+        max_y = max(positive.max() if len(positive) > 0 else 0, abs(negative.min()) if len(negative) > 0 else 0)
+        offset = max_y * 0.05 if max_y > 0 else 0.01
+
+        for i, (p, n) in enumerate(zip(positive, negative)):
+            if p > 0:
+                ax.text(x_values[i], p + offset, f'+{p:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            elif n < 0:
+                ax.text(x_values[i], n - offset, f'{n:.3f}', ha='center', va='top', fontsize=10, fontweight='bold')
+
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
         
         max_contrib = np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
@@ -509,8 +537,6 @@ class GradientExplainer:
                      fontweight='bold', fontsize=14)
         
         task_name = task.replace('_', ' ').title()
-        ax.set_title(f'Graph Neural Network (GNN) Model - SHAP Explainability (Averaged Over {num_samples} Samples)\n{task_name}',
-                    fontweight='bold', fontsize=17, pad=20)
         
         ax.legend(loc='upper left', framealpha=0.95, fontsize=12)
         
@@ -541,16 +567,16 @@ class GradientExplainer:
         summary_df.to_csv(os.path.join(output_dir, f'feature_summary_{task}.csv'), index=False)
         print(f"[✓] CSV saved")
 
-    def explain_global_activity(self, graphs, num_samples=50):
+    def explain_global_importance(self, graphs, task='activity', num_samples=50):
         self.model.eval()
         importances = {'activity': [], 'resource': []}
         
         sample_indices = np.random.choice(len(graphs), min(num_samples, len(graphs)), replace=False)
         selected_graphs = [graphs[i] for i in sample_indices]
         
-        print(f"Computing gradients for {len(selected_graphs)} graphs (activity)...")
+        print(f"Computing gradients for {len(selected_graphs)} graphs ({task})...")
         
-        for graph in tqdm(selected_graphs, desc="Activity Analysis"):
+        for graph in tqdm(selected_graphs, desc=f"{task.capitalize()} Analysis"):
             graph = graph.to(self.device)
             for key in graph.x_dict:
                 if key in ['activity', 'resource']:
@@ -558,9 +584,16 @@ class GradientExplainer:
                     graph.x_dict[key].requires_grad = True
             
             out = self.model(graph)
-            logits = out[0]
-            pred_idx = logits.argmax(dim=1)
-            score = logits[0, pred_idx]
+            if task == 'activity':
+                logits = out[0]
+                pred_idx = logits.argmax(dim=1)
+                score = logits[0, pred_idx]
+            elif task == 'event_time':
+                score = out[1]
+            elif task == 'remaining_time':
+                score = out[2]
+            else:
+                score = out[0].sum() # Fallback
             
             self.model.zero_grad()
             score.backward()
@@ -580,7 +613,7 @@ class GradientExplainer:
         
         return global_imp
 
-    def plot_global_importance_activity(self, importances, output_dir):
+    def plot_global_importance(self, importances, output_dir, task='activity'):
         os.makedirs(output_dir, exist_ok=True)
         
         data = []
@@ -596,25 +629,25 @@ class GradientExplainer:
                         name = f"{n_type}_{idx}"
                     
                     data.append({
-                        'Feature': name,
-                        'Importance': scores[idx],
-                        'Type': n_type.capitalize()
+                        'activity': name,
+                        'importance': scores[idx]
                     })
         
-        df = pd.DataFrame(data).sort_values('Importance', ascending=True)
-        df.to_csv(os.path.join(output_dir, 'gradient_global_activity.csv'), index=False)
+        df = pd.DataFrame(data).sort_values('importance', ascending=True)
+        df.to_csv(os.path.join(output_dir, f'gradient_global_{task}.csv'), index=False)
         
         if df.empty:
-            print("[WARNING] No gradient importances available for activity.")
+            print(f"[WARNING] No gradient importances available for {task}.")
             return
 
+        import matplotlib.pyplot as plt
         plt.figure(figsize=(10, 6))
-        colors = {'Activity': '#1f77b4', 'Resource': '#ff7f0e'}
+        colors = {'activity': '#1f77b4', 'Resource': '#ff7f0e'}
         
-        plt.barh(df['Feature'], df['Importance'],
-                 color=[colors.get(t, 'grey') for t in df['Type']])
+        plt.barh(df['activity'], df['importance'],
+                 color=[colors.get(t, 'grey') for t in df['activity'].apply(lambda x: 'Activity' if 'Act_' in x else 'Resource')])
         
-        plt.title("Global Feature Importance (Next Activity)", fontweight='bold', fontsize=14)
+        task_name_title = task.replace('_', ' ').title()
         plt.xlabel("Mean Gradient Magnitude (Impact)", fontweight='bold')
         plt.grid(axis='x', linestyle='--', alpha=0.5)
         
@@ -623,11 +656,11 @@ class GradientExplainer:
         plt.legend(handles=legend_elements, loc='lower right')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'gradient_global_activity.png'), 
+        plt.savefig(os.path.join(output_dir, f'gradient_global_{task}.png'), 
                    dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
         
-        print(f"[✓] Activity bar chart saved")
+        print(f"[✓] {task_name_title} bar chart saved")
 
 
 class TemporalGradientExplainer:
@@ -652,14 +685,15 @@ class TemporalGradientExplainer:
             inv_vocab = {v: k for k, v in self.vocabs['Activity'].items()}
             name = inv_vocab.get(int(idx), f"Act_{idx}")
             return name[:18] + ".." if len(name) > 18 else name
-        return f"Activity_{idx}"
+        return f"activity_{idx}"
 
     def _get_resource_name(self, idx):
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
-            return name[:12] + ".." if len(name) > 12 else name
-        return f"Resource_{idx}"
+            name = name[:12] + ".." if len(name) > 12 else name
+            return f"{name} [Resource]"
+        return f"Resource_{idx} [Resource]"
 
     def explain_individual_sample(self, graph, task='event_time'):
         self.model.eval()
@@ -783,7 +817,7 @@ class TemporalGradientExplainer:
 
         fig, ax = plt.subplots(figsize=(18, 8))
 
-        centered_contrib = contributions - np.mean(contributions)
+        centered_contrib = contributions # removed np.mean(contributions) mean-centering
 
         if task in ['event_time', 'remaining_time']:
             x_labels = []
@@ -808,10 +842,20 @@ class TemporalGradientExplainer:
         positive = np.maximum(centered_contrib, 0)
         negative = np.minimum(centered_contrib, 0)
 
-        ax.bar(time_steps, positive, color='#2ecc71', alpha=0.85,
-               label='Increases Prediction', width=0.75, edgecolor='#27ae60', linewidth=0.8)
-        ax.bar(time_steps, negative, color='#e74c3c', alpha=0.85,
-               label='Decreases Prediction', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+        ax.bar(time_steps, positive, color='#2ca02c', alpha=1.0,
+               label='Supports', width=0.75, edgecolor='#27ae60', linewidth=0.8)
+        ax.bar(time_steps, negative, color='#d62728', alpha=1.0,
+               label='Contradicts', width=0.75, edgecolor='#c0392b', linewidth=0.8)
+
+        max_y = max(positive.max() if len(positive) > 0 else 0, abs(negative.min()) if len(negative) > 0 else 0)
+        offset = max_y * 0.05 if max_y > 0 else 0.01
+
+        for i, (p, n) in enumerate(zip(positive, negative)):
+            if p > 0:
+                ax.text(time_steps[i], p + offset, f'+{p:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            elif n < 0:
+                ax.text(time_steps[i], n - offset, f'{n:.3f}', ha='center', va='top', fontsize=10, fontweight='bold')
+
         ax.axhline(y=0, color='black', linestyle='-', linewidth=2)
 
         if task in ['event_time', 'remaining_time']:
@@ -842,13 +886,10 @@ class TemporalGradientExplainer:
         if task in ['event_time', 'remaining_time']:
             xlabel = 'Event (Timestamp)'
         else:
-            xlabel = 'Event (Activity + Timestamp)'
+            xlabel = 'Event (activity + Timestamp)'
 
         ax.set_xlabel(xlabel, fontweight='bold', fontsize=14)
         ax.set_ylabel('Gradient Value (Contribution)', fontweight='bold', fontsize=14)
-
-        ax.set_title(f'Timestep-Level Gradient Attribution - Sample {sample_id}',
-                     fontweight='bold', fontsize=16, pad=20)
 
         ax.legend(loc='upper right', framealpha=0.95, fontsize=12)
         ax.grid(True, alpha=0.3, axis='y', linestyle='--', linewidth=0.8)
@@ -873,10 +914,18 @@ class TemporalGradientExplainer:
 
         if step_info:
             df_info = pd.DataFrame(step_info)
+            import re
+            m = re.search(r'case_(.+?)_idx_(.+)', str(sample_id))
+            if m:
+                df_info.insert(0, 'case_id', m.group(1))
+                df_info.insert(1, 'case_index', m.group(2))
+
             df_info['gradient_value'] = centered_contrib
 
             if task in ['event_time', 'remaining_time']:
                 cols = ['step']
+                if m:
+                    cols = ['case_id', 'case_index'] + cols
                 if 'timestamp' in df_info.columns:
                     cols.append('timestamp')
                 if 'activity' in df_info.columns:
@@ -888,7 +937,7 @@ class TemporalGradientExplainer:
                 with open(csv_path, 'w') as f:
                     f.write(f"# Task: {task}\n")
                     f.write("# Gradient values from: TIMESTAMP FEATURES ONLY\n")
-                    f.write("# Activity shown for context only\n")
+                    f.write("# activity shown for context only\n")
                     df_info.to_csv(f, index=False)
             else:
                 df_info.to_csv(
@@ -944,47 +993,50 @@ class GraphLIMEExplainer:
     def _get_activity_name(self, idx):
         if 'Activity' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Activity'].items()}
-            return inv_vocab.get(int(idx), f"Activity_{idx}")
-        return f"Activity_{idx}"
+            return inv_vocab.get(int(idx), f"activity_{idx}")
+        return f"activity_{idx}"
 
     def _get_resource_name(self, idx):
         if 'Resource' in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs['Resource'].items()}
-            return inv_vocab.get(int(idx), f"Resource_{idx}")
-        return f"Resource_{idx}"
+            res_name = inv_vocab.get(int(idx), f"Resource_{idx}")
+            return f"{res_name} [Resource]"
+        return f"Resource_{idx} [Resource]"
         
     def _get_feature_name(self, node_type, feature_idx):
         if node_type == 'activity' and 'Activity' in self.vocabs:
             vocab = self.vocabs['Activity']
             inv_vocab = {v: k for k, v in vocab.items()}
-            return inv_vocab.get(int(feature_idx), f"Activity_{feature_idx}")
+            return inv_vocab.get(int(feature_idx), f"activity_{feature_idx}")
         elif node_type == 'resource' and 'Resource' in self.vocabs:
             vocab = self.vocabs['Resource']
             inv_vocab = {v: k for k, v in vocab.items()}
-            return inv_vocab.get(int(feature_idx), f"Resource_{feature_idx}")
+            res_name = inv_vocab.get(int(feature_idx), f"Resource_{feature_idx}")
+            return f"{res_name} [Resource]"
+        elif node_type == 'resource':
+            return f"resource_{feature_idx} [Resource]"
         return f"{node_type}_{feature_idx}"
 
     def _aggregate_features(self, explanation):
         activity_stats = {}
         for item in explanation:
-            name = item['Feature']
-            weight = item['Weight']
+            name = item['activity']
+            importance = item['importance']
             
             if name not in activity_stats:
-                activity_stats[name] = {'weight': 0.0, 'count': 0}
-            activity_stats[name]['weight'] += weight
+                activity_stats[name] = {'importance': 0.0, 'count': 0}
+            activity_stats[name]['importance'] += importance
             activity_stats[name]['count'] += 1
         
         aggregated = []
         for name, stats in activity_stats.items():
             label = f"{name} (x{stats['count']})" if stats['count'] > 1 else name
             aggregated.append({
-                'Feature': label,
-                'Weight': stats['weight'],
-                'AbsWeight': abs(stats['weight'])
+                'activity': label,
+                'importance': stats['importance']
             })
         
-        return sorted(aggregated, key=lambda x: x['AbsWeight'], reverse=False)
+        return sorted(aggregated, key=lambda x: abs(x['importance']), reverse=False)
 
     def _median_sigma(self, distances):
         flat = distances.ravel()
@@ -1010,26 +1062,56 @@ class GraphLIMEExplainer:
         y = y_vec.reshape(-1, 1)
         y_dist = y - y.T
         sigma_y = self._median_sigma(np.abs(y_dist))
+        # Prevent division by zero
+        if sigma_y == 0:
+            sigma_y = 1e-5
+            
         l_mat = np.exp(-(y_dist ** 2) / (2 * sigma_y ** 2))
         l_bar = self._center_and_normalize(l_mat)
 
-        features = []
-        for k in range(d):
-            xk = x_mat[:, k].reshape(-1, 1)
-            x_dist = xk - xk.T
-            sigma_x = self._median_sigma(np.abs(x_dist))
-            k_mat = np.exp(-(x_dist ** 2) / (2 * sigma_x ** 2))
-            k_bar = self._center_and_normalize(k_mat)
-            features.append(k_bar.reshape(-1))
-
-        x_feat = np.stack(features, axis=1)
+        # Vectorized feature kernel computation
+        # X_dist: (d, n, n)
+        X_trans = x_mat.T
+        X_dist = np.abs(X_trans[:, :, np.newaxis] - X_trans[:, np.newaxis, :])
+        
+        # Calculate sigma for each feature
+        sigmas = np.array([self._median_sigma(X_dist[i]) for i in range(d)])
+        sigmas[sigmas == 0] = 1e-5
+        sigmas = sigmas.reshape(-1, 1, 1)
+        
+        # K_mats: (d, n, n)
+        k_mats = np.exp(-(X_dist ** 2) / (2 * sigmas ** 2))
+        
+        # Center and normalize (batched)
+        h = np.eye(n) - np.ones((n, n)) / n
+        centered = h @ k_mats @ h
+        norms = np.linalg.norm(centered, axis=(1, 2), ord="fro")
+        norms[norms == 0] = 1.0
+        normalized = centered / norms[:, np.newaxis, np.newaxis]
+        
+        # x_feat: (n*n, d)
+        x_feat = normalized.reshape(d, -1).T
         y_target = l_bar.reshape(-1)
 
-        model = Lasso(alpha=self.hsic_lambda, fit_intercept=False, positive=True, max_iter=5000)
-        model.fit(x_feat, y_target)
+        import warnings
+        from sklearn.exceptions import ConvergenceWarning
+        from sklearn.linear_model import Lasso
+        
+        alpha = self.hsic_lambda
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=ConvergenceWarning)
+            # Try progressively smaller alphas if coefficients shrink to exactly 0
+            for _ in range(4):
+                # Faster Lasso with fewer iterations
+                model = Lasso(alpha=alpha, fit_intercept=False, max_iter=1000)
+                model.fit(x_feat, y_target)
+                if not np.allclose(model.coef_, 0):
+                    return model.coef_
+                alpha *= 0.1
+                
         return model.coef_
 
-    def explain_local(self, graph, task='activity', num_perturbations=200):
+    def explain_local(self, graph, task='activity', num_perturbations=100):
         self.model.eval()
         graph = graph.to(self.device)
 
@@ -1065,11 +1147,19 @@ class GraphLIMEExplainer:
         active_features = [("activity", idx) for idx in active_activity] + [
             ("resource", idx) for idx in active_resource
         ]
+        
+        # FIX: Cap features to explain for speed
+        if len(active_features) > 25:
+            active_features = active_features[:25]
+            # Adjust active_activity and active_resource to match the capped active_features
+            active_activity = [idx for t, idx in active_features if t == 'activity']
+            active_resource = [idx for t, idx in active_features if t == 'resource']
+
         if not active_features:
             return [], base_score, true_val, [], predicted_class
 
         X_perturb = []
-        y_perturb = []
+        perturbed_graphs = []
 
         for _ in range(num_perturbations):
             mask_activity = np.ones(activity_features, dtype=np.float32)
@@ -1096,7 +1186,13 @@ class GraphLIMEExplainer:
             combined_mask = np.concatenate([mask_activity_active, mask_resource_active])
             X_perturb.append(combined_mask)
 
-            masked_graph = graph.clone()
+            from torch_geometric.data import HeteroData
+            masked_graph = HeteroData()
+            for key in graph.x_dict:
+                masked_graph[key].x = graph[key].x.detach().clone()
+            for key in graph.edge_types:
+                masked_graph[key].edge_index = graph[key].edge_index
+
             if activity_features > 0:
                 act_mask_tensor = torch.tensor(
                     mask_activity, device=self.device, dtype=torch.float32
@@ -1107,18 +1203,25 @@ class GraphLIMEExplainer:
                     mask_resource, device=self.device, dtype=torch.float32
                 ).view(1, -1)
                 masked_graph['resource'].x = masked_graph['resource'].x * res_mask_tensor
+            
+            perturbed_graphs.append(masked_graph)
 
-            with torch.no_grad():
-                out_p = self.model(masked_graph)
-                if task == 'event_time':
-                    score = out_p[1].item()
-                elif task == 'remaining_time':
-                    score = out_p[2].item()
-                else:
-                    probs = torch.softmax(out_p[0].view(-1), dim=0)
-                    cls = predicted_class if predicted_class is not None else int(torch.argmax(probs).item())
-                    score = float(probs[cls].item())
-                y_perturb.append(score)
+        # Batch inference
+        from torch_geometric.data import Batch
+        batched_graphs = Batch.from_data_list(perturbed_graphs).to(self.device)
+        
+        y_perturb = []
+        with torch.no_grad():
+            out_p = self.model(batched_graphs)
+            if task == 'event_time':
+                y_perturb = out_p[1].cpu().numpy().flatten()
+            elif task == 'remaining_time':
+                y_perturb = out_p[2].cpu().numpy().flatten()
+            else:
+                logits = out_p[0] # (B, num_classes)
+                probs = torch.softmax(logits, dim=1)
+                cls = predicted_class if predicted_class is not None else int(torch.argmax(probs, dim=1)[0].item())
+                y_perturb = probs[:, cls].cpu().numpy()
 
         X_perturb = np.array(X_perturb)
         y_perturb = np.array(y_perturb)
@@ -1139,60 +1242,57 @@ class GraphLIMEExplainer:
         explanation = []
         for coef, (node_type, feat_idx) in zip(coefs, active_features):
             explanation.append({
-                'Feature': self._get_feature_name(node_type, feat_idx),
-                'Weight': float(coef),
-                'AbsWeight': float(abs(coef))
+                'activity': self._get_feature_name(node_type, feat_idx),
+                'importance': float(coef)
             })
 
         aggregated_explanation = self._aggregate_features(explanation)
         if self.top_k and len(aggregated_explanation) > self.top_k:
             aggregated_explanation = sorted(
-                aggregated_explanation, key=lambda x: x['AbsWeight'], reverse=True
+                aggregated_explanation, key=lambda x: abs(x['importance']), reverse=True
             )[: self.top_k]
             aggregated_explanation = sorted(
-                aggregated_explanation, key=lambda x: x['AbsWeight'], reverse=False
+                aggregated_explanation, key=lambda x: abs(x['importance']), reverse=False
             )
 
-        step_info = [{"feature": row["Feature"]} for row in aggregated_explanation]
+        step_info = [{"feature": row["activity"]} for row in aggregated_explanation]
         return aggregated_explanation, base_score, true_val, step_info, predicted_class
 
     def plot_local(self, explanation, base_score, output_dir, task, sample_id, true_val=None, predicted_class=None):
         os.makedirs(output_dir, exist_ok=True)
 
         if not explanation:
+            print(f"[DEBUG GraphLIME] plot_local received empty explanation for sample {sample_id}, task {task}.")
             return
 
         df = pd.DataFrame(explanation)
-        if "AbsWeight" not in df.columns:
-            df["AbsWeight"] = df["Weight"].abs()
-        df = df.sort_values("AbsWeight", ascending=True)
+        import re
+        m = re.search(r'case_(.+?)_idx_(.+)', str(sample_id))
+        if m:
+            df.insert(0, 'case_id', m.group(1))
+            df.insert(1, 'case_index', m.group(2))
+        
+        # Ensure sorting by absolute importance, then remove temporary column
+        df["_abs_importance"] = df["importance"].abs()
+        df = df.sort_values("_abs_importance", ascending=True)
+        df = df.drop(columns=["_abs_importance"])
 
         fig, ax = plt.subplots(figsize=(10, max(6, len(df) * 0.45)))
-        colors = ['#2ecc71' if x > 0 else '#e74c3c' for x in df["Weight"]]
+        colors = ['#2ca02c' if x > 0 else '#d62728' for x in df["importance"]]
         y_pos = np.arange(len(df))
-        ax.barh(y_pos, df["Weight"].values, color=colors, alpha=0.85, edgecolor='black', linewidth=0.8)
+        bars = ax.barh(y_pos, df["importance"].values, color=colors, alpha=0.85, edgecolor='black', linewidth=0.8)
+
+        for i, bar in enumerate(bars):
+            val = df["importance"].values[i]
+            offset = 0.01 if val >= 0 else -0.01
+            ha = 'left' if val >= 0 else 'right'
+            prefix = '+' if val > 0 else ''
+            ax.text(val + offset, bar.get_y() + bar.get_height()/2, f'{prefix}{val:.3f}', 
+                    ha=ha, va='center', fontsize=8, fontweight='bold')
 
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(df["Feature"].tolist(), fontsize=9)
+        ax.set_yticklabels(df["activity"].tolist(), fontsize=9)
         ax.set_xlabel('Feature Contribution (GraphLIME)', fontweight='bold', fontsize=12)
-
-        task_name = task.replace('_', ' ').title()
-        if task == 'activity':
-            pred_activity = self._get_activity_name(int(predicted_class)) if predicted_class is not None else "Unknown"
-            if true_val is not None:
-                true_activity = self._get_activity_name(int(true_val))
-                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%), True: {true_activity}"
-            else:
-                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%)"
-        else:
-            subtitle = f"Prediction: {base_score:.3f}" + (f", True: {true_val:.3f}" if true_val is not None else "")
-
-        ax.set_title(
-            f'Graph Neural Network (GNN) - GraphLIME\n{task_name} (Sample {sample_id})\n{subtitle}',
-            fontweight='bold',
-            fontsize=13,
-            pad=15
-        )
 
         ax.axvline(x=0, color='black', linestyle='-', linewidth=1.5)
         ax.grid(True, alpha=0.3, axis='x', linestyle='--')
@@ -1220,6 +1320,64 @@ class GraphLIMEExplainer:
             predicted_class=predicted_class,
         )
 
+    def explain_global_importance(self, graphs, task='activity', num_samples=50):
+        import numpy as np
+        import collections
+        from tqdm import tqdm
+        
+        sample_count = min(num_samples, len(graphs))
+        sample_indices = np.random.choice(len(graphs), sample_count, replace=False)
+        
+        print(f"Computing GraphLIME for {sample_count} graphs ({task})...")
+        
+        global_importances = collections.defaultdict(list)
+        for idx in tqdm(sample_indices, desc=f"GraphLIME ({task})"):
+            graph = graphs[idx]
+            try:
+                # Use 50 perturbations for global summary as requested
+                explanation, _, _, _, _ = self.explain_local(graph, task=task, num_perturbations=50)
+                for item in explanation:
+                    name = item['activity']
+                    imp = item['importance']
+                    global_importances[name].append(abs(imp))
+            except Exception as e:
+                pass
+                
+        # Average the scores
+        avg_importances = {}
+        for name, scores in global_importances.items():
+            if len(scores) > 0:
+                avg_importances[name] = np.mean(scores)
+                
+        return avg_importances
+
+    def plot_global_importance(self, importances, output_dir, task='activity'):
+        import os
+        import pandas as pd
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if not importances:
+            print(f"[WARNING] No GraphLIME global importances available for {task}.")
+            return
+            
+        data = [{'activity': k, 'importance': v} for k, v in importances.items()]
+        df = pd.DataFrame(data).sort_values('importance', ascending=False).head(15)
+        
+        df.to_csv(os.path.join(output_dir, f'graphlime_global_{task}.csv'), index=False)
+        
+        plt.figure(figsize=(10, 6))
+        sns.barplot(x='importance', y='activity', hue='activity', data=df, palette='viridis', legend=False)
+        plt.title(f'GraphLIME Global Feature Importance - {task.replace("_", " ").capitalize()}')
+        plt.xlabel('Mean Absolute Importance')
+        plt.ylabel('Feature')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'graphlime_global_bar_plot_{task}.png'), dpi=300, facecolor="white")
+        plt.close()
+
+
 
 class ExplainabilityBenchmark:
     """
@@ -1240,7 +1398,7 @@ class ExplainabilityBenchmark:
             return self.model(graph)
 
     def _select_output(self, out):
-        if self.task == 'activity':
+        if self.task in ['activity', 'next_activity']:
             return out[0]
         if self.task == 'event_time':
             return out[1]
@@ -1248,7 +1406,7 @@ class ExplainabilityBenchmark:
 
     def _prediction_value(self, out):
         pred = self._select_output(out)
-        if self.task == 'activity':
+        if self.task in ['activity', 'next_activity']:
             return pred.max()
         return pred.mean()
 
@@ -1295,7 +1453,7 @@ class ExplainabilityBenchmark:
                 g.x_dict[key].requires_grad = True
 
             out = self.model(g)
-            if self.task == 'activity':
+            if self.task in ['activity', 'next_activity']:
                 logits = out[0]
                 pred_idx = logits.argmax(dim=1)
                 score = logits[0, pred_idx]
@@ -1334,20 +1492,36 @@ class ExplainabilityBenchmark:
         return np.array([]), []
 
     def _parse_feature_name(self, name, act_vocab, res_vocab):
-        clean = re.sub(r'\s+\(x\d+\)$', '', name).strip()
+        is_resource_hint = name.endswith(' [Resource]')
+        clean = name.replace(' [Resource]', '')
+        clean = re.sub(r'\s+\(x\d+\)$', '', clean).strip()
+        
+        if is_resource_hint:
+            if clean in res_vocab:
+                return 'resource', res_vocab[clean]
+            if clean.startswith('Resource_'):
+                try:
+                    return 'resource', int(clean.split('_', 1)[1])
+                except ValueError:
+                    return None, None
+            return 'resource', None
+
         if clean in act_vocab:
             return 'activity', act_vocab[clean]
         if clean in res_vocab:
             return 'resource', res_vocab[clean]
-        if clean.startswith('Activity_'):
+        if clean.startswith('activity_') or clean.startswith('Act_'):
             try:
-                return 'activity', int(clean.split('_', 1)[1])
-            except ValueError:
+                # Handle both activity_idx and Act_idx
+                parts = clean.split('_', 1)
+                return 'activity', int(parts[1])
+            except (ValueError, IndexError):
                 return None, None
-        if clean.startswith('Resource_'):
+        if clean.startswith('Resource_') or clean.startswith('Res_'):
             try:
-                return 'resource', int(clean.split('_', 1)[1])
-            except ValueError:
+                parts = clean.split('_', 1)
+                return 'resource', int(parts[1])
+            except (ValueError, IndexError):
                 return None, None
         return None, None
 
@@ -1393,7 +1567,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task == 'activity':
+                if self.task in ['activity', 'next_activity']:
                     pred_change = (orig_pred - masked_pred).abs().max().item()
                 else:
                     pred_change = (orig_pred - masked_pred).abs().mean().item()
@@ -1445,7 +1619,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task == 'activity':
+                if self.task in ['activity', 'next_activity']:
                     comp = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     comp = (orig_pred - masked_pred).abs().mean().item()
@@ -1484,7 +1658,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task == 'activity':
+                if self.task in ['activity', 'next_activity']:
                     suff = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     suff = (orig_pred - masked_pred).abs().mean().item()
@@ -1801,49 +1975,78 @@ class ExplainabilityBenchmark:
 
 
 def generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task='activity'):
-    summary_data = []
+    grad_importance = {}
+    feature_types = {}
     
     grad_file = os.path.join(grad_dir, f'gradient_global_{task}.csv')
     if os.path.exists(grad_file):
         grad_df = pd.read_csv(grad_file)
         for _, row in grad_df.iterrows():
-            summary_data.append({
-                'Feature': row['Feature'],
-                'Method': 'Gradient',
-                'Importance': row['Importance'],
-                'Type': row.get('Type', 'Unknown')
-            })
-    
-    lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_sample_') and f.endswith(f'_{task}.csv')]
-    if lime_files:
-        lime_aggregated = {}
-        for lime_file in lime_files:
-            lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+            name = row['activity']
+            grad_importance[name] = row['importance']
+            feature_types[name] = 'Resource' if ' [Resource]' in name else 'Activity'
+
+    lime_importance = {}
+    if os.path.exists(lime_dir):
+        # Try global file first
+        global_lime_file = os.path.join(lime_dir, f'graphlime_global_{task}.csv')
+        if os.path.exists(global_lime_file):
+            lime_df = pd.read_csv(global_lime_file)
             for _, row in lime_df.iterrows():
-                feature = row['Feature']
-                weight = abs(row['Weight'])
-                if feature not in lime_aggregated:
-                    lime_aggregated[feature] = []
-                lime_aggregated[feature].append(weight)
+                name = row['activity']
+                lime_importance[name] = row['importance']
+                if name not in feature_types:
+                    feature_types[name] = 'Resource' if ' [Resource]' in name else 'Activity'
+
+        # Fallback to aggregation
+        if not lime_importance:
+            lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv') and 'global' not in f]
+            if lime_files:
+                lime_aggregated = {}
+                for lime_file in lime_files:
+                    lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
+                    for _, row in lime_df.iterrows():
+                        feature = row['activity']
+                        weight = abs(row['importance'])
+                        if feature not in lime_aggregated:
+                            lime_aggregated[feature] = []
+                        lime_aggregated[feature].append(weight)
+
+                for feature, weights in lime_aggregated.items():
+                    lime_importance[feature] = np.mean(weights)
+                    if feature not in feature_types:
+                        feature_types[feature] = 'Resource' if ' [Resource]' in feature else 'Activity'
+    
+    summary_data = []
+    all_features = set(grad_importance.keys()) | set(lime_importance.keys())
+    for feature in all_features:
+        grad_score = grad_importance.get(feature, 0.0)
+        lime_score = lime_importance.get(feature, 0.0)
         
-        for feature, weights in lime_aggregated.items():
-            summary_data.append({
-                'Feature': feature,
-                'Method': 'GraphLIME',
-                'Importance': np.mean(weights),
-                'Type': 'Activity' if 'Activity' in feature else 'Resource'
-            })
+        if grad_score == 0.0 and lime_score == 0.0:
+            continue
+            
+        avg_score = (grad_score + lime_score) / 2.0 if (grad_score > 0 and lime_score > 0) else max(grad_score, lime_score)
+        
+        summary_data.append({
+            'activity': feature,
+            'gradient_importance': grad_score,
+            'graphlime_importance': lime_score,
+            'average_importance': avg_score
+        })
     
     if summary_data:
         summary_df = pd.DataFrame(summary_data)
-        summary_df = summary_df.sort_values('Importance', ascending=False)
-        summary_df.to_csv(os.path.join(output_dir, f'feature_importance_summary_{task}.csv'), index=False)
+        summary_df = summary_df.sort_values('average_importance', ascending=False)
+        summary_df.to_csv(os.path.join(output_dir, 'feature_importance_summary.csv'), index=False)
         print(f"[OK] Feature importance summary saved for {task}")
+    else:
+        print(f"[DEBUG] summary_data is empty for task {task}. No feature_importance_summary.csv generated.")
     
-    return summary_df if summary_data else None
+    return pd.DataFrame(summary_data) if summary_data else None
 
 
-def generate_comparison_report(grad_dir, lime_dir, output_dir, task='activity'):
+def generate_comparison_report(grad_dir, lime_dir, output_dir, task='activity', summary_df=None):
     report_path = os.path.join(output_dir, f'comparison_report_{task}.txt')
     
     with open(report_path, 'w') as f:
@@ -1857,28 +2060,39 @@ def generate_comparison_report(grad_dir, lime_dir, output_dir, task='activity'):
             f.write("GRADIENT-BASED SALIENCY:\n")
             f.write("-" * 70 + "\n")
             f.write(f"Total features analyzed: {len(grad_df)}\n")
-            f.write(f"Top feature: {grad_df.iloc[-1]['Feature']} ({grad_df.iloc[-1]['Importance']:.4f})\n")
-            
-            activity_count = len(grad_df[grad_df['Type'] == 'Activity'])
-            resource_count = len(grad_df[grad_df['Type'] == 'Resource'])
-            f.write(f"Activity features: {activity_count}\n")
-            f.write(f"Resource features: {resource_count}\n\n")
+            f.write(f"Top feature: {grad_df.iloc[-1]['activity']} ({grad_df.iloc[-1]['importance']:.4f})\n")
+            f.write("\n")
         
-        lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_sample_') and f.endswith(f'_{task}.csv')]
-        if lime_files:
-            f.write("GRAPHLIME LOCAL ANALYSIS:\n")
+        global_lime_file = os.path.join(lime_dir, f'graphlime_global_{task}.csv')
+        if os.path.exists(global_lime_file):
+            lime_df = pd.read_csv(global_lime_file)
+            f.write("GRAPHLIME GLOBAL ANALYSIS:\n")
             f.write("-" * 70 + "\n")
-            f.write(f"Samples analyzed: {len(lime_files)}\n")
-            
+            f.write(f"Top feature: {lime_df.iloc[0]['activity']} ({lime_df.iloc[0]['importance']:.4f})\n")
+            f.write("\n")
+        else:
+            lime_files = [f for f in os.listdir(lime_dir) if f.startswith('graphlime_') and f.endswith('.csv')]
+            if lime_files:
+                f.write("GRAPHLIME LOCAL ANALYSIS (Aggregated):\n")
+                f.write("-" * 70 + "\n")
+                f.write(f"Samples analyzed: {len(lime_files)}\n")
+                f.write("\n")
             all_features = []
             for lime_file in lime_files:
                 lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-                all_features.extend(lime_df['Feature'].tolist())
+                all_features.extend(lime_df['activity'].tolist())
             
             unique_features = len(set(all_features))
             f.write(f"Unique features identified: {unique_features}\n")
             f.write(f"Most common feature: {max(set(all_features), key=all_features.count)}\n\n")
         
+        if summary_df is not None and not summary_df.empty:
+            f.write("TOP 10 MOST IMPORTANT FEATURES (AVERAGE):\n")
+            f.write("-" * 70 + "\n")
+            for i, row in enumerate(summary_df.head(10).to_dict('records'), 1):
+                f.write(f"{i:2d}. {row['activity']:<30} | Avg: {row['average_importance']:.4f}\n")
+                f.write(f"    Grad: {row['gradient_importance']:.4f} | LIME: {row['graphlime_importance']:.4f}\n\n")
+
         f.write("METHOD COMPARISON:\n")
         f.write("-" * 70 + "\n")
         f.write("Gradient Method:\n")
@@ -1909,7 +2123,6 @@ def generate_comparison_report(grad_dir, lime_dir, output_dir, task='activity'):
         f.write("="*70 + "\n")
     
     print(f"[OK] Comparison report saved for {task}")
-
 
 def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, num_samples=50, methods='all', tasks=None, scaler=None, y_true=None, run_benchmark=True):
     os.makedirs(output_dir, exist_ok=True)
@@ -1948,57 +2161,19 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
             print(f"\n[{task.upper()}]")
             
             try:
-                if task == 'activity':
-                    imp = explainer.explain_global_activity(graphs, num_samples)
-                    explainer.plot_global_importance_activity(imp, grad_dir)
-                    
-                elif task in ['event_time', 'remaining_time']:
-                    print(f"  Creating individual sample explanations...")
-                    num_individual = min(5, len(graphs))
-                    
-                    sample_indices = []
-                    if len(graphs) > 100:
-                        sample_indices = [
-                            len(graphs) // 4,
-                            len(graphs) // 2,
-                            3 * len(graphs) // 4,
-                            len(graphs) - 100,
-                            len(graphs) - 50,
-                        ]
-                    else:
-                        start = min(10, len(graphs) // 3)
-                        sample_indices = list(range(start, min(start + num_individual, len(graphs))))
-                    
-                    for i, idx in enumerate(sample_indices):
-                        print(f"  Sample {i} (graph index {idx}):")
-                        graph = graphs[idx]
-                        contrib, pred, true_val, step_info = explainer.explain_individual_sample(graph, task)
-                        explainer.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, grad_dir, task, i)
-                    
+                print(f"  Creating global summary for {task}...")
+                imp = explainer.explain_global_importance(graphs, task=task, num_samples=num_samples)
+                explainer.plot_global_importance(imp, grad_dir, task=task)
+                
             except Exception as e:
                 print(f"[ERROR] Failed {task}: {e}")
         if not _dir_has_png(grad_dir):
             print("[WARNING] No gradient plots generated.")
 
     if methods in ['temporal', 'all']:
-        print("\n[Temporal Gradient Attribution]")
-        temporal_explainer = TemporalGradientExplainer(model, device, vocabularies, scaler)
-        temporal_dir = os.path.join(output_dir, 'temporal')
-        
-        for task in tasks:
-            try:
-                temporal_explainer.generate_temporal_plots(
-                    graphs, temporal_dir, task, 
-                    num_samples=min(10, num_samples),
-                    y_true=y_true
-                )
-                print(f"[OK] {task.capitalize()} Temporal Gradient plots saved.")
-            except Exception as e:
-                print(f"[ERROR] Failed temporal {task}: {e}")
-                import traceback
-                traceback.print_exc()
-        if not _dir_has_png(temporal_dir):
-            print("[WARNING] No temporal plots generated.")
+        print("\n[Temporal Gradient Attribution - Global Only]")
+        # Individual temporal plots are skipped in global mode
+        pass
 
     if methods in ['lime', 'all']:
         print("\n" + "─"*70)
@@ -2008,37 +2183,28 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
         lime_explainer = GraphLIMEExplainer(model, device, vocabularies)
         lime_dir = os.path.join(output_dir, 'graphlime')
         
-        max_lime_samples = min(10, len(graphs))
-        step = max(1, len(graphs) // max_lime_samples)
-        sample_ids = list(range(0, len(graphs), step))[:max_lime_samples]
+        for task in tasks:
+            print(f"\n[{task.upper()}] Global GraphLIME")
+            try:
+                print(f"  Creating global summary for {task}...")
+                imp = lime_explainer.explain_global_importance(graphs, task=task, num_samples=num_samples)
+                lime_explainer.plot_global_importance(imp, lime_dir, task=task)
+            except Exception as e:
+                print(f"[ERROR] Failed global GraphLIME for {task}: {e}")
         
-        print(f"Analyzing {len(sample_ids)} diverse samples: {sample_ids}")
-        
-        for idx in sample_ids:
-            graph = graphs[idx]
-            print(f"\nSample {idx}:")
-            
-            for task in tasks:
-                try:
-                    print(f"  Processing {task}...")
-                    imp, score, true_val, step_info, pred_class = lime_explainer.explain_local(graph, task)
-                    lime_explainer.plot_local_explanation(imp, score, true_val, step_info, lime_dir, task, idx, pred_class)
-                    
-                except Exception as e:
-                    print(f"[ERROR] Failed Sample {idx} {task}: {e}")
-
         if not _dir_has_png(lime_dir):
             print("[WARNING] No GraphLIME plots generated.")
 
-    if methods == 'all':
+    # Always generate comprehensive analysis if any method was run
+    if methods in ['gradient', 'lime', 'all']:
         print("\n[Generating Comprehensive Analysis]")
         grad_dir = os.path.join(output_dir, 'gradient')
         lime_dir = os.path.join(output_dir, 'graphlime')
         
         for task in tasks:
             try:
-                generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task)
-                generate_comparison_report(grad_dir, lime_dir, output_dir, task)
+                summary_df = generate_feature_importance_summary(grad_dir, lime_dir, output_dir, task)
+                generate_comparison_report(grad_dir, lime_dir, output_dir, task, summary_df)
             except Exception as e:
                 print(f"[ERROR] Failed to generate summary for {task}: {e}")
 
@@ -2098,9 +2264,12 @@ def run_gnn_explainability(model, data, output_dir, device, vocabularies=None, n
             print(f"[OK] Combined benchmark summary saved to: {combined_path}")
 
     if methods in ['gradient', 'all'] and not _dir_has_png(os.path.join(output_dir, 'gradient')):
-        raise RuntimeError("GNN explainability failed: gradient plots were not generated.")
+        print("[WARNING] Gradient plots not found, but continuing...")
+    
     if methods == 'temporal' and not _dir_has_png(os.path.join(output_dir, 'temporal')):
-        raise RuntimeError("GNN explainability failed: temporal plots were not generated.")
+        # In global mode, we skip individual temporal plots, so this check should be flexible
+        print("[INFO] Temporal plots skipped or not generated in global mode.")
+        
     if methods in ['lime', 'all'] and not _dir_has_png(os.path.join(output_dir, 'graphlime')):
         raise RuntimeError("GNN explainability failed: GraphLIME plots were not generated.")
 

@@ -225,7 +225,9 @@ def main():
             config = default_best_config()
 
         if model_type == "transformer":
+            config["explainability_samples"] = 100
             if task in {"next_activity", "custom_activity"}:
+                # Re-enabled global explainability for the frontend Global Dashboard
                 metrics = run_next_activity_prediction(
                     dataset_path,
                     artifacts_dir,
@@ -252,17 +254,21 @@ def main():
                 raise RuntimeError(f"Unsupported transformer task: {task}")
 
         elif model_type == "gnn":
+            config["explainability_samples"] = 100
             if task not in {"next_activity", "custom_activity", "event_time", "remaining_time", "unified"}:
                 raise RuntimeError(f"Unsupported gnn task: {task}")
 
             gnn_task = "next_activity" if task == "custom_activity" else task
+            config["explainability_samples"] = 100
+            gnn_explainability = explainability
+                
             metrics = run_gnn_unified_prediction(
                 dataset_path,
                 artifacts_dir,
                 test_size,
                 val_split,
                 config,
-                explainability_method=explainability,
+                explainability_method=gnn_explainability,
                 task=gnn_task,
                 target_column=target_column if task == "custom_activity" else None,
                 skip_auto_mapping=skip_auto_mapping,
@@ -304,7 +310,11 @@ def main():
             "finished_at": utc_now(),
         })
 
-        # final summary.json
+        # Generate global metrics and inject variant IDs into predictions
+        from backend.runner.global_stats import calculate_global_metrics
+        calculate_global_metrics(run_dir, dataset_path)
+
+        # final summary.json (re-list artifacts to include new ones)
         write_json(os.path.join(artifacts_dir, "summary.json"), {
             "run_id": run_id,
             "status": "succeeded",
