@@ -61,7 +61,7 @@ def detect_and_standardize_columns(df, verbose=False):
 
     case_patterns = ['case:id', 'case:concept:name', 'CaseID', 'case_id', 'caseid', 'Case ID', 'Case_ID']
     activity_patterns = ['concept:name', 'Action', 'activity', 'event', 'Event', 'task', 'Task']
-    timestamp_patterns = ['time:timestamp', 'Timestamp', 'timestamp', 'time', 'Time', 'start_time', 'StartTime', 'complete_time', 'CompleteTime']
+    timestamp_patterns = ['time:timestamp', 'Timestamp', 'timestamp', 'time', 'Time', 'start_time', 'StartTime', 'complete_time', 'CompleteTime', 'Complete Timestamp']
     resource_patterns = ['org:resource', 'Resource', 'resource', 'user', 'User', 'org:role', 'role', 'Role', 'actor', 'Actor']
 
     for col in df.columns:

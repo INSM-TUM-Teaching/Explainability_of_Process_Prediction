@@ -3,6 +3,7 @@ import { artifactUrl, artifactsZipUrl } from "../../lib/api";
 import { explainOnDemand } from "../../lib/api_explain";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import GlobalResults from "./GlobalResults";
+import Papa from "papaparse";
 
 type PredictionRecord = {
   case_id: string;
@@ -10,8 +11,10 @@ type PredictionRecord = {
   sequence: string;
   true_next_activity: string;
   predicted_next_activity: string;
-  confidence_percent: number;
-  variant_id?: number;
+  confidence_percent?: number;
+  confidence?: number;
+  correct?: number;
+  variant_id?: string | number;
 };
 
 export default function NextActivityResults({ runId, summary, uploadedFileName, configMode, onStartOver, onBackToPipeline }: any) {
@@ -23,12 +26,34 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
   
   useEffect(() => {
     async function loadData() {
-      const predFile = summary.request.model_type === "transformer" ? "transformer_predictions.json" : "gnn_predictions.json";
+      let predFile = "transformer_predictions.json";
+      if (summary.request.model_type === "gnn") {
+        predFile = "gnn_predictions.json";
+      } else if (summary.request.model_type === "best") {
+        predFile = "best_predictions.csv";
+      }
+      
       try {
         const res = await fetch(artifactUrl(runId, predFile));
         if (res.ok) {
-          const data = await res.json();
-          setPredictions(data);
+          if (predFile.endsWith(".csv")) {
+            // Parse CSV for best model
+            const text = await res.text();
+            const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+            const validData = (parsed.data as any[])
+              .filter(row => row.case_id && row.case_index)
+              .map(row => ({
+                ...row,
+                case_id: String(row.case_id).replace(/^Case\s+/i, ""),
+                case_index: parseInt(String(row.case_index), 10),
+                confidence: parseFloat(String(row.confidence)) || 0
+              }));
+            setPredictions(validData);
+          } else {
+            // Parse JSON for transformer/gnn
+            const data = await res.json();
+            setPredictions(data);
+          }
         }
       } catch (err) {
         console.error("Failed to load predictions", err);
@@ -39,7 +64,8 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
     loadData();
   }, [runId, summary]);
 
-  const caseIds = Array.from(new Set(predictions.map(p => p.case_id)));
+
+  const caseIds = Array.from(new Set(predictions.map(p => p.case_id))).sort();
   
   const filteredCases = caseIds.filter(cid => {
     const caseRecs = predictions.filter(p => p.case_id === String(cid));
@@ -132,8 +158,11 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
 
             {loading ? (
               <div>Loading prediction data...</div>
+            ) : filteredCases.length === 0 ? (
+              <div className="text-slate-500">No cases found {search && `matching "${search}"`}. Total cases in dataset: {caseIds.length}</div>
             ) : (
               <div className="flex flex-col gap-4">
+                <div className="text-sm text-slate-600">Showing {filteredCases.length} of {caseIds.length} cases</div>
                 {filteredCases.map(cid => (
                   <CasePredictionBlock 
                     key={cid} 
@@ -142,6 +171,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
                     runId={runId}
                     modelType={summary.request?.model_type}
                     autoExpand={search === cid}
+                    explainabilityType={summary.request?.explainability || "none"}
                   />
                 ))}
                 {filteredCases.length === 0 && (
@@ -174,7 +204,7 @@ function SummaryCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CasePredictionBlock({ caseId, records, runId, modelType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, autoExpand?: boolean }) {
+function CasePredictionBlock({ caseId, records, runId, modelType, explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, explainabilityType?: string, autoExpand?: boolean }) {
   const [expanded, setExpanded] = useState(autoExpand);
   const maxIndex = Math.max(...records.map(r => r.case_index));
 
@@ -188,7 +218,8 @@ function CasePredictionBlock({ caseId, records, runId, modelType, autoExpand = f
   const selectedRecord = records.find(r => r.case_index === selectedIndex) || records[0];
   const variantId = selectedRecord?.variant_id;
 
-  const explains = modelType === "transformer" ? ["SHAP", "LIME"] : ["Gradient", "GraphLIME"];
+  const isBestModel = modelType === "best";
+  const explains = isBestModel ? ["Pattern"] : (modelType === "transformer" ? ["SHAP", "LIME"] : ["Gradient", "GraphLIME"]);
   const [selectedExplain, setSelectedExplain] = useState(explains[0]);
   const [explainResult, setExplainResult] = useState<any>(null);
   const [explaining, setExplaining] = useState(false);
@@ -199,15 +230,101 @@ function CasePredictionBlock({ caseId, records, runId, modelType, autoExpand = f
   }, [expanded, selectedIndex]);
 
   const handleExplain = async () => {
-    setExplaining(true);
-    try {
-      await explainOnDemand(runId, caseId, selectedIndex, selectedExplain);
-      setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now() });
-    } catch(e) {
-      console.error(e);
-      alert("Explanation failed");
-    } finally {
-      setExplaining(false);
+    if (isBestModel) {
+      // Load pattern analysis and build heatmap data
+      setExplaining(true);
+      try {
+        const patRes = await fetch(
+          artifactUrl(runId, "explainability/pattern_analysis.json")
+        );
+        if (patRes.ok) {
+          const patData = await patRes.json();
+          
+          // Load top patterns to get pattern info
+          const topRes = await fetch(
+            artifactUrl(runId, "explainability/top_patterns.csv")
+          );
+          let patternMap: any = {};
+          if (topRes.ok) {
+            const text = await topRes.text();
+            const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
+            (parsed.data as any[]).forEach((p: any) => {
+              patternMap[p.pattern_id] = {
+                sequence: p.sequence,
+                predicted_next: p.predicted_next_activity,
+                frequency: parseInt(p.global_frequency) || 0
+              };
+            });
+          }
+
+          // Get the pattern analysis for this case/index
+          let caseKey = `case_${caseId}`;
+          let caseData = patData[caseKey];
+          if (!caseData) {
+            caseData = patData[caseId] || {};
+          }
+          const indexKey = `index_${selectedIndex}`;
+          const indexData = caseData[indexKey] || { full_sequence: [], all_pattern_matches: [] };
+          
+          let prefixSeq: string[] = [];
+          if (indexData.full_sequence && indexData.full_sequence.length > 0) {
+            prefixSeq = indexData.full_sequence;
+          } else {
+            try { prefixSeq = JSON.parse(selectedRecord.sequence); } catch(e) {}
+          }
+          
+          // Dynamically compute matches against all top patterns
+          const dynamicMatches: any[] = [];
+          Object.keys(patternMap).forEach(patternId => {
+            const p = patternMap[patternId];
+            let pSeq: string[] = [];
+            try { pSeq = JSON.parse(p.sequence); } catch(e) { return; }
+            if (pSeq.length === 0) return;
+            
+            for (let i = 0; i <= prefixSeq.length - pSeq.length; i++) {
+              let match = true;
+              for (let j = 0; j < pSeq.length; j++) {
+                if (prefixSeq[i+j] !== pSeq[j]) {
+                  match = false;
+                  break;
+                }
+              }
+              if (match) {
+                dynamicMatches.push({
+                  pattern_id: patternId,
+                  start_offset: i,
+                  end_offset: i + pSeq.length - 1,
+                  frequency: p.frequency
+                });
+              }
+            }
+          });
+          
+          setExplainResult({
+            type: "pattern_heatmap",
+            sequence: prefixSeq,
+            matches: dynamicMatches,
+            patternMap: patternMap
+          });
+        }
+      } catch (e) {
+        console.error("Failed to load pattern analysis", e);
+        alert("Failed to load pattern analysis");
+      } finally {
+        setExplaining(false);
+      }
+    } else {
+      // Original explanation logic for GNN/Transformer
+      setExplaining(true);
+      try {
+        await explainOnDemand(runId, caseId, selectedIndex, selectedExplain);
+        setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now() });
+      } catch(e) {
+        console.error(e);
+        alert("Explanation failed");
+      } finally {
+        setExplaining(false);
+      }
     }
   };
 
@@ -249,42 +366,50 @@ function CasePredictionBlock({ caseId, records, runId, modelType, autoExpand = f
             <strong>Trace History / Sequence:</strong>
             <div className="mt-2 flex flex-wrap items-center gap-2 overflow-x-auto pb-2">
               {/* Historical Sequence */}
-              {selectedRecord.sequence.split(',').map((act: string, i: number, arr: string[]) => (
-                <div key={i} className="flex items-center gap-2">
-                  <div className="bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap">
-                    {act.trim()}
+              {(() => {
+                let activities: string[] = [];
+                try {
+                  activities = JSON.parse(selectedRecord.sequence);
+                } catch {
+                  activities = selectedRecord.sequence.split(',').map((a: string) => a.trim());
+                }
+                return activities.map((act: string, i: number, arr: string[]) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <div className="bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap">
+                      {act.trim()}
+                    </div>
+                    {/* Arrow: Solid for history, Longer Dashed for the transition to target */}
+                    {i === arr.length - 1 ? (
+                      <svg className="w-10 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 40 24">
+                        {/* The Stem - Dashed */}
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          strokeDasharray="6 6"
+                          d="M3 12h34" 
+                        />
+                        {/* The Head - Solid */}
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          d="M30 5l7 7-7 7" 
+                        />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          d="M14 5l7 7-7 7M21 12H3" 
+                        />
+                      </svg>
+                    )}
                   </div>
-                  {/* Arrow: Solid for history, Longer Dashed for the transition to target */}
-                  {i === arr.length - 1 ? (
-                    <svg className="w-10 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 40 24">
-                      {/* The Stem - Dashed */}
-                      <path 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth={2} 
-                        strokeDasharray="6 6"
-                        d="M3 12h34" 
-                      />
-                      {/* The Head - Solid */}
-                      <path 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth={2} 
-                        d="M30 5l7 7-7 7" 
-                      />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path 
-                        strokeLinecap="round" 
-                        strokeLinejoin="round" 
-                        strokeWidth={2} 
-                        d="M14 5l7 7-7 7M21 12H3" 
-                      />
-                    </svg>
-                  )}
-                </div>
-              ))}
+                ));
+              })()}
               
               {/* True Next Activity (Target) */}
               <div className="flex items-center gap-2">
@@ -306,34 +431,158 @@ function CasePredictionBlock({ caseId, records, runId, modelType, autoExpand = f
             </div>
             <div className="p-3 border rounded">
               <div className="text-slate-500 mb-1">Confidence</div>
-              <div className="font-semibold">{Number(selectedRecord.confidence_percent).toFixed(2)}%</div>
+              <div className="font-semibold">
+                {(() => {
+                  const conf = selectedRecord.confidence_percent ?? selectedRecord.confidence;
+                  if (typeof conf === 'string') {
+                    // Handle "NaN" strings
+                    const parsed = parseFloat(conf);
+                    if (isNaN(parsed)) return "N/A";
+                    // Check if it's already a percentage (>1) or 0-1 range
+                    return parsed > 1 ? `${parsed.toFixed(2)}%` : `${(parsed * 100).toFixed(2)}%`;
+                  }
+                  if (typeof conf === 'number') {
+                    if (isNaN(conf)) return "N/A";
+                    return conf > 1 ? `${conf.toFixed(2)}%` : `${(conf * 100).toFixed(2)}%`;
+                  }
+                  return "N/A";
+                })()}
+              </div>
             </div>
           </div>
 
-          <div className="mt-4 pt-4 border-t flex flex-col gap-3">
-            <div className="flex gap-3 items-center">
-              <strong>Generate Explanation:</strong>
-              <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
-                {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
-              </select>
-              <button 
-                onClick={handleExplain} 
-                disabled={explaining}
-                className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
-              >
-                {explaining ? "Generating..." : "Generate"}
-              </button>
-            </div>
+          {explainabilityType !== "none" && (
+            <div className="mt-4 pt-4 border-t flex flex-col gap-3">
+              <div className="flex gap-3 items-center">
+                <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
+                {!isBestModel && (
+                  <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
+                    {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
+                  </select>
+                )}
+                <button 
+                  onClick={handleExplain} 
+                  disabled={explaining}
+                  className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {explaining ? "Generating..." : "Generate"}
+                </button>
+              </div>
             
             {explainResult && (
               <div className="mt-4 border rounded p-4 bg-slate-50">
-                <h4 className="font-medium mb-3">{explainResult.method} Explanation</h4>
-                <div className="flex flex-col gap-4">
-                  <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
-                </div>
+                {explainResult.type === "pattern_heatmap" ? (
+                  <div>
+                    <h4 className="font-medium mb-3">Pattern Heatmap</h4>
+                    <p className="text-xs text-slate-500 mb-3">Darker blue = more prominent patterns | Lighter = less common patterns</p>
+                    <div className="flex flex-wrap items-center gap-2 pb-4">
+                      {(explainResult.sequence as string[]).map((activity, idx) => {
+                        // Calculate intensity for this position based on matching patterns
+                        const matchesAtPosition = (explainResult.matches as any[]).filter(m => 
+                          idx >= m.start_offset && idx <= m.end_offset
+                        );
+                        
+                        if (matchesAtPosition.length === 0) {
+                          // No patterns - light gray
+                          return (
+                            <div
+                              key={idx}
+                              className="px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap text-slate-600 border border-slate-300"
+                              style={{ backgroundColor: "rgba(226, 232, 240, 0.7)" }}
+                              title="No patterns"
+                            >
+                              {activity}
+                            </div>
+                          );
+                        }
+                        
+                        // Calculate the average frequency of patterns at this position
+                        const avgFreq = matchesAtPosition.reduce((sum, m) => sum + m.frequency, 0) / matchesAtPosition.length;
+                        
+                        // Get global max frequency for normalization
+                        const allFrequencies = (explainResult.matches as any[]).map(m => m.frequency);
+                        const globalMax = Math.max(...allFrequencies, 1);
+                        
+                        // Normalize to 0-1 range
+                        const normalizedIntensity = avgFreq / globalMax;
+                        
+                        // Create a color gradient: light blue for low, dark blue for high
+                        const hue = 217;
+                        const saturation = 100;
+                        const lightness = 100 - (normalizedIntensity * 60);
+                        const bgColor = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+                        const textColor = normalizedIntensity > 0.6 ? "white" : "rgb(15, 23, 42)";
+
+                        const matchedPatternNames = matchesAtPosition.map(m => {
+                          const pInfo = explainResult.patternMap[m.pattern_id];
+                          let seqStr = pInfo ? pInfo.sequence : "";
+                          try {
+                            const parsed = JSON.parse(seqStr);
+                            if (Array.isArray(parsed)) seqStr = parsed.join(" → ");
+                          } catch(e) {}
+                          return pInfo ? `Pattern ${m.pattern_id}: ${seqStr} → ${pInfo.predicted_next}` : `Pattern ${m.pattern_id}`;
+                        }).join("\n");
+
+                        return (
+                          <div
+                            key={idx}
+                            className="px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap border border-slate-300 transition-colors"
+                            style={{
+                              backgroundColor: bgColor,
+                              color: textColor
+                            }}
+                            title={`${matchesAtPosition.length} pattern(s), avg frequency: ${avgFreq.toFixed(1)}\n${matchedPatternNames}`}
+                          >
+                            {activity}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* List of influencing patterns */}
+                    <div className="mt-6 border-t border-slate-200 pt-4">
+                      <h5 className="font-semibold text-sm text-slate-800 mb-3">Influencing Patterns:</h5>
+                      <div className="flex flex-col gap-2">
+                        {Array.from(new Set((explainResult.matches as any[]).map(m => m.pattern_id)))
+                          .sort((a, b) => {
+                            const freqA = explainResult.patternMap[a]?.frequency || 0;
+                            const freqB = explainResult.patternMap[b]?.frequency || 0;
+                            return freqB - freqA;
+                          })
+                          .map(pId => {
+                          const pInfo = explainResult.patternMap[pId];
+                          let seqStr = pInfo ? pInfo.sequence : "";
+                          try {
+                            const parsed = JSON.parse(seqStr);
+                            if (Array.isArray(parsed)) seqStr = parsed.join(" → ");
+                          } catch(e) {}
+                          return (
+                            <div key={pId} className="text-[11px] bg-white border border-slate-200 shadow-sm rounded-md p-2.5 text-slate-600">
+                              <span className="font-bold text-slate-800">Pattern {pId}:</span> {seqStr} 
+                              <span className="mx-2 text-slate-300">→</span> 
+                              <span className="font-bold text-brand-600">{pInfo?.predicted_next}</span>
+                              <span className="ml-3 font-mono text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">Freq: {pInfo?.frequency}</span>
+                            </div>
+                          );
+                        })}
+                        {explainResult.matches.length === 0 && (
+                          <div className="text-xs text-slate-500 italic">No exact patterns matched this sequence.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <h4 className="font-medium mb-3">{explainResult.method} Explanation</h4>
+                    <div className="flex flex-col gap-4">
+                      <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
+          )}
         </div>
       )}
     </div>
