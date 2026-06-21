@@ -184,41 +184,7 @@ export default function ResultsView({
     };
   }, [runId]);
 
-  if (summaryFile?.request?.task === "next_activity" || summaryFile?.request?.task === "custom_activity") {
-    return (
-      <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
-        <div className="flex-1 overflow-auto min-w-0">
-          <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-8 py-8">
-            <NextActivityResults 
-              runId={runId} 
-              summary={summaryFile} 
-              uploadedFileName={uploadedFileName}
-              configMode={configMode}
-            />
-          </div>
-        </div>
-        
-        <div className="shrink-0 px-8 pb-6 border-t border-brand-100 bg-white">
-          <div className="flex items-center justify-between pt-6">
-            <button
-              onClick={onStartOver}
-              className="px-6 py-2 rounded-md border border-brand-200 bg-white text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition"
-            >
-              Start over
-            </button>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={onBackToPipeline}
-                className="px-6 py-2 rounded-md border border-brand-200 text-brand-700 bg-white hover:bg-brand-50 hover:border-brand-300 transition"
-              >
-                Previous
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+
 
 
   const plotGroups = useMemo(() => groupPlotPaths(artifacts), [artifacts]);
@@ -256,6 +222,42 @@ export default function ResultsView({
             Back to pipeline
           </Button>
         </Card>
+      </div>
+    );
+  }
+
+  if (summaryFile?.request?.task === "next_activity" || summaryFile?.request?.task === "custom_activity") {
+    return (
+      <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
+        <div className="flex-1 overflow-auto min-w-0">
+          <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-8 py-8">
+            <NextActivityResults 
+              runId={runId} 
+              summary={summaryFile} 
+              uploadedFileName={uploadedFileName}
+              configMode={configMode}
+            />
+          </div>
+        </div>
+        
+        <div className="shrink-0 px-8 pb-6 border-t border-brand-100 bg-white">
+          <div className="flex items-center justify-between pt-6">
+            <button
+              onClick={onStartOver}
+              className="px-6 py-2 rounded-md border border-brand-200 bg-white text-brand-700 hover:bg-brand-50 hover:border-brand-300 transition"
+            >
+              Start over
+            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onBackToPipeline}
+                className="px-6 py-2 rounded-md border border-brand-200 text-brand-700 bg-white hover:bg-brand-50 hover:border-brand-300 transition"
+              >
+                Previous
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
