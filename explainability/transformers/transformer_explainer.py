@@ -153,7 +153,14 @@ class SHAPExplainer:
                 # Reshape back to original shapes
                 x_seq = x_seq_flat.reshape((n_samples,) + self._seq_shape)
                 x_temp = x_temp_flat.reshape((n_samples,) + self._temp_shape)
+
+                # Get predictions
                 preds = self.model.predict([x_seq, x_temp], verbose=0)
+
+                # FIX: Extract main prediction if model returns a list (Timestep-explainable model)
+                if isinstance(preds, list):
+                    preds = preds[0]
+
                 return preds if self.task == 'activity' else preds.flatten()
             
             self._predict_fn_flat = predict_fn_flat
@@ -546,9 +553,11 @@ class TimestepSHAPExplainer(SHAPExplainer):
                     timestep_preds = outputs[1][0]
                     filtered_preds = timestep_preds[non_pad_mask]
                     if self.scaler is not None:
-                        filtered_preds = self.scaler.inverse_transform(
-                            filtered_preds.reshape(-1, 1)
-                        ).flatten()
+                        # FIX: Create a dummy 2D array matching the scaler's expected input shape (n_samples, 3)
+                        dummy_input = np.zeros((len(filtered_preds), 3))
+                        dummy_input[:, 0] = filtered_preds.flatten() # Place predictions in the first column
+                        # Inverse transform and extract only the first column
+                        filtered_preds = self.scaler.inverse_transform(dummy_input)[:, 0]
 
                     ax2 = ax1.twinx()
                     ax2.plot(x_values, filtered_preds, color='black', linewidth=2,
@@ -796,13 +805,25 @@ class LIMEExplainer:
                         if x_seq.ndim == 1: x_seq = x_seq.reshape(1, -1)
                         x_seq = np.clip(np.round(x_seq), 0, vocab_size-1).astype(int)
                         temp_batch = np.repeat(current_temp, x_seq.shape[0], axis=0)
+                        
                         preds = self.model.predict([x_seq, temp_batch], verbose=0)
+                        
+                        # FIX: Extract main prediction for multi-output regression models
+                        if isinstance(preds, list):
+                            preds = preds[0]
+                            
                         return preds.flatten() if self.task != 'activity' else preds
                 else:
                     def predict_fn(x_seq):
                         if x_seq.ndim == 1: x_seq = x_seq.reshape(1, -1)
                         x_seq = np.clip(np.round(x_seq), 0, vocab_size-1).astype(int)
+                        
                         preds = self.model.predict(x_seq, verbose=0)
+                        
+                        # FIX: Extract main prediction for multi-output regression models
+                        if isinstance(preds, list):
+                            preds = preds[0]
+                            
                         return preds.flatten() if self.task != 'activity' else preds
 
                 exp = self.explainer.explain_instance(
@@ -988,26 +1009,35 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
     shap_importance = {}
     if shap_dir and os.path.exists(os.path.join(shap_dir, 'global_importance_data.csv')):
         shap_df = pd.read_csv(os.path.join(shap_dir, 'global_importance_data.csv'))
-        shap_importance = dict(zip(shap_df['Activity'], shap_df['Mean_Impact']))
+        
+        # FIX 1: Robust column checking for Regression vs Classification
+        col_name = 'Activity' if 'Activity' in shap_df.columns else 'Feature'
+        if col_name in shap_df.columns and 'Mean_Impact' in shap_df.columns:
+            shap_importance = dict(zip(shap_df[col_name], shap_df['Mean_Impact']))
     
     # Load LIME results if available (aggregate from multiple samples)
     lime_importance = {}
-    if lime_dir:
+    if lime_dir and os.path.exists(lime_dir):
         lime_files = [f for f in os.listdir(lime_dir) if f.startswith('lime_explanation_sample_') and f.endswith('.csv')]
         if lime_files:
             all_lime_weights = {}
             for lime_file in lime_files:
                 lime_df = pd.read_csv(os.path.join(lime_dir, lime_file))
-                for _, row in lime_df.iterrows():
-                    activity = row['Activity']
-                    activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
-                    weight = abs(row['Weight'])
-                    if activity not in all_lime_weights:
-                        all_lime_weights[activity] = []
-                    all_lime_weights[activity].append(weight)
+                
+                # FIX 1: Robust column checking
+                col_name = 'Activity' if 'Activity' in lime_df.columns else 'Feature'
+                if col_name in lime_df.columns and 'Weight' in lime_df.columns:
+                    for _, row in lime_df.iterrows():
+                        activity = row[col_name]
+                        activity = re.sub(r'\s+\(x\d+\)$', '', str(activity)).strip()
+                        weight = abs(row['Weight'])
+                        if activity not in all_lime_weights:
+                            all_lime_weights[activity] = []
+                        all_lime_weights[activity].append(weight)
             
             # Average LIME weights
-            lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
+            if all_lime_weights:
+                lime_importance = {act: sum(weights)/len(weights) for act, weights in all_lime_weights.items()}
     
     # Combine results
     all_features = set(shap_importance.keys()) | set(lime_importance.keys())
@@ -1025,6 +1055,13 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
             'Agreement': 'Both' if shap_score > 0 and lime_score > 0 else 'SHAP only' if shap_score > 0 else 'LIME only'
         })
     
+    # FIX 2: Graceful exit if no data was parsed to prevent the KeyError crash
+    if not summary_data:
+        print("[WARNING] No explainability data parsed. Skipping comparison report generation.")
+        with open(os.path.join(output_dir, 'comparison_report.txt'), 'w') as f:
+            f.write("No explainability features were successfully parsed for this task.\n")
+        return
+        
     # Save summary
     summary_df = pd.DataFrame(summary_data)
     summary_df = summary_df.sort_values('Average_Importance', ascending=False)
@@ -1175,7 +1212,11 @@ class ExplainabilityBenchmark:
             preds = self.model.predict([x_seq, x_temp], verbose=0)
         else:
             preds = self.model.predict(x_seq, verbose=0)
-        
+            
+        # FIX: Extract main prediction if the model returns a list (Timestep-explainable model)
+        if isinstance(preds, list):
+            preds = preds[0]
+            
         if self.task == 'activity':
             return preds
         else:
