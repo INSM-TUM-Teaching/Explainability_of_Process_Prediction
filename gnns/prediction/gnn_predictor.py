@@ -317,7 +317,7 @@ class GNNPredictor:
                     [np.log1p(remaining)], dtype=torch.float32
                 )
 
-                cid = first["CaseID"]
+                cid = p["CaseID"].values[0]
                 if cid not in case_indexes:
                     case_indexes[cid] = 1
                 else:
