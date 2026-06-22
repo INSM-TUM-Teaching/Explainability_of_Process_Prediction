@@ -272,7 +272,6 @@ def main():
 
         elif model_type == "gnn":
             config["explainability_samples"] = 100
-            if task not in {"next_activity", "custom_activity", "event_time", "remaining_time", "unified"}:
             if task not in {
                 "next_activity",
                 "custom_activity",
@@ -285,7 +284,7 @@ def main():
             gnn_task = "next_activity" if task == "custom_activity" else task
             config["explainability_samples"] = 100
             gnn_explainability = explainability
-                
+
             metrics = run_gnn_unified_prediction(
                 dataset_path,
                 artifacts_dir,
@@ -339,23 +338,27 @@ def main():
 
         # Generate global metrics and inject variant IDs into predictions
         from backend.runner.global_stats import calculate_global_metrics
+
         calculate_global_metrics(run_dir, dataset_path)
 
         # final summary.json (re-list artifacts to include new ones)
-        write_json(os.path.join(artifacts_dir, "summary.json"), {
-            "run_id": run_id,
-            "status": "succeeded",
-            "dataset": {
-                "dataset_id": dataset_id,
-                "filename": os.path.basename(dataset_path),
-                "num_events": dataset_meta.get("num_events"),
-                "num_cases": dataset_meta.get("num_cases"),
+        write_json(
+            os.path.join(artifacts_dir, "summary.json"),
+            {
+                "run_id": run_id,
+                "status": "succeeded",
+                "dataset": {
+                    "dataset_id": dataset_id,
+                    "filename": os.path.basename(dataset_path),
+                    "num_events": dataset_meta.get("num_events"),
+                    "num_cases": dataset_meta.get("num_cases"),
+                },
+                "request": req,
+                "metrics": metrics,
+                "artifacts": list_artifacts(artifacts_dir),
+                "finished_at": utc_now(),
             },
-            "request": req,
-            "metrics": metrics,
-            "artifacts": list_artifacts(artifacts_dir),
-            "finished_at": utc_now(),
-        })
+        )
         # final summary.json
         write_json(
             os.path.join(artifacts_dir, "summary.json"),
