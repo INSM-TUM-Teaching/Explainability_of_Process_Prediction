@@ -157,21 +157,33 @@ class RemainingTimePredictor:
         }
     
     def _calculate_temporal_features(self, df):
-        def calculate_features(group):
-            group = group.sort_values('time:timestamp').reset_index(drop=True)
-            
-            group['fvt1'] = group['time:timestamp'].diff().dt.total_seconds() / 86400
-            group['fvt1'].fillna(0, inplace=True)
-            
-            group['fvt2'] = (group['time:timestamp'] - group['time:timestamp'].shift(2)).dt.total_seconds() / 86400
-            group['fvt2'].fillna(0, inplace=True)
-            
-            group['fvt3'] = (group['time:timestamp'] - group['time:timestamp'].iloc[0]).dt.total_seconds() / 86400
-            
-            return group
+        # 1. The Ultimate Column Sniffer
+        case_col = next((c for c in ['case_id', 'Case ID', 'case:concept:name', 'Case_ID'] if c in df.columns), None)
+        time_col = next((c for c in ['timestamp', 'Complete Timestamp', 'time:timestamp', 'Complete_Timestamp'] if c in df.columns), None)
         
-        df = df.groupby('case:concept:name', group_keys=False).apply(calculate_features)
-        print("Temporal features created.")
+        if case_col is None and hasattr(self, 'case_id_col'):
+            case_col = self.case_id_col
+        if time_col is None and hasattr(self, 'timestamp_col'):
+            time_col = self.timestamp_col
+            
+        if case_col is None:
+            case_col = next((c for c in df.columns if 'case' in c.lower()), df.columns[0])
+        if time_col is None:
+            time_col = next((c for c in df.columns if 'time' in c.lower()), df.columns[1])
+
+        # 2. The Fast Vectorized Math (WITH CORRECT INTERNAL NAMES)
+        df = df.sort_values(by=[case_col, time_col])
+        
+        # Replaced 'time_since_last' with 'fvt1'
+        df['fvt1'] = df.groupby(case_col)[time_col].diff().dt.total_seconds().fillna(0)
+        
+        # Replaced 'time_since_start' with 'fvt2'
+        case_starts = df.groupby(case_col)[time_col].transform('min')
+        df['fvt2'] = (df[time_col] - case_starts).dt.total_seconds()
+        
+        # Replaced 'hour_of_day' with 'fvt3'
+        df['fvt3'] = df[time_col].dt.hour
+        
         return df
     
     def build_model(self, use_timestep_explainability=True):
