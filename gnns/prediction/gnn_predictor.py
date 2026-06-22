@@ -191,35 +191,49 @@ class GNNPredictor:
         )
 
         def build_graphs(prefix_df):
-            # 1. PRE-SORT THE ENTIRE DATAFRAME ONCE
-            # This eliminates the need to sort thousands of tiny dataframes inside the loop.
             print("Pre-sorting dataset...")
             prefix_df = prefix_df.sort_values(by=["CaseID", "prefix_id", "prefix_pos"])
 
-            groups = prefix_df.groupby(["CaseID", "prefix_id"])
-            graphs = []
-            case_indexes = {}
+            # 1. GET GROUP SIZES INSTEAD OF DATA FRAMES
+            # We just count how many rows belong to each graph
+            group_sizes = (
+                prefix_df.groupby(["CaseID", "prefix_id"], sort=False).size().values
+            )
 
-            print(f"Building {groups.ngroups:,} graphs...")
+            print(f"Building {len(group_sizes):,} graphs...")
 
-            # Pre-fetch vocabularies to avoid dictionary lookups in the loop
             act_map = vocabs["Activity"]
             res_map = vocabs["Resource"]
 
-            for (_, _), p in tqdm(groups, desc="Building graphs", ncols=100):
-                # The sorting logic was removed from here!
+            # 2. EXTRACT RAW ARRAYS ONCE (Bypass Pandas completely for the loop)
+            activities = prefix_df["Activity"].values
+            resources = prefix_df["Resource"].values
+            ts_logs = prefix_df["__ts_log"].values
+            timestamps = prefix_df["Timestamp"].tolist()
+            next_activities = prefix_df["next_activity"].values
+            case_ids = prefix_df["CaseID"].values
+
+            trace_data = {}
+            for col in trace_attributes:
+                if col in prefix_df.columns:
+                    trace_data[col] = prefix_df[col].values
+
+            graphs = []
+            case_indexes = {}
+
+            # 3. SLICE ARRAYS USING INDEXING
+            start_idx = 0
+            for size in tqdm(group_sizes, desc="Building graphs", ncols=100):
+                end_idx = start_idx + size
+                k = size
+
+                # Instantly grab the data for this graph using pure array slicing
+                p_activities = activities[start_idx:end_idx]
+                p_resources = resources[start_idx:end_idx]
+                p_ts_log = ts_logs[start_idx:end_idx]
+                p_timestamps = timestamps[start_idx:end_idx]
 
                 data = HeteroData()
-                k = len(p)
-
-                # 2. BYPASS PANDAS OVERHEAD USING .values AND .to_list()
-                # This converts columns to fast C-level arrays or Python lists instantly
-                p_activities = p["Activity"].values
-                p_resources = p["Resource"].values
-                p_ts_log = p["__ts_log"].values
-                p_timestamps = p[
-                    "Timestamp"
-                ].to_list()  # to_list() preserves the .timestamp() method
 
                 act_ids = np.array([act_map.get(a, 0) for a in p_activities])
                 data["activity"].x = F.one_hot(
@@ -240,17 +254,17 @@ class GNNPredictor:
 
                 trace_features = []
                 for col in trace_attributes:
-                    if col not in p.columns:
+                    if col not in trace_data:
                         continue
 
-                    # Fast access to the first item without using .iloc[0]
-                    val = p[col].values[0]
+                    # Fast access to the first item of this specific group
+                    val = trace_data[col][start_idx]
 
                     if col in vocabs:
                         idx = vocabs[col].get(val, 0)
                         trace_features.append(
                             F.one_hot(
-                                torch.tensor(idx), num_classes=len(vocabs[col])
+                                torch.tensor(idx), num_classes=len(self.vocabs[col])
                             ).float()
                         )
                     else:
@@ -293,17 +307,20 @@ class GNNPredictor:
                     [idx, trace_src]
                 )
 
-                # Replace iloc for target extraction
-                next_act_name = p["next_activity"].values[0]
+                # Targets mapping
+                next_act_name = next_activities[start_idx]
                 if next_act_name not in act_map:
                     print(
                         f"Warning: Activity '{next_act_name}' not in vocabulary. Skipping graph."
                     )
+                    start_idx = (
+                        end_idx  # Don't forget to advance the index before skipping!
+                    )
                     continue
+
                 next_act = act_map[next_act_name]
                 data.y_activity = torch.tensor([next_act], dtype=torch.long)
 
-                # Fast timestamp math using our pre-extracted list
                 if k > 1:
                     t_next = p_timestamps[1].timestamp()
                 else:
@@ -317,15 +334,19 @@ class GNNPredictor:
                     [np.log1p(remaining)], dtype=torch.float32
                 )
 
-                cid = p["CaseID"].values[0]
+                cid = case_ids[start_idx]
                 if cid not in case_indexes:
                     case_indexes[cid] = 1
                 else:
                     case_indexes[cid] += 1
+
                 data.case_id = cid
                 data.case_index = case_indexes[cid]
 
                 graphs.append(data)
+
+                # Move the index window forward for the next graph
+                start_idx = end_idx
 
             return graphs
 
@@ -517,7 +538,7 @@ class GNNPredictor:
         patience=10,
         # `num_workers` make it either 4, 8 or 10 based on PC
         # its basically the number of CPU subprocess
-        num_workers=10,
+        num_workers=4,
         log_every=200,
         train_eval_batches=25,
     ):
