@@ -17,7 +17,7 @@ type PredictionRecord = {
   variant_id?: string | number;
 };
 
-export default function NextActivityResults({ runId, summary, uploadedFileName, configMode }: any) {
+export default function RemainingTraceResults({ runId, summary, uploadedFileName, configMode }: any) {
   const [predictions, setPredictions] = useState<PredictionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -171,7 +171,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
                     records={predictions.filter(p => p.case_id === cid)} 
                     runId={runId}
                     modelType={summary.request?.model_type}
-                    taskType={summary.request?.task}
+                    taskType="remaining_trace"
                     autoExpand={search === cid}
                     explainabilityType={summary.request?.explainability || "none"}
                   />
@@ -186,7 +186,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
 }
 
 
-function CasePredictionBlock({ caseId, records, runId, modelType, taskType, explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, taskType?: string, explainabilityType?: string, autoExpand?: boolean }) {
+function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "remaining_trace", explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, taskType?: string, explainabilityType?: string, autoExpand?: boolean }) {
   const [expanded, setExpanded] = useState(autoExpand);
   const maxIndex = Math.max(...records.map(r => r.case_index));
 
@@ -410,13 +410,13 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
           <div className="grid grid-cols-3 gap-4">
             <div className="p-3 border rounded">
               <div className="text-slate-500 mb-1">
-                True Next Activity
+                True Remaining Trace
               </div>
               <div className="font-semibold">{selectedRecord.true_next_activity}</div>
             </div>
             <div className={`p-3 border rounded ${isCorrect ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
               <div className={`mb-1 ${isCorrect ? 'text-green-700' : 'text-red-700'}`}>
-                Predicted Next Activity
+                Predicted Remaining Trace
               </div>
               <div className={`font-semibold ${isCorrect ? 'text-green-800' : 'text-red-800'}`}>{selectedRecord.predicted_next_activity}</div>
             </div>

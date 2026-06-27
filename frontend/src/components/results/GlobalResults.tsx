@@ -153,7 +153,14 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
         return seqStr === queryAsSeq;
       }
 
-      // 3. Predicted Next Activity Search: default fallback for text
+      // 3. Exact Predicted Trace/Activity Search: if the query is wrapped in square brackets
+      if (rawQuery.startsWith("[") && rawQuery.endsWith("]")) {
+        const innerQuery = rawQuery.slice(1, -1).trim();
+        const queryAsTrace = innerQuery.replace(/,\s*/g, ", ");
+        return nextStr === queryAsTrace;
+      }
+
+      // 4. Predicted Next Activity Search: default fallback for text
       return nextStr === rawQuery || nextStr.includes(rawQuery);
     });
   }, [topPatterns, searchQuery]);
@@ -723,7 +730,9 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
             <h3 className="text-md font-semibold text-brand-900">Top 20 Patterns</h3>
             <input
               type="text"
-              placeholder="Search: ID Number, Predicted Activity, or (A, B, C) for Exact Sequence..."
+              placeholder={summary?.request?.task === 'remaining_trace' 
+                ? "Search: ID, [A, B] for Predicted Trace, or (A, B) for Exact Sequence..." 
+                : "Search: ID, Predicted Activity, or (A, B) for Exact Sequence..."}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 w-[500px]"
@@ -737,7 +746,9 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
                     ID {getSortIcon('pattern_id')}
                   </th>
                   <th className="text-left py-2 px-3 font-semibold text-slate-700">Sequence</th>
-                  <th className="text-left py-2 px-3 font-semibold text-slate-700 whitespace-nowrap">Predicted Activity</th>
+                  <th className="text-left py-2 px-3 font-semibold text-slate-700 whitespace-nowrap">
+                    {summary.request?.task === 'remaining_trace' ? 'Predicted Remaining Trace' : 'Predicted Activity'}
+                  </th>
                   <th className="text-center py-2 px-3 font-semibold text-slate-700 cursor-pointer select-none hover:bg-slate-100 whitespace-nowrap" onClick={() => requestSort('global_frequency')}>
                     Frequency {getSortIcon('global_frequency')}
                   </th>
