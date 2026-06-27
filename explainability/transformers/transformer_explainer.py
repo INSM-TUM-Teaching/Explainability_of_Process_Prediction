@@ -120,7 +120,7 @@ class SHAPExplainer:
         return feature_names
 
     def initialize_explainer(
-        self, background_data, max_background=50, max_evals_override=None
+        self, background_data, max_background=10, max_evals_override=None
     ):
         print("Initializing SHAP Explainer...")
         self._background_data = background_data
@@ -130,11 +130,30 @@ class SHAPExplainer:
             self.is_multi_input = True
             bg_seq = background_data[0]
             bg_temp = background_data[1]
-            indices = np.random.choice(
-                len(bg_seq), min(max_background, len(bg_seq)), replace=False
-            )
-            background_seq_sample = bg_seq[indices]
-            background_temp_sample = bg_temp[indices]
+            
+            # Use shap.kmeans for intelligent centroid background sampling
+            import shap
+            bg_seq_flat = bg_seq.reshape(len(bg_seq), -1)
+            bg_temp_flat = bg_temp.reshape(len(bg_temp), -1)
+            background_flat_all = np.hstack([bg_seq_flat, bg_temp_flat])
+            
+            if len(background_flat_all) > max_background:
+                print(f"[DEBUG] Clustering {len(background_flat_all)} background samples into {max_background} centroids.")
+                clustered = shap.kmeans(background_flat_all, max_background).data
+            else:
+                clustered = background_flat_all
+                
+            self._seq_shape = bg_seq.shape[1:]
+            self._temp_shape = bg_temp.shape[1:]
+            self._seq_flat_size = int(np.prod(self._seq_shape))
+            self._temp_flat_size = int(np.prod(self._temp_shape))
+            
+            x_seq_flat = clustered[:, :self._seq_flat_size]
+            x_temp_flat = clustered[:, self._seq_flat_size:]
+            
+            background_seq_sample = x_seq_flat.reshape((-1,) + self._seq_shape).astype(bg_seq.dtype)
+            background_temp_sample = x_temp_flat.reshape((-1,) + self._temp_shape).astype(bg_temp.dtype)
+            
             self.background_temp = np.mean(bg_temp, axis=0).reshape(1, -1)
 
             # Calculate total features correctly
@@ -170,24 +189,39 @@ class SHAPExplainer:
             )
             background_flat = np.hstack([bg_seq_flat, bg_temp_flat])
 
+            # Pre-compile the multi-input forward pass using XLA/AutoGraph
+            @tf.function(
+                input_signature=[
+                    tf.TensorSpec(shape=(None,) + self._seq_shape, dtype=tf.as_dtype(self._bg_seq_sample.dtype)),
+                    tf.TensorSpec(shape=(None,) + self._temp_shape, dtype=tf.as_dtype(self._bg_temp_sample.dtype))
+                ],
+                reduce_retracing=True
+            )
+            def fast_predict(x_seq, x_temp):
+                preds = self.model([x_seq, x_temp], training=False)
+                return preds[0] if isinstance(preds, (list, tuple)) else preds
+
             def predict_fn_flat(x_flat):
                 """Prediction function that takes flattened input and returns model output."""
                 n_samples = x_flat.shape[0]
                 # Split flattened input back into seq and temp
                 x_seq_flat = x_flat[:, : self._seq_flat_size]
                 x_temp_flat = x_flat[:, self._seq_flat_size :]
-                # Reshape back to original shapes
-                x_seq = x_seq_flat.reshape((n_samples,) + self._seq_shape)
-                x_temp = x_temp_flat.reshape((n_samples,) + self._temp_shape)
+                
+                # Reshape back to original shapes and ensure correct dtype
+                x_seq = x_seq_flat.reshape((n_samples,) + self._seq_shape).astype(self._bg_seq_sample.dtype)
+                x_temp = x_temp_flat.reshape((n_samples,) + self._temp_shape).astype(self._bg_temp_sample.dtype)
 
-                # Get predictions
-                preds = self.model.predict([x_seq, x_temp], verbose=0)
+                # Get predictions (optimized for large throughput with tf.function)
+                if n_samples > 1024:
+                    preds_list = []
+                    for i in range(0, n_samples, 512):
+                        preds_list.append(fast_predict(x_seq[i:i+512], x_temp[i:i+512]).numpy())
+                    preds = np.concatenate(preds_list, axis=0)
+                else:
+                    preds = fast_predict(x_seq, x_temp).numpy()
 
-                # FIX: Extract main prediction if model returns a list (Timestep-explainable model)
-                if isinstance(preds, list):
-                    preds = preds[0]
-
-                return preds if self.task == "activity" else preds.flatten()
+                return preds if self.task in ("activity", "next_activity") else preds.flatten()
 
             self._predict_fn_flat = predict_fn_flat
             self._background_flat = background_flat
@@ -206,12 +240,15 @@ class SHAPExplainer:
                     background_flat,
                 )
         else:
-            indices = np.random.choice(
-                len(background_data),
-                min(max_background, len(background_data)),
-                replace=False,
-            )
-            background_sample = background_data[indices]
+            import shap
+            if len(background_data) > max_background:
+                print(f"[DEBUG] Clustering {len(background_data)} background samples into {max_background} centroids.")
+                background_sample = shap.kmeans(background_data, max_background).data
+                # Ensure the dtype stays the same to prevent tf.function retracing issues
+                background_sample = background_sample.astype(background_data.dtype)
+            else:
+                background_sample = background_data
+                
             num_features = int(np.prod(background_sample.shape[1:]))
 
             # FIX: Set max_evals to required minimum, but cap for speed
@@ -231,8 +268,29 @@ class SHAPExplainer:
             except Exception as e:
                 print(f"[WARNING] SHAP explainer init fallback: {e}")
 
+                @tf.function(
+                    input_signature=[
+                        tf.TensorSpec(shape=(None,) + background_sample.shape[1:], dtype=tf.as_dtype(background_sample.dtype))
+                    ],
+                    reduce_retracing=True
+                )
+                def fast_predict_single(x):
+                    preds = self.model(x, training=False)
+                    return preds[0] if isinstance(preds, (list, tuple)) else preds
+
                 def predict_fn_single(x):
-                    preds = self.model.predict(x, verbose=0)
+                    n_samples = x.shape[0] if hasattr(x, 'shape') else len(x)
+                    x_cast = np.array(x, dtype=background_sample.dtype)
+                    
+                    if n_samples > 1024:
+                        preds_list = []
+                        for i in range(0, n_samples, 512):
+                            preds_list.append(fast_predict_single(x_cast[i:i+512]).numpy())
+                        preds = np.concatenate(preds_list, axis=0)
+                    else:
+                        preds = fast_predict_single(x_cast).numpy()
+
+                    return preds if self.task == "activity" else preds.flatten()
                     return preds if self.task == "activity" else preds.flatten()
 
                 self.explainer = shap.Explainer(
@@ -391,16 +449,15 @@ class SHAPExplainer:
 
         # Handle flattened multi-input case: SHAP values are (n_samples, total_flat_features)
         # where total_flat_features = seq_flat_size + temp_flat_size
+        temp_values = None
         if self.is_multi_input and hasattr(self, "_seq_flat_size"):
-            # Extract only sequence portion of SHAP values
             if values.ndim == 2 and values.shape[1] >= self._seq_flat_size:
+                # Capture temporal features before slicing
+                if hasattr(self, "_temp_flat_size") and values.shape[1] >= self._seq_flat_size + self._temp_flat_size:
+                    temp_values = values[:, self._seq_flat_size:]
+                
                 values = values[:, : self._seq_flat_size]
-                # Reshape to (n_samples, seq_len, ...) if needed
-                if self._seq_shape == (seq_len,):
-                    # Shape is just (seq_len,), values are already (n_samples, seq_len)
-                    pass
-                else:
-                    # Reshape to original sequence shape
+                if self._seq_shape != (seq_len,):
                     values = values.reshape((values.shape[0],) + self._seq_shape)
 
         seq_axis = None
@@ -418,7 +475,7 @@ class SHAPExplainer:
         values = np.moveaxis(values, seq_axis, 1)
 
         if values.ndim > 2:
-            if self.task == "activity":
+            if self.task in ("activity", "next_activity"):
                 max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
                 values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(
                     axis=-1
@@ -448,6 +505,22 @@ class SHAPExplainer:
                     col_idx = name_map[name]
                     agg_shap_matrix[i, col_idx] += values[i, j]
                     agg_feat_matrix[i, col_idx] += 1
+        # Append temporal features if present
+        if temp_values is not None:
+            temp_names = ["Time Since Previous Event", "Elapsed Case Time", "Hour of Day"]
+            # Truncate or pad names if temp_values has different size
+            num_temps = temp_values.shape[1]
+            temp_names = temp_names[:num_temps] + [f"Temporal_{i}" for i in range(len(temp_names), num_temps)]
+            
+            sorted_names.extend(temp_names)
+            agg_shap_matrix = np.hstack([agg_shap_matrix, temp_values])
+            agg_feat_matrix = np.hstack([agg_feat_matrix, np.ones_like(temp_values)])
+
+        if self.task == "remaining_time" and getattr(self, "scaler", None) is not None:
+            try:
+                agg_shap_matrix = agg_shap_matrix * self.scaler.scale_[0]
+            except Exception:
+                pass
 
         return agg_shap_matrix, agg_feat_matrix, sorted_names
 
@@ -485,9 +558,12 @@ class SHAPExplainer:
 
         seq_len = self.test_data.shape[1] if self.test_data is not None else None
 
+        temp_values_sample = None
         # Handle flattened multi-input case: SHAP values are (n_samples, total_flat_features)
         if self.is_multi_input and hasattr(self, "_seq_flat_size"):
             if values.ndim == 2 and values.shape[1] >= self._seq_flat_size:
+                if hasattr(self, "_temp_flat_size") and values.shape[1] >= self._seq_flat_size + self._temp_flat_size:
+                    temp_values_sample = values[sample_idx, self._seq_flat_size:]
                 values = values[:, : self._seq_flat_size]
                 if self._seq_shape != (seq_len,):
                     values = values.reshape((values.shape[0],) + self._seq_shape)
@@ -503,7 +579,7 @@ class SHAPExplainer:
 
         # Aggregate logic for Local Sample
         if values.ndim > 2:
-            if self.task == "activity":
+            if self.task in ("activity", "next_activity"):
                 max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
                 sample_values = np.take_along_axis(
                     values, max_abs_idx, axis=-1
@@ -514,6 +590,15 @@ class SHAPExplainer:
                 ]
         else:
             sample_values = values[sample_idx]
+
+        if self.task == "remaining_time" and getattr(self, "scaler", None) is not None:
+            try:
+                scale_factor = self.scaler.scale_[0]
+                sample_values = sample_values * scale_factor
+                if temp_values_sample is not None:
+                    temp_values_sample = temp_values_sample * scale_factor
+            except Exception:
+                pass
 
         current_seq = self.test_data[sample_idx]
 
@@ -531,6 +616,12 @@ class SHAPExplainer:
                 activity_stats[name] = {"weight": 0.0, "count": 0}
             activity_stats[name]["weight"] += weight
             activity_stats[name]["count"] += 1
+
+        if temp_values_sample is not None:
+            temp_names = ["Time Since Previous Event", "Elapsed Case Time", "Hour of Day"]
+            for i, t_val in enumerate(temp_values_sample):
+                t_name = temp_names[i] if i < len(temp_names) else f"Temporal_{i}"
+                activity_stats[t_name] = {"weight": float(t_val), "count": 1}
 
         data = []
         for name, stats in activity_stats.items():
@@ -559,18 +650,50 @@ class SHAPExplainer:
         else:
             file_suffix = f"sample_{display_idx}"
 
-        from .local_explainer_utils import plot_research_grade_local
+        from .local_explainer_utils import plot_research_grade_local, plot_waterfall_local
 
         current_seq_names = [
             n for n in self._get_activity_names_for_sample(current_seq) if n != "[PAD]"
         ]
+        
+        # Dump shap_values.json for the frontend tooltips
+        import json
+        seq_shap_values = []
+        for pos, token in enumerate(current_seq):
+            if token != 0 and names[pos] != "[PAD]":
+                seq_shap_values.append(float(sample_values[pos]))
+                
+        with open(os.path.join(output_dir, "shap_values.json"), "w") as f:
+            json.dump(seq_shap_values, f)
 
-        plot_research_grade_local(
-            df,
-            current_seq_names,
-            os.path.join(output_dir, f"shap_explanation_{file_suffix}.png"),
-            title="Trace History",
-        )
+        if self.task == "remaining_time":
+            base_val = 0.0
+            if hasattr(self.shap_values, 'base_values'):
+                bvs = self.shap_values.base_values
+                base_val = float(bvs[sample_idx]) if isinstance(bvs, (list, np.ndarray)) else float(bvs)
+            elif hasattr(self.explainer, 'expected_value'):
+                base_val = float(self.explainer.expected_value)
+
+            if getattr(self, "scaler", None) is not None:
+                try:
+                    base_val = self.scaler.inverse_transform([[base_val]])[0][0]
+                except Exception:
+                    pass
+                
+            plot_waterfall_local(
+                df,
+                current_seq_names,
+                os.path.join(output_dir, f"shap_explanation_{file_suffix}.png"),
+                title="Trace History (Waterfall)",
+                base_value=base_val
+            )
+        else:
+            plot_research_grade_local(
+                df,
+                current_seq_names,
+                os.path.join(output_dir, f"shap_explanation_{file_suffix}.png"),
+                title="Trace History",
+            )
 
     def plot_summary(self, output_dir):
         print("Generating Global Summary Plot...")
@@ -676,7 +799,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
                 else:
                     values = values.reshape((values.shape[0],) + self._seq_shape)
                     if values.ndim > 2:
-                        if self.task == "activity":
+                        if self.task in ("activity", "next_activity"):
                             max_abs_idx = np.argmax(
                                 np.abs(values), axis=-1, keepdims=True
                             )
@@ -695,7 +818,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
             if seq_axis is not None:
                 values = np.moveaxis(values, seq_axis, 1)
                 if values.ndim > 2:
-                    if self.task == "activity":
+                    if self.task in ("activity", "next_activity"):
                         max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
                         values = np.take_along_axis(
                             values, max_abs_idx, axis=-1
@@ -1101,39 +1224,54 @@ class LIMEExplainer:
 
     def initialize_explainer(self, training_data, num_classes=None):
         print("Initializing LIME Explainer...")
+        import numpy as np
+        self.is_multi_input = False
+        self.seq_len = 0
+        
         if isinstance(training_data, (list, tuple)):
-            init_data = training_data[0]
+            self.is_multi_input = True
+            self.seq_len = training_data[0].shape[1]
+            init_data = np.hstack((training_data[0], training_data[1]))
+            feature_names = self._aggregate_feature_names(training_data[0])
+            if self.is_multi_input:
+                feature_names += ["Time Since Previous Event", "Elapsed Case Time", "Hour of Day"]
+            categorical_features = list(range(self.seq_len))
+            vocab_base = training_data[0]
         else:
             init_data = training_data
+            self.seq_len = init_data.shape[1]
+            feature_names = self._aggregate_feature_names(init_data)
+            categorical_features = list(range(self.seq_len))
+            vocab_base = init_data
 
         if self.vocab_size is None:
             if self.label_encoder is not None:
                 self.vocab_size = len(self.label_encoder.classes_) + 1
             else:
                 self.vocab_size = (
-                    int(np.max(init_data)) + 1 if init_data.size > 0 else 1
+                    int(np.max(vocab_base)) + 1 if vocab_base.size > 0 else 1
                 )
 
-        # Aggregate feature names based on actual activities
-        feature_names = self._aggregate_feature_names(init_data)
         class_names = None
         mode = "regression"
 
-        if self.task == "activity":
+        if self.task in ("activity", "next_activity"):
             mode = "classification"
             if self.label_encoder:
                 class_names = self.label_encoder.classes_.tolist()
             elif num_classes:
                 class_names = [str(i) for i in range(num_classes)]
 
+        import lime.lime_tabular as lime_tabular
         self.explainer = lime_tabular.LimeTabularExplainer(
             init_data,
             mode=mode,
             feature_names=feature_names,
             class_names=class_names,
-            categorical_features=list(range(init_data.shape[1])),
+            categorical_features=categorical_features,
             discretize_continuous=False,
             verbose=False,
+            kernel_width=0.75,
         )
 
     def explain_samples(
@@ -1196,48 +1334,64 @@ class LIMEExplainer:
         for i in tqdm(range(len(self.test_data_seq))):
             try:
                 if self.is_multi_input:
-                    current_temp = self.test_data_temp[i].reshape(1, -1)
-
-                    def predict_fn(x_seq):
-                        if x_seq.ndim == 1:
-                            x_seq = x_seq.reshape(1, -1)
+                    # Input to LIME is a combined 1D array
+                    instance_to_explain = np.hstack((self.test_data_seq[i], self.test_data_temp[i]))
+                    
+                    def predict_fn(x):
+                        if x.ndim == 1:
+                            x = x.reshape(1, -1)
+                        # Split back to sequence and temporal
+                        x_seq = x[:, :self.seq_len]
+                        temp_batch = x[:, self.seq_len:]
                         x_seq = np.clip(np.round(x_seq), 0, vocab_size - 1).astype(int)
-                        temp_batch = np.repeat(current_temp, x_seq.shape[0], axis=0)
 
-                        preds = self.model.predict([x_seq, temp_batch], verbose=0)
+                        n_samples = x_seq.shape[0]
+                        if n_samples > 1024:
+                            preds = self.model.predict([x_seq, temp_batch], batch_size=512, verbose=0)
+                            if isinstance(preds, list):
+                                preds = preds[0]
+                        else:
+                            preds = self.model([x_seq, temp_batch], training=False)
+                            if isinstance(preds, (list, tuple)):
+                                preds = preds[0].numpy()
+                            else:
+                                preds = preds.numpy()
 
-                        # FIX: Extract main prediction for multi-output regression models
-                        if isinstance(preds, list):
-                            preds = preds[0]
-
-                        return preds.flatten() if self.task != "activity" else preds
+                        return preds if self.task in ("activity", "next_activity") else preds.flatten()
 
                 else:
-
+                    instance_to_explain = self.test_data_seq[i]
+                    
                     def predict_fn(x_seq):
                         if x_seq.ndim == 1:
                             x_seq = x_seq.reshape(1, -1)
                         x_seq = np.clip(np.round(x_seq), 0, vocab_size - 1).astype(int)
 
-                        preds = self.model.predict(x_seq, verbose=0)
+                        n_samples = x_seq.shape[0]
+                        if n_samples > 1024:
+                            preds = self.model.predict(x_seq, batch_size=512, verbose=0)
+                            if isinstance(preds, list):
+                                preds = preds[0]
+                        else:
+                            preds = self.model(x_seq, training=False)
+                            if isinstance(preds, (list, tuple)):
+                                preds = preds[0].numpy()
+                            else:
+                                preds = preds.numpy()
 
-                        # FIX: Extract main prediction for multi-output regression models
-                        if isinstance(preds, list):
-                            preds = preds[0]
-
-                        return preds.flatten() if self.task != "activity" else preds
+                        return preds if self.task in ("activity", "next_activity") else preds.flatten()
 
                 exp = self.explainer.explain_instance(
-                    self.test_data_seq[i],
+                    instance_to_explain,
                     predict_fn,
-                    num_features=len(self.test_data_seq[i]),
+                    num_features=len(instance_to_explain),
                     top_labels=1,
                     num_samples=250,
                 )
                 self.explanations.append(exp)
 
             except Exception as e:
-                print(f"Error explaining sample {i}: {e}")
+                import traceback; traceback.print_exc()
                 self.explanations.append(None)
         return self.explanations
 
@@ -1253,7 +1407,7 @@ class LIMEExplainer:
                 continue
 
             exp_list = None
-            if self.task == "activity":
+            if self.task in ("activity", "next_activity"):
                 true_class = self.y_true[i] if self.y_true is not None else None
                 if true_class is not None:
                     try:
@@ -1279,6 +1433,12 @@ class LIMEExplainer:
                     pass
 
             if exp_list:
+                if self.task == "remaining_time" and getattr(self, "scaler", None) is not None:
+                    try:
+                        scale_factor = self.scaler.scale_[0]
+                        exp_list = [(r, w * scale_factor) for r, w in exp_list]
+                    except Exception:
+                        pass
                 for feature_name_raw, weight in exp_list:
                     if "Position_" in feature_name_raw:
                         import re
@@ -1452,7 +1612,7 @@ class LIMEExplainer:
 
         pred_activity_name = None
         try:
-            if self.task == "activity":
+            if self.task in ("activity", "next_activity"):
                 if hasattr(exp, "top_labels") and exp.top_labels:
                     label_to_explain = exp.top_labels[0]
                 else:
@@ -1506,6 +1666,15 @@ class LIMEExplainer:
                     lime_list = []
 
         activity_stats = {}
+        import re
+        
+        if self.task == "remaining_time" and getattr(self, "scaler", None) is not None:
+            try:
+                scale_factor = self.scaler.scale_[0]
+                lime_list = [(rule, weight * scale_factor) for rule, weight in lime_list]
+            except Exception:
+                pass
+
         for rule, weight in lime_list:
             # Try to extract activity name from rule
             # Rules can be: "Create Order <= 3.00" or just "Create Order"
@@ -1607,18 +1776,67 @@ class LIMEExplainer:
         )
 
         # Use common local graph renderer
-        from .local_explainer_utils import plot_research_grade_local
+        from .local_explainer_utils import plot_research_grade_local, plot_waterfall_local
 
         current_seq_names = [
             n for n in self._get_activity_names_for_sample(current_seq) if n != "[PAD]"
         ]
+        
+        # Dump lime_values.json for the frontend tooltips
+        import json
+        seq_lime_values = [0.0] * len(current_seq_names)
+        
+        # We need a mapping from full sequence position to valid sequence position
+        valid_pos_mapping = {}
+        valid_idx = 0
+        for pos, token in enumerate(current_seq):
+            if token != 0 and self._get_activity_name(token) != "[PAD]":
+                valid_pos_mapping[pos] = valid_idx
+                valid_idx += 1
 
-        plot_research_grade_local(
-            df,
-            current_seq_names,
-            os.path.join(output_dir, f"lime_explanation_{file_suffix}.png"),
-            title="Trace History",
-        )
+        for rule, weight in lime_list:
+            if rule.startswith("Position_"):
+                import re
+                match = re.search(r"Position_(\d+)", rule)
+                if match:
+                    pos = int(match.group(1)) - 1
+                    if pos in valid_pos_mapping:
+                        seq_lime_values[valid_pos_mapping[pos]] += float(weight)
+
+        with open(os.path.join(output_dir, "lime_values.json"), "w") as f:
+            json.dump(seq_lime_values, f)
+
+        if self.task == "remaining_time":
+            base_val = 0.0
+            if hasattr(exp, 'intercept'):
+                if isinstance(exp.intercept, dict):
+                    if 1 in exp.intercept:
+                        base_val = float(exp.intercept[1])
+                    elif 0 in exp.intercept:
+                        base_val = float(exp.intercept[0])
+                elif isinstance(exp.intercept, (list, np.ndarray)) and len(exp.intercept) > 0:
+                    base_val = float(exp.intercept[0])
+                    
+            if getattr(self, "scaler", None) is not None:
+                try:
+                    base_val = self.scaler.inverse_transform([[base_val]])[0][0]
+                except Exception:
+                    pass
+
+            plot_waterfall_local(
+                df,
+                current_seq_names,
+                os.path.join(output_dir, f"lime_explanation_{file_suffix}.png"),
+                title="Trace History (Waterfall)",
+                base_value=base_val
+            )
+        else:
+            plot_research_grade_local(
+                df,
+                current_seq_names,
+                os.path.join(output_dir, f"lime_explanation_{file_suffix}.png"),
+                title="Trace History",
+            )
 
     def save_explanations(self, output_dir):
         print("[OK] LIME computations complete.")
@@ -1906,7 +2124,7 @@ class ExplainabilityBenchmark:
         if isinstance(preds, list):
             preds = preds[0]
 
-        if self.task == "activity":
+        if self.task in ("activity", "next_activity"):
             return preds
         else:
             return preds.flatten()
@@ -1963,7 +2181,7 @@ class ExplainabilityBenchmark:
                 orig_pred = orig_preds_all[i : i + 1]
                 masked_pred = masked_preds_all[i : i + 1]
 
-                if self.task == "activity":
+                if self.task in ("activity", "next_activity"):
                     pred_change = np.abs(orig_pred - masked_pred).max()
                 else:
                     pred_change = np.abs(orig_pred - masked_pred).mean()
@@ -2710,9 +2928,9 @@ def run_transformer_explainability(
             if isinstance(se, TimestepSHAPExplainer) and se.model_has_timestep_outputs:
                 print("\n[SHAP] Generating global timestep-level summary...")
                 se.plot_global_temporal_importance(shap_dir)
-            else:
-                se.plot_bar(shap_dir)
-                se.plot_summary(shap_dir)
+            
+            se.plot_bar(shap_dir)
+            se.plot_summary(shap_dir)
             se.save_explanations(shap_dir)
         except Exception as e:
             print(f"[ERROR] SHAP explainability failed: {e}")

@@ -1092,7 +1092,8 @@ def explain_on_demand(run_id: str, req: ExplainReq):
         "--case-id", req.case_id,
         "--case-index", str(req.case_index),
         "--method", req.method,
-        "--model-type", model_type
+        "--model-type", model_type,
+        "--task", summary.get("request", {}).get("task", "next_activity")
     ]
     
     try:

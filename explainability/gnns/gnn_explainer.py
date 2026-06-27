@@ -804,6 +804,8 @@ class GradientExplainer:
                         name = self._get_activity_name(idx)
                     elif n_type == "resource":
                         name = self._get_resource_name(idx)
+                    elif n_type == "time":
+                        name = "Timestamp"
                     else:
                         name = f"{n_type}_{idx}"
 
@@ -1289,6 +1291,8 @@ class GraphLIMEExplainer:
             return f"{res_name} [Resource]"
         elif node_type == "resource":
             return f"resource_{feature_idx} [Resource]"
+        elif node_type == "time":
+            return "Timestamp"
         return f"{node_type}_{feature_idx}"
 
     def _aggregate_features(self, explanation):
