@@ -230,11 +230,16 @@ function CasePredictionBlock({ caseId, records, runId, modelType, explainability
             const text = await topRes.text();
             const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
             (parsed.data as any[]).forEach((p: any) => {
-              patternMap[p.pattern_id] = {
-                sequence: p.sequence,
-                predicted_next: p.predicted_next_activity,
-                frequency: parseInt(p.global_frequency) || 0
-              };
+              try {
+                const seq = JSON.parse(p.sequence);
+                if (Array.isArray(seq) && seq.length >= 2) {
+                  patternMap[p.pattern_id] = {
+                    sequence: p.sequence,
+                    predicted_next: p.predicted_next_activity,
+                    frequency: parseInt(p.global_frequency) || 0
+                  };
+                }
+              } catch(e) {}
             });
           }
 
@@ -477,15 +482,16 @@ function CasePredictionBlock({ caseId, records, runId, modelType, explainability
                           );
                         }
                         
-                        // Calculate the average frequency of patterns at this position
-                        const avgFreq = matchesAtPosition.reduce((sum, m) => sum + m.frequency, 0) / matchesAtPosition.length;
+                        // Use the maximum frequency of patterns at this position instead of the average
+                        // so that a highly prominent pattern isn't diluted by overlapping rare patterns
+                        const maxFreqAtPos = Math.max(...matchesAtPosition.map(m => m.frequency));
                         
-                        // Get global max frequency for normalization
+                        // Get global max frequency for normalization (across this case)
                         const allFrequencies = (explainResult.matches as any[]).map(m => m.frequency);
                         const globalMax = Math.max(...allFrequencies, 1);
                         
                         // Normalize to 0-1 range
-                        const normalizedIntensity = avgFreq / globalMax;
+                        const normalizedIntensity = maxFreqAtPos / globalMax;
                         
                         // Create a color gradient: light blue for low, dark blue for high
                         const hue = 217;
@@ -512,7 +518,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType, explainability
                               backgroundColor: bgColor,
                               color: textColor
                             }}
-                            title={`${matchesAtPosition.length} pattern(s), avg frequency: ${avgFreq.toFixed(1)}\n${matchedPatternNames}`}
+                            title={`${matchesAtPosition.length} pattern(s), max frequency: ${maxFreqAtPos.toFixed(1)}\n${matchedPatternNames}`}
                           >
                             {activity}
                           </div>

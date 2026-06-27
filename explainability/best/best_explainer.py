@@ -191,8 +191,8 @@ class BESTExplainer:
                 # Filter out padding tokens for UI
                 filtered_seq = [act for act in history_seq if act not in ["START", "END"]]
                 
-                # Single-activity histories are valid, but 0-length is not
-                if len(filtered_seq) < 1:
+                # We only consider patterns with a sequence of 2 or more activities
+                if len(filtered_seq) < 2:
                     continue
 
                 visible_seq_str = json.dumps(filtered_seq)
