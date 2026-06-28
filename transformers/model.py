@@ -144,11 +144,8 @@ def build_time_prediction_model(vocab_size, max_len, d_model=64, num_heads=4,
         # Keep timestep dimension: x has shape (batch_size, max_len, d_model)
         
         # Expand temporal features to match each timestep
-        # Use Lambda layer to wrap TensorFlow operations
-        temp_expanded = layers.Lambda(
-            lambda t: tf.tile(tf.expand_dims(t, axis=1), [1, max_len, 1]),
-            name='temporal_expansion'
-        )(temp_input)
+        # Use built-in RepeatVector layer instead of Lambda + tf.tile
+        temp_expanded = layers.RepeatVector(max_len, name='temporal_expansion')(temp_input)
         
         # Concatenate sequence features with temporal features at each timestep
         x = layers.Concatenate(axis=-1, name='feature_concat')([x, temp_expanded])
@@ -159,15 +156,12 @@ def build_time_prediction_model(vocab_size, max_len, d_model=64, num_heads=4,
         x = layers.Dense(32, activation='relu', name='timestep_dense2')(x)
         timestep_predictions = layers.Dense(1, activation='linear', name='timestep_output')(x)
         
-        # Squeeze last dimension - no name to avoid Keras treating it as a loss output
-        timestep_predictions_squeezed = layers.Lambda(
-            lambda t: tf.squeeze(t, axis=-1)
-        )(timestep_predictions)
+        # Squeeze last dimension using Reshape
+        timestep_predictions_squeezed = layers.Reshape((max_len,))(timestep_predictions)
         
-        # Create mask using Lambda layer (KerasTensor-safe)
-        mask = layers.Lambda(
-            lambda s: tf.cast(tf.not_equal(s, 0), tf.float32)
-        )(seq_input)
+        # Create mask using direct keras ops, which Keras 3 handles gracefully
+        from keras import ops
+        mask = ops.cast(ops.not_equal(seq_input, 0), "float32")
         
         # Apply mask to zero out padded positions
         timestep_predictions_masked = layers.Multiply()(
@@ -175,20 +169,13 @@ def build_time_prediction_model(vocab_size, max_len, d_model=64, num_heads=4,
         )
         
         # Aggregate timestep predictions for final output
-        # Sum and count non-padded timesteps
-        sum_preds = layers.Lambda(
-            lambda t: tf.reduce_sum(t, axis=1, keepdims=True)
-        )(timestep_predictions_masked)
+        sum_preds = ops.sum(timestep_predictions_masked, axis=1, keepdims=True)
         
-        seq_lengths = layers.Lambda(
-            lambda m: tf.reduce_sum(m, axis=1, keepdims=True)
-        )(mask)
+        seq_lengths = ops.sum(mask, axis=1, keepdims=True)
         
-        # Divide to get average
-        final_output = layers.Lambda(
-            lambda inputs: inputs[0] / (inputs[1] + 1e-7),  # Add epsilon to avoid division by zero
-            name='time_output'
-        )([sum_preds, seq_lengths])
+        # Divide to get average (using a small epsilon to avoid divide by zero if needed)
+        final_output = ops.divide(sum_preds, seq_lengths + 1e-7)
+        final_output = layers.Activation('linear', name='time_output')(final_output)
         
         # Return both final output and timestep predictions (squeezed version)
         model = keras.Model(

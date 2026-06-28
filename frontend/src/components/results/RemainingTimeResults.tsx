@@ -2,22 +2,22 @@ import { useEffect, useState } from "react";
 import { artifactUrl, artifactsZipUrl } from "../../lib/api";
 import { explainOnDemand } from "../../lib/api_explain";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
-import GlobalResults from "./GlobalResults";
+import RemainingTimeGlobalResults from "./RemainingTimeGlobalResults";
 import Papa from "papaparse";
 
 type PredictionRecord = {
   case_id: string;
   case_index: number;
   sequence: string;
-  true_next_activity: string;
-  predicted_next_activity: string;
+  actual_remaining_time_days?: number;
+  true_remaining_time_days?: number;
+  predicted_remaining_time_days: number;
   confidence_percent?: number;
   confidence?: number;
-  correct?: number;
   variant_id?: string | number;
 };
 
-export default function NextActivityResults({ runId, summary, uploadedFileName, configMode }: any) {
+export default function RemainingTimeResults({ runId, summary, uploadedFileName, configMode }: any) {
   const [predictions, setPredictions] = useState<PredictionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -31,10 +31,12 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
         predFile = "gnn_predictions.json";
       } else if (summary.request.model_type === "best") {
         predFile = "best_predictions.csv";
+      } else if (summary.request.model_type === "transformer" && (summary.request.task === "remaining_time" || summary.request.task === "time" || summary.request.task === "event_time")) {
+        predFile = `${summary.request.task}_predictions.csv`;
       }
       
       try {
-        const res = await fetch(artifactUrl(runId, predFile));
+        const res = await fetch(artifactUrl(runId, predFile) + "?t=" + new Date().getTime());
         if (res.ok) {
           if (predFile.endsWith(".csv")) {
             // Parse CSV for best model
@@ -103,7 +105,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
             <span className="text-slate-300">|</span>
             <span>Model: <strong className="capitalize">{summary.request?.model_type || "Unknown"}</strong></span>
             <span className="text-slate-300">|</span>
-            <span>Prediction Task: <strong className="capitalize">{summary.request?.task?.replace('_', ' ') || "Next Activity"}</strong></span>
+            <span>Prediction Task: <strong className="capitalize">{summary.request?.task?.replace('_', ' ') || "Remaining Time"}</strong></span>
             <span className="text-slate-300">|</span>
             <span>Configuration: <strong className="capitalize">{configMode || "default"}</strong></span>
             <span className="text-slate-300">|</span>
@@ -139,7 +141,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
           </TabsTrigger>
         </TabsList>
         <TabsContent value="global">
-          <GlobalResults runId={runId} datasetId={summary.dataset?.dataset_id} summary={summary} onCaseClick={handleCaseClick} />
+          <RemainingTimeGlobalResults runId={runId} datasetId={summary.dataset?.dataset_id} summary={summary} onCaseClick={handleCaseClick} />
         </TabsContent>
         <TabsContent value="local">
           <div className="rounded-2xl border border-brand-100 bg-white p-6 shadow-sm mt-4">
@@ -165,13 +167,12 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
               <div className="flex flex-col gap-4">
                 <div className="text-sm text-slate-600">Showing {filteredCases.length} of {caseIds.length} cases</div>
                 {filteredCases.map(cid => (
-                  <CasePredictionBlock 
+                  <RemainingTimeCasePredictionBlock 
                     key={cid} 
                     caseId={cid} 
                     records={predictions.filter(p => p.case_id === cid)} 
                     runId={runId}
                     modelType={summary.request?.model_type}
-                    taskType={summary.request?.task}
                     autoExpand={search === cid}
                     explainabilityType={summary.request?.explainability || "none"}
                   />
@@ -186,7 +187,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
 }
 
 
-function CasePredictionBlock({ caseId, records, runId, modelType, taskType, explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, taskType?: string, explainabilityType?: string, autoExpand?: boolean }) {
+function RemainingTimeCasePredictionBlock({ caseId, records, runId, modelType, explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, explainabilityType?: string, autoExpand?: boolean }) {
   const [expanded, setExpanded] = useState(autoExpand);
   const maxIndex = Math.max(...records.map(r => r.case_index));
 
@@ -231,16 +232,11 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
             const text = await topRes.text();
             const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
             (parsed.data as any[]).forEach((p: any) => {
-              try {
-                const seq = JSON.parse(p.sequence);
-                if (Array.isArray(seq) && seq.length >= 2) {
-                  patternMap[p.pattern_id] = {
-                    sequence: p.sequence,
-                    predicted_next: p.predicted_next_activity,
-                    frequency: parseInt(p.global_frequency) || 0
-                  };
-                }
-              } catch(e) {}
+              patternMap[p.pattern_id] = {
+                sequence: p.sequence,
+                predicted_next: p.predicted_next_activity,
+                frequency: parseInt(p.global_frequency) || 0
+              };
             });
           }
 
@@ -333,7 +329,11 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
 
   if (!selectedRecord) return null;
 
-  const isCorrect = selectedRecord.true_next_activity === selectedRecord.predicted_next_activity;
+  const trueVal = Number(selectedRecord.actual_remaining_time_days || selectedRecord.true_remaining_time_days || 0);
+  const predVal = Number(selectedRecord.predicted_remaining_time_days || 0);
+  const elapsedVal = Number(selectedRecord.current_elapsed_time_days || 0);
+  const absoluteError = Math.abs(trueVal - predVal);
+  const isClose = absoluteError <= 1.0;
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -383,108 +383,67 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
                   }
                   
                   return (
-                    <div key={i} className="flex items-center gap-2">
-                      <div 
-                        className="relative bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap cursor-help"
-                        title={shapVal !== null ? `Contribution: ${shapVal > 0 ? '+' : ''}${shapVal.toFixed(3)} to target probability` : act.trim()}
-                      >
-                        {act.trim()}
-                      </div>
-                      {/* Arrow: Solid for history, Longer Dashed for the transition to target */}
-                      {i === arr.length - 1 ? (
-                        <svg className="w-10 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 40 24">
-                          {/* The Stem - Dashed */}
-                          <path 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round" 
-                            strokeWidth={2} 
-                            strokeDasharray="6 6"
-                            d="M3 12h34" 
-                          />
-                          {/* The Head - Solid */}
-                          <path 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round" 
-                            strokeWidth={2} 
-                            d="M30 5l7 7-7 7" 
-                          />
-                        </svg>
-                      ) : (
-                        <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round" 
-                            strokeWidth={2} 
-                            d="M14 5l7 7-7 7M21 12H3" 
-                          />
-                        </svg>
-                      )}
+                  <div key={i} className="flex items-center gap-2">
+                    <div 
+                      className="relative bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap cursor-help transition-colors hover:bg-brand-100"
+                      title={shapVal !== null ? `SHAP Contribution: ${shapVal > 0 ? '+' : ''}${shapVal.toFixed(2)} days delay` : act.trim()}
+                    >
+                      {act.trim()}
                     </div>
-                  );
-                });
+                    {/* Arrow: Solid for history */}
+                    {i < arr.length - 1 && (
+                      <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          d="M14 5l7 7-7 7M21 12H3" 
+                        />
+                      </svg>
+                    )}
+                  </div>
+                );
+              });
               })()}
-              
-              {/* True Next Activity (Target) */}
-              <div className="flex items-center gap-2">
-                <div className="bg-slate-50 border border-slate-400 border-dashed text-slate-600 px-3 py-1.5 rounded-md text-xs font-bold whitespace-nowrap">
-                  {selectedRecord.true_next_activity}
-                </div>
-              </div>
             </div>
           </div>
           
-          <div className="grid grid-cols-3 gap-4">
-            <div className="p-3 border rounded">
-              <div className="text-slate-500 mb-1">
-                True Next Activity
-              </div>
-              <div className="font-semibold">{selectedRecord.true_next_activity}</div>
-            </div>
-            <div className={`p-3 border rounded ${isCorrect ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-              <div className={`mb-1 ${isCorrect ? 'text-green-700' : 'text-red-700'}`}>
-                Predicted Next Activity
-              </div>
-              <div className={`font-semibold ${isCorrect ? 'text-green-800' : 'text-red-800'}`}>{selectedRecord.predicted_next_activity}</div>
+          <div className="grid grid-cols-4 gap-4">
+            <div className="p-3 border rounded bg-slate-50">
+              <div className="text-slate-500 mb-1">Elapsed Time</div>
+              <div className="font-semibold">{elapsedVal > 0 ? elapsedVal.toFixed(2) : '--'} d</div>
             </div>
             <div className="p-3 border rounded">
-              <div className="text-slate-500 mb-1">Confidence</div>
-              <div className="font-semibold">
-                {(() => {
-                  const conf = selectedRecord.confidence_percent ?? selectedRecord.confidence;
-                  if (typeof conf === 'string') {
-                    // Handle "NaN" strings
-                    const parsed = parseFloat(conf);
-                    if (isNaN(parsed)) return "N/A";
-                    // Check if it's already a percentage (>1) or 0-1 range
-                    return parsed > 1 ? `${parsed.toFixed(2)}%` : `${(parsed * 100).toFixed(2)}%`;
-                  }
-                  if (typeof conf === 'number') {
-                    if (isNaN(conf)) return "N/A";
-                    return conf > 1 ? `${conf.toFixed(2)}%` : `${(conf * 100).toFixed(2)}%`;
-                  }
-                  return "N/A";
-                })()}
-              </div>
+              <div className="text-slate-500 mb-1">True Remaining Time</div>
+              <div className="font-semibold">{trueVal.toFixed(2)} d</div>
+            </div>
+            <div className={`p-3 border rounded ${isClose ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+              <div className={`mb-1 ${isClose ? 'text-green-700' : 'text-red-700'}`}>Predicted Remaining Time</div>
+              <div className={`font-semibold ${isClose ? 'text-green-800' : 'text-red-800'}`}>{predVal.toFixed(2)} d</div>
+            </div>
+            <div className="p-3 border rounded">
+              <div className="text-slate-500 mb-1">Absolute Error</div>
+              <div className="font-semibold text-red-600">{absoluteError.toFixed(2)} d</div>
             </div>
           </div>
 
           <div className="mt-4 pt-4 border-t flex flex-col gap-3">
-            <div className="flex gap-3 items-center">
-              <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
-              {!isBestModel && (
-                <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
-                  {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
-                </select>
-              )}
-              <button 
-                onClick={handleExplain} 
-                disabled={explaining}
-                className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
-              >
-                {explaining ? "Generating..." : "Generate"}
-              </button>
-            </div>
-          
+              <div className="flex gap-3 items-center">
+                <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
+                {!isBestModel && (
+                  <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
+                    {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
+                  </select>
+                )}
+                <button 
+                  onClick={handleExplain} 
+                  disabled={explaining}
+                  className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {explaining ? "Generating..." : "Generate"}
+                </button>
+              </div>
+            
             {explainResult && (
               <div className="mt-4 border rounded p-4 bg-slate-50">
                 {explainResult.type === "pattern_heatmap" ? (
@@ -512,16 +471,15 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
                           );
                         }
                         
-                        // Use the maximum frequency of patterns at this position instead of the average
-                        // so that a highly prominent pattern isn't diluted by overlapping rare patterns
-                        const maxFreqAtPos = Math.max(...matchesAtPosition.map(m => m.frequency));
+                        // Calculate the average frequency of patterns at this position
+                        const avgFreq = matchesAtPosition.reduce((sum, m) => sum + m.frequency, 0) / matchesAtPosition.length;
                         
-                        // Get global max frequency for normalization (across this case)
+                        // Get global max frequency for normalization
                         const allFrequencies = (explainResult.matches as any[]).map(m => m.frequency);
                         const globalMax = Math.max(...allFrequencies, 1);
                         
                         // Normalize to 0-1 range
-                        const normalizedIntensity = maxFreqAtPos / globalMax;
+                        const normalizedIntensity = avgFreq / globalMax;
                         
                         // Create a color gradient: light blue for low, dark blue for high
                         const hue = 217;
@@ -548,7 +506,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
                               backgroundColor: bgColor,
                               color: textColor
                             }}
-                            title={`${matchesAtPosition.length} pattern(s), max frequency: ${maxFreqAtPos.toFixed(1)}\n${matchedPatternNames}`}
+                            title={`${matchesAtPosition.length} pattern(s), avg frequency: ${avgFreq.toFixed(1)}\n${matchedPatternNames}`}
                           >
                             {activity}
                           </div>
@@ -590,7 +548,9 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
                   </div>
                 ) : (
                   <div>
-                    <h4 className="font-medium mb-3">{explainResult.method} Explanation</h4>
+                    <div className="flex items-center gap-2 mb-3">
+                      <h4 className="font-medium">{explainResult.method} Explanation</h4>
+                    </div>
                     <div className="flex flex-col gap-4">
                       <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
                     </div>
