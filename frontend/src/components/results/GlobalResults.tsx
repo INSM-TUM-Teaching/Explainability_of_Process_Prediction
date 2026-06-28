@@ -119,6 +119,7 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
   const [patternCases, setPatternCases] = useState<string[]>([]);
   const [loadingCases, setLoadingCases] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [sortConfig, setSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' }>({ key: 'global_frequency', direction: 'desc' });
 
   const filteredPatterns = useMemo(() => {
     if (!searchQuery) return topPatterns;
@@ -152,10 +153,61 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
         return seqStr === queryAsSeq;
       }
 
-      // 3. Predicted Next Activity Search: default fallback for text
+      // 3. Exact Predicted Trace/Activity Search: if the query is wrapped in square brackets
+      if (rawQuery.startsWith("[") && rawQuery.endsWith("]")) {
+        const innerQuery = rawQuery.slice(1, -1).trim();
+        const queryAsTrace = innerQuery.replace(/,\s*/g, ", ");
+        return nextStr === queryAsTrace;
+      }
+
+      // 4. Predicted Next Activity Search: default fallback for text
       return nextStr === rawQuery || nextStr.includes(rawQuery);
     });
   }, [topPatterns, searchQuery]);
+
+  const sortedPatterns = useMemo(() => {
+    let sortablePatterns = [...filteredPatterns];
+    if (sortConfig !== null) {
+      sortablePatterns.sort((a, b) => {
+        let aValue = a[sortConfig.key];
+        let bValue = b[sortConfig.key];
+
+        if (sortConfig.key === 'pattern_id' || sortConfig.key === 'global_frequency') {
+          aValue = parseInt(aValue, 10);
+          bValue = parseInt(bValue, 10);
+        } else if (sortConfig.key === 'global_accuracy') {
+          aValue = parseFloat(aValue);
+          bValue = parseFloat(bValue);
+        }
+
+        if (aValue < bValue) {
+          return sortConfig.direction === 'asc' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+          return sortConfig.direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+    }
+    return sortablePatterns;
+  }, [filteredPatterns, sortConfig]);
+
+  const requestSort = (key: string) => {
+    // Default direction depends on the column
+    let direction: 'asc' | 'desc' = key === 'pattern_id' ? 'asc' : 'desc';
+    
+    // If clicking the same column, toggle the direction
+    if (sortConfig && sortConfig.key === key) {
+      direction = sortConfig.direction === 'asc' ? 'desc' : 'asc';
+    }
+    
+    setSortConfig({ key, direction });
+  };
+
+  const getSortIcon = (key: string) => {
+    if (sortConfig?.key !== key) return null;
+    return sortConfig.direction === 'asc' ? <span className="text-brand-600 ml-1">▲</span> : <span className="text-brand-600 ml-1">▼</span>;
+  };
 
   const handlePatternClick = async (pattern: any) => {
     setSelectedPattern(pattern);
@@ -262,7 +314,15 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
             if (tpRes.ok) {
               const text = await tpRes.text();
               const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-              setTopPatterns(parsed.data as any[]);
+              const validPatterns = (parsed.data as any[]).filter(p => {
+                try {
+                  const seq = JSON.parse(p.sequence);
+                  return Array.isArray(seq) && seq.length >= 2;
+                } catch(e) {
+                  return false;
+                }
+              });
+              setTopPatterns(validPatterns);
             }
           } catch (e) { console.error("Could not load top patterns", e); }
         }
@@ -670,7 +730,9 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
             <h3 className="text-md font-semibold text-brand-900">Top 20 Patterns</h3>
             <input
               type="text"
-              placeholder="Search: ID Number, Predicted Activity, or (A, B, C) for Exact Sequence..."
+              placeholder={summary?.request?.task === 'remaining_trace' 
+                ? "Search: ID, [A, B] for Predicted Trace, or (A, B) for Exact Sequence..." 
+                : "Search: ID, Predicted Activity, or (A, B) for Exact Sequence..."}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="border rounded px-3 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500 w-[500px]"
@@ -680,15 +742,23 @@ export default function GlobalResults({ runId, datasetId, summary, onCaseClick }
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-slate-50">
-                  <th className="text-left py-2 px-3 font-semibold text-slate-700">ID</th>
+                  <th className="text-left py-2 px-3 font-semibold text-slate-700 cursor-pointer select-none hover:bg-slate-100 whitespace-nowrap" onClick={() => requestSort('pattern_id')}>
+                    ID {getSortIcon('pattern_id')}
+                  </th>
                   <th className="text-left py-2 px-3 font-semibold text-slate-700">Sequence</th>
-                  <th className="text-left py-2 px-3 font-semibold text-slate-700">Predicted Activity</th>
-                  <th className="text-center py-2 px-3 font-semibold text-slate-700">Frequency</th>
-                  <th className="text-center py-2 px-3 font-semibold text-slate-700">Accuracy</th>
+                  <th className="text-left py-2 px-3 font-semibold text-slate-700 whitespace-nowrap">
+                    {summary.request?.task === 'remaining_trace' ? 'Predicted Remaining Trace' : 'Predicted Activity'}
+                  </th>
+                  <th className="text-center py-2 px-3 font-semibold text-slate-700 cursor-pointer select-none hover:bg-slate-100 whitespace-nowrap" onClick={() => requestSort('global_frequency')}>
+                    Frequency {getSortIcon('global_frequency')}
+                  </th>
+                  <th className="text-center py-2 px-3 font-semibold text-slate-700 cursor-pointer select-none hover:bg-slate-100 whitespace-nowrap" onClick={() => requestSort('global_accuracy')}>
+                    Accuracy {getSortIcon('global_accuracy')}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {filteredPatterns.slice(0, 20).map((pattern: any, idx: number) => {
+                {sortedPatterns.slice(0, 20).map((pattern: any, idx: number) => {
                   let sequence = pattern.sequence;
                   try {
                     sequence = JSON.parse(pattern.sequence);
