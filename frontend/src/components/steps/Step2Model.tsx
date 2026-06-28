@@ -80,7 +80,8 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
           </div>
           <div className="text-sm text-gray-600 mt-1 break-words">
             Probabilistic tree-based model for activity sequence prediction. Builds a
-            pattern tree directly from the event log — no neural network training required.
+            pattern tree directly from the event log without neural network training.
+            Supports next activity and remaining trace prediction.
           </div>
         </div>
 

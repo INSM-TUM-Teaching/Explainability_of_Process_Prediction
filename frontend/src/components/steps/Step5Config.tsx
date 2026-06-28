@@ -1,5 +1,6 @@
 import React from "react";
 import { Settings } from "lucide-react";
+import { BEST_CONFIG_FIELDS, BEST_CONFIG_INTRO } from "./bestConfigFields";
 
 export type ConfigMode = "default" | "custom";
 
@@ -31,6 +32,7 @@ export type BestConfig = {
   max_pattern_size_eval: number;
   process_stage_width_percentage: number;
   min_freq: number;
+  break_buffer: number;
   filter_sequences: boolean;
   ncores: number;
 };
@@ -84,7 +86,7 @@ return (
           {modelType === "transformer"
             ? "These options map 1:1 to the backend Transformer config."
             : modelType === "best"
-            ? "These options map 1:1 to the backend BEST config."
+            ? BEST_CONFIG_INTRO
             : "These options map 1:1 to the backend GNN config."}
         </p>
       </div>
@@ -274,59 +276,32 @@ function ParameterGrid({
       onBestChange({ ...bestConfig, [key]: value });
     };
     return (
-      <div className="grid grid-cols-2 gap-4">
-        <ParameterField
-          label="Max pattern size (train) — odd integer"
-          value={cfg.max_pattern_size_train}
-          placeholder="21"
-          editable={editable}
-          min="3"
-          step="2"
-          onChange={(e) => updateNum("max_pattern_size_train", n(e.target.value))}
-        />
-        <ParameterField
-          label="Max pattern size (eval) — odd integer ≤ train"
-          value={cfg.max_pattern_size_eval}
-          placeholder="21"
-          editable={editable}
-          min="3"
-          step="2"
-          onChange={(e) => updateNum("max_pattern_size_eval", n(e.target.value))}
-        />
-        <ParameterField
-          label="Stage width % (0–1)"
-          value={cfg.process_stage_width_percentage}
-          placeholder="0.2"
-          editable={editable}
-          min="0"
-          max="1"
-          step="0.05"
-          onChange={(e) => updateNum("process_stage_width_percentage", n(e.target.value))}
-        />
-        <ParameterField
-          label="Min frequency"
-          value={cfg.min_freq}
-          placeholder="1e-14"
-          editable={editable}
-          min="0"
-          step="any"
-          onChange={(e) => updateNum("min_freq", n(e.target.value))}
-        />
-        <BooleanField
-          label="Filter START/END tokens"
-          value={cfg.filter_sequences}
-          editable={editable}
-          onChange={(v) => updateBool("filter_sequences", v)}
-        />
-        <ParameterField
-          label="Parallel cores"
-          value={cfg.ncores}
-          placeholder="1"
-          editable={editable}
-          min="1"
-          step="1"
-          onChange={(e) => updateNum("ncores", n(e.target.value))}
-        />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {BEST_CONFIG_FIELDS.map((field) =>
+          field.kind === "boolean" ? (
+            <BestBooleanField
+              key={field.key}
+              title={field.title}
+              description={field.description}
+              value={cfg[field.key] as boolean}
+              editable={editable}
+              onChange={(v) => updateBool(field.key, v)}
+            />
+          ) : (
+            <BestParameterField
+              key={field.key}
+              title={field.title}
+              description={field.description}
+              value={cfg[field.key] as number}
+              placeholder={field.placeholder}
+              editable={editable}
+              min={field.min}
+              max={field.max}
+              step={field.step}
+              onChange={(e) => updateNum(field.key, n(e.target.value))}
+            />
+          )
+        )}
       </div>
     );
   }
@@ -391,6 +366,84 @@ function ParameterGrid({
 
 function n(v: string): number {
   return v === "" ? NaN : Number(v);
+}
+
+function BestParameterField({
+  title,
+  description,
+  value,
+  placeholder,
+  editable,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  value: number;
+  placeholder: string;
+  editable: boolean;
+  min?: string;
+  max?: string;
+  step?: string;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}) {
+  return (
+    <div className="border rounded-lg p-4 bg-white">
+      <div className="text-sm font-medium text-brand-900">{title}</div>
+      <p className="text-xs text-brand-600 mt-1 leading-relaxed">{description}</p>
+      <div className="mt-3">
+        {editable ? (
+          <input
+            type="number"
+            value={Number.isFinite(value) ? value : ""}
+            placeholder={placeholder}
+            min={min}
+            max={max}
+            step={step}
+            onChange={onChange}
+            className="w-full bg-white text-black border rounded px-3 py-2 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-500"
+          />
+        ) : (
+          <div className="px-3 py-2 font-medium text-black">{value}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BestBooleanField({
+  title,
+  description,
+  value,
+  editable,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  value: boolean;
+  editable: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="border rounded-lg p-4 bg-white">
+      <div className="text-sm font-medium text-brand-900">{title}</div>
+      <p className="text-xs text-brand-600 mt-1 leading-relaxed">{description}</p>
+      <div className="mt-3">
+        {editable ? (
+          <input
+            type="checkbox"
+            checked={value}
+            onChange={(e) => onChange(e.target.checked)}
+            className="h-4 w-4 rounded border-gray-300 accent-brand-600 cursor-pointer"
+          />
+        ) : (
+          <div className="px-3 py-2 font-medium text-black">{value ? "true" : "false"}</div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function BooleanField({

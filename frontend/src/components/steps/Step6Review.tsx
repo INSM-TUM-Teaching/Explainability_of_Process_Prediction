@@ -17,6 +17,7 @@ function formatPredictionTask(task: string | null): string {
   if (s === "event_time" || s.includes("event time") || s === "timestamp") return "Event Time Prediction";
   if (s === "remaining_time" || s.includes("remaining time")) return "Remaining Time Prediction";
   if (s === "unified") return "Unified Prediction";
+  if (s === "remaining_trace" || s.includes("remaining trace")) return "Remaining Trace Prediction";
   return task;
 }
 

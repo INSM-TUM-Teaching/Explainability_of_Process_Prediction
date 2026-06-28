@@ -55,6 +55,9 @@ class RemainingTimePredictor:
             temporal_features = []
             remaining_times = []
             time_sequences = []
+            case_ids = []
+
+            elapsed_times = []
 
             for case_id, group in grouped:
                 activities = group['activity_encoded'].values
@@ -75,8 +78,10 @@ class RemainingTimePredictor:
                     temporal_features.append(temp_feat)
                     remaining_times.append(time_remaining)
                     time_sequences.append(time_seq)
+                    case_ids.append(case_id)
+                    elapsed_times.append(fvt2_vals[i-1] / 86400.0)
 
-            return sequences, np.array(temporal_features), np.array(remaining_times), time_sequences
+            return sequences, np.array(temporal_features), np.array(remaining_times), time_sequences, case_ids, np.array(elapsed_times)
 
         if split_col:
             split_values = set(df[split_col].dropna().unique().tolist())
@@ -87,9 +92,9 @@ class RemainingTimePredictor:
             val_df = df[df[split_col] == "val"].drop(columns=[split_col])
             test_df = df[df[split_col] == "test"].drop(columns=[split_col])
 
-            seq_train, X_temp_train, y_train, time_train = build_samples(train_df)
-            seq_val, X_temp_val, y_val, time_val = build_samples(val_df)
-            seq_test, X_temp_test, y_test, time_test = build_samples(test_df)
+            seq_train, X_temp_train, y_train, time_train, _, elapsed_train = build_samples(train_df)
+            seq_val, X_temp_val, y_val, time_val, _, elapsed_val = build_samples(val_df)
+            seq_test, X_temp_test, y_test, time_test, test_case_ids, test_elapsed = build_samples(test_df)
 
             X_seq_train = keras.preprocessing.sequence.pad_sequences(
                 seq_train, maxlen=self.max_len, padding='pre', value=0
@@ -114,7 +119,7 @@ class RemainingTimePredictor:
             X_temp_val_scaled = self.scaler.transform(X_temp_val) if len(X_temp_val) else X_temp_val
             X_temp_test_scaled = self.scaler.transform(X_temp_test) if len(X_temp_test) else X_temp_test
         else:
-            sequences, X_temp, y_remaining, time_seq = build_samples(df)
+            sequences, X_temp, y_remaining, time_seq, case_ids, elapsed_times = build_samples(df)
             print(f"Total training samples: {len(sequences):,}")
             print(f"Example sequence length range: {min(map(len, sequences))} to {max(map(len, sequences))}")
 
@@ -127,12 +132,12 @@ class RemainingTimePredictor:
 
             X_temp_scaled = self.scaler.fit_transform(X_temp)
 
-            X_seq_train, X_seq_temp, X_temp_train_scaled, X_temp_temp, X_time_train, X_time_temp, y_train, y_temp = train_test_split(
-                X_seq, X_temp_scaled, X_time, y_remaining, test_size=test_size, random_state=42
+            X_seq_train, X_seq_temp, X_temp_train_scaled, X_temp_temp, X_time_train, X_time_temp, y_train, y_temp, c_ids_train, c_ids_temp, elapsed_train, elapsed_temp = train_test_split(
+                X_seq, X_temp_scaled, X_time, y_remaining, case_ids, elapsed_times, test_size=test_size, random_state=42
             )
 
-            X_seq_val, X_seq_test, X_temp_val_scaled, X_temp_test_scaled, X_time_val, X_time_test, y_val, y_test = train_test_split(
-                X_seq_temp, X_temp_temp, X_time_temp, y_temp, test_size=val_split, random_state=42
+            X_seq_val, X_seq_test, X_temp_val_scaled, X_temp_test_scaled, X_time_val, X_time_test, y_val, y_test, c_ids_val, test_case_ids, elapsed_val, test_elapsed = train_test_split(
+                X_seq_temp, X_temp_temp, X_time_temp, y_temp, c_ids_temp, elapsed_temp, test_size=val_split, random_state=42
             )
 
         self.vocab_size = len(self.label_encoder.classes_) + 2
@@ -151,25 +156,40 @@ class RemainingTimePredictor:
             'X_seq_train': X_seq_train, 'X_temp_train': X_temp_train_scaled, 'y_train': y_train,
             'X_seq_val': X_seq_val, 'X_temp_val': X_temp_val_scaled, 'y_val': y_val,
             'X_seq_test': X_seq_test, 'X_temp_test': X_temp_test_scaled, 'y_test': y_test,
-            'X_time_train': X_time_train, 'X_time_val': X_time_val, 'X_time_test': X_time_test
+            'X_time_train': X_time_train, 'X_time_val': X_time_val, 'X_time_test': X_time_test,
+            'test_case_ids': test_case_ids,
+            'test_elapsed_times': test_elapsed,
+            'seq_test_raw': [seq[seq > 0] for seq in X_seq_test]
         }
     
     def _calculate_temporal_features(self, df):
-        def calculate_features(group):
-            group = group.sort_values('time:timestamp').reset_index(drop=True)
-            
-            group['fvt1'] = group['time:timestamp'].diff().dt.total_seconds() / 86400
-            group['fvt1'].fillna(0, inplace=True)
-            
-            group['fvt2'] = (group['time:timestamp'] - group['time:timestamp'].shift(2)).dt.total_seconds() / 86400
-            group['fvt2'].fillna(0, inplace=True)
-            
-            group['fvt3'] = (group['time:timestamp'] - group['time:timestamp'].iloc[0]).dt.total_seconds() / 86400
-            
-            return group
+        # 1. The Ultimate Column Sniffer
+        case_col = next((c for c in ['case_id', 'Case ID', 'case:concept:name', 'Case_ID'] if c in df.columns), None)
+        time_col = next((c for c in ['timestamp', 'Complete Timestamp', 'time:timestamp', 'Complete_Timestamp'] if c in df.columns), None)
         
-        df = df.groupby('case:concept:name', group_keys=False).apply(calculate_features)
-        print("Temporal features created.")
+        if case_col is None and hasattr(self, 'case_id_col'):
+            case_col = self.case_id_col
+        if time_col is None and hasattr(self, 'timestamp_col'):
+            time_col = self.timestamp_col
+            
+        if case_col is None:
+            case_col = next((c for c in df.columns if 'case' in c.lower()), df.columns[0])
+        if time_col is None:
+            time_col = next((c for c in df.columns if 'time' in c.lower()), df.columns[1])
+
+        # 2. The Fast Vectorized Math (WITH CORRECT INTERNAL NAMES)
+        df = df.sort_values(by=[case_col, time_col])
+        
+        # Replaced 'time_since_last' with 'fvt1'
+        df['fvt1'] = df.groupby(case_col)[time_col].diff().dt.total_seconds().fillna(0)
+        
+        # Replaced 'time_since_start' with 'fvt2'
+        case_starts = df.groupby(case_col)[time_col].transform('min')
+        df['fvt2'] = (df[time_col] - case_starts).dt.total_seconds()
+        
+        # Replaced 'hour_of_day' with 'fvt3'
+        df['fvt3'] = df[time_col].dt.hour
+        
         return df
     
     def build_model(self, use_timestep_explainability=True):
@@ -302,8 +322,50 @@ class RemainingTimePredictor:
         
         if isinstance(y_pred, tuple):
             y_pred = y_pred[0]
+            
+        test_case_ids = data.get('test_case_ids')
+        test_elapsed_times = data.get('test_elapsed_times', [0] * len(data['y_test']))
+        raw_seqs = data.get('seq_test_raw', [])
+        
+        case_indexes = []
+        c_ids = []
+        if test_case_ids is not None:
+            case_counters = {}
+            for cid in test_case_ids:
+                case_counters[cid] = case_counters.get(cid, 0) + 1
+                case_indexes.append(case_counters[cid])
+                c_ids.append(cid)
+        else:
+            case_indexes = [None] * len(data['y_test'])
+            c_ids = [None] * len(data['y_test'])
+            
+        import json
+        
+        decoded_sequences = []
+        for i, s in enumerate(raw_seqs):
+            try:
+                valid_s = [val - 1 for val in s if val > 0]
+                if not valid_s:
+                    decoded_sequences.append("[]")
+                    continue
+                dec = self.label_encoder.inverse_transform(valid_s)
+                dec_list = dec.tolist()
+                
+                cidx = case_indexes[i]
+                if cidx is not None and cidx > 0:
+                    cidx = int(cidx)
+                    if len(dec_list) > cidx:
+                        dec_list = dec_list[-cidx:]
+                        
+                decoded_sequences.append(json.dumps(dec_list))
+            except:
+                decoded_sequences.append("[]")
         
         results = pd.DataFrame({
+            'case_id': c_ids,
+            'case_index': case_indexes,
+            'sequence': decoded_sequences,
+            'current_elapsed_time_days': test_elapsed_times,
             'actual_remaining_time_days': data['y_test'],
             'predicted_remaining_time_days': y_pred,
             'absolute_error_days': np.abs(data['y_test'] - y_pred)

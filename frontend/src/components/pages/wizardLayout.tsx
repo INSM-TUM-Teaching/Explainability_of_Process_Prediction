@@ -1,5 +1,5 @@
-// frontend/src/components/pages/wizardLayout.tsx
 import { useEffect, useMemo, useState } from "react";
+import { useLocalStorage } from "../../lib/useLocalStorage";
 
 import Sidebar from "../layout/Sidebar";
 
@@ -115,6 +115,7 @@ function normalizeTask(
   if (s === "unified") return "unified";
   if (s === "remaining_trace") return "remaining_trace";
   if (s === "outcome" || s.includes("outcome")) return "outcome";
+  if (s === "remaining_trace" || s.includes("remaining trace")) return "remaining_trace";
 
   return null;
 }
@@ -187,6 +188,8 @@ function validateBestConfig(cfg: BestConfig): boolean {
     cfg.process_stage_width_percentage <= 1 &&
     typeof cfg.min_freq === "number" &&
     cfg.min_freq > 0 &&
+    typeof cfg.break_buffer === "number" &&
+    cfg.break_buffer > 1 &&
     typeof cfg.ncores === "number" &&
     Number.isInteger(cfg.ncores) &&
     cfg.ncores >= 1
@@ -194,28 +197,28 @@ function validateBestConfig(cfg: BestConfig): boolean {
 }
 
 export default function WizardLayout() {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useLocalStorage("wizard_step", 0);
 
   /* -------------------- STEP DATA -------------------- */
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [dataset, setDataset] = useState<DatasetUploadResponse | null>(null);
-  const [datasetMode, setDatasetMode] = useState<"raw" | "preprocessed" | "skip" | null>(null);
-  const [splitConfig, setSplitConfig] = useState({ test_size: 0.1, val_split: 0.11 });
+  const [dataset, setDataset] = useLocalStorage<DatasetUploadResponse | null>("wizard_dataset", null);
+  const [datasetMode, setDatasetMode] = useLocalStorage<"raw" | "preprocessed" | "skip" | null>("wizard_datasetMode", null);
+  const [splitConfig, setSplitConfig] = useLocalStorage("wizard_splitConfig", { test_size: 0.1, val_split: 0.11 });
 
-  const [mappingMode, setMappingMode] = useState<MappingMode | null>("manual");
-  const [manualMapping, setManualMapping] = useState<ManualMapping>({
+  const [mappingMode, setMappingMode] = useLocalStorage<MappingMode | null>("wizard_mappingMode", "manual");
+  const [manualMapping, setManualMapping] = useLocalStorage<ManualMapping>("wizard_manualMapping", {
     case_id: "",
     activity: "",
     timestamp: "",
     resource: null,
   });
 
-  const [modelType, setModelType] = useState<string | null>(null);
-  const [predictionTask, setPredictionTask] = useState<string | null>(null);
-  const [predictionCategory, setPredictionCategory] = useState<"classification" | "regression" | null>(null);
-  const [customTargetColumn, setCustomTargetColumn] = useState<string | null>(null);
-  const [explainMethod, setExplainMethod] = useState<ExplainValue | null>(null);
-  const [configMode, setConfigMode] = useState<ConfigMode | null>(null);
+  const [modelType, setModelType] = useLocalStorage<string | null>("wizard_modelType", null);
+  const [predictionTask, setPredictionTask] = useLocalStorage<string | null>("wizard_predictionTask", null);
+  const [predictionCategory, setPredictionCategory] = useLocalStorage<"classification" | "regression" | null>("wizard_predictionCategory", null);
+  const [customTargetColumn, setCustomTargetColumn] = useLocalStorage<string | null>("wizard_customTargetColumn", null);
+  const [explainMethod, setExplainMethod] = useLocalStorage<ExplainValue | null>("wizard_explainMethod", null);
+  const [configMode, setConfigMode] = useLocalStorage<ConfigMode | null>("wizard_configMode", null);
 
   /* -------------------- CONFIG STATE -------------------- */
   const defaultTransformerConfig = useMemo<TransformerConfig>(
@@ -250,29 +253,29 @@ export default function WizardLayout() {
       max_pattern_size_eval: 21,
       process_stage_width_percentage: 0.2,
       min_freq: 1e-14,
+      break_buffer: 1.2,
       filter_sequences: true,
       ncores: 1,
     }),
     []
   );
 
-  const [transformerConfig, setTransformerConfig] =
-    useState<TransformerConfig>(defaultTransformerConfig);
-  const [gnnConfig, setGnnConfig] = useState<GnnConfig>(defaultGnnConfig);
-  const [bestConfig, setBestConfig] = useState<BestConfig>(defaultBestConfig);
+  const [transformerConfig, setTransformerConfig] = useLocalStorage<TransformerConfig>("wizard_transformerConfig", defaultTransformerConfig);
+  const [gnnConfig, setGnnConfig] = useLocalStorage<GnnConfig>("wizard_gnnConfig", defaultGnnConfig);
+  const [bestConfig, setBestConfig] = useLocalStorage<BestConfig>("wizard_bestConfig", defaultBestConfig);
 
   /* -------------------- RUN STATE -------------------- */
-  const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>("idle");
-  const [progress, setProgress] = useState(0);
+  const [pipelineStatus, setPipelineStatus] = useLocalStorage<PipelineStatus>("wizard_pipelineStatus", "idle");
+  const [progress, setProgress] = useLocalStorage("wizard_progress", 0);
 
-  const [runId, setRunId] = useState<string | null>(null);
-  const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
-  const [artifacts, setArtifacts] = useState<string[]>([]);
-  const [runError, setRunError] = useState<string | null>(null);
-  const [runLogs, setRunLogs] = useState<string[]>([]);
-  const [autoDownloadedRunId, setAutoDownloadedRunId] = useState<string | null>(null);
+  const [runId, setRunId] = useLocalStorage<string | null>("wizard_runId", null);
+  const [runStatus, setRunStatus] = useLocalStorage<RunStatus | null>("wizard_runStatus", null);
+  const [artifacts, setArtifacts] = useLocalStorage<string[]>("wizard_artifacts", []);
+  const [runError, setRunError] = useLocalStorage<string | null>("wizard_runError", null);
+  const [runLogs, setRunLogs] = useLocalStorage<string[]>("wizard_runLogs", []);
+  const [autoDownloadedRunId, setAutoDownloadedRunId] = useLocalStorage<string | null>("wizard_autoDownloadedRunId", null);
 
-  const [viewMode, setViewMode] = useState<ViewMode>("wizard");
+  const [viewMode, setViewMode] = useLocalStorage<ViewMode>("wizard_viewMode", "wizard");
 
   /* -------------------- DERIVED -------------------- */
   const modelTypeNormalized = useMemo(
@@ -600,7 +603,7 @@ export default function WizardLayout() {
   }, [pipelineStatus, runId]);
 
   /* -------------------- RENDER -------------------- */
-  const showResults = viewMode === "results";
+  const showResults = viewMode === "results" || step === 7;
 
   return (
     <div className="flex h-screen flex-col">
@@ -625,6 +628,9 @@ export default function WizardLayout() {
         {showResults ? (
           <ResultsView
             runId={runId}
+            uploadedFileName={uploadedFile?.name}
+            configMode={configMode}
+            onStartOver={resetAll}
             onBackToPipeline={() => {
               setViewMode("wizard");
               setStep(6);

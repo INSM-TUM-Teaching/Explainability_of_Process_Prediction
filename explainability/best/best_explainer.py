@@ -6,6 +6,17 @@ matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+
+plt.style.use("seaborn-v0_8-whitegrid")
+plt.rcParams.update({"font.size": 11, "font.family": "sans-serif"})
+
+_BLUE  = "#4C72B0"
+_GREEN = "#55A868"
+_RED   = "#C44E52"
+_CMAP  = mcolors.LinearSegmentedColormap.from_list("rg", [_RED, "#f0c060", _GREEN])
+
+
 
 plt.style.use("seaborn-v0_8-whitegrid")
 plt.rcParams.update({"font.size": 11, "font.family": "sans-serif"})
@@ -176,6 +187,29 @@ class BESTExplainer:
                 
                 if predicted_next in ["START", "END"]:
                     continue # Skip if the prediction itself is a padding token
+                # Predicted next activity (or remaining trace) for this pattern
+                center_idx = len(seq_indices) // 2
+                
+                if getattr(self.runner, "task", None) == "rtp":
+                    pred_seq = decoded_seq[center_idx + 1:]
+                    pred_seq_filtered = [act for act in pred_seq if act not in ["START", "END"]]
+                    if not pred_seq_filtered:
+                        continue
+                    predicted_next = ", ".join(str(act) for act in pred_seq_filtered)
+                else:
+                    predicted_next = decoded_seq[center_idx + 1] if (center_idx + 1) < len(decoded_seq) else None
+                    if not predicted_next or not str(predicted_next).strip() or predicted_next in ["START", "END"]:
+                        continue
+
+                # Extract only the history (the left side of the pattern up to the center)
+                history_seq = decoded_seq[:center_idx + 1]
+
+                # Filter out padding tokens for UI
+                filtered_seq = [act for act in history_seq if act not in ["START", "END"]]
+                
+                # We only consider patterns with a sequence of 2 or more activities
+                if len(filtered_seq) < 2:
+                    continue
 
                 visible_seq_str = json.dumps(filtered_seq)
                 internal_to_visible[pattern_seq] = {
@@ -291,6 +325,9 @@ class BESTExplainer:
                     # A pattern of length L has (L // 2) activities to the left of the center.
                     # Including the center, it covers (L // 2) + 1 activities of the prefix.
                     num_prefix_elements = (pattern_len // 2) + 1
+                    # BEST patterns match with their center as the prediction.
+                    # A pattern of length L has (L // 2) activities to the left of the center.
+                    # These (L // 2) activities are matched against the prefix.
                     start_offset = max(0, case_index - num_prefix_elements)
                     end_offset = case_index - 1
                     
@@ -393,7 +430,57 @@ class BESTExplainer:
                 })
             
             return pd.DataFrame(rows), n
+            prefixes = runner.test_seq.relevant_prefixes
+            n = min(len(prefixes), len(predictions))
+            preds = predictions[:n]
+            
+            if self.task == "nap":
+                actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
+                tracker = getattr(self.model, "choice_tracker_nap", {})
+            else:
+                actuals_enc = getattr(runner.test_seq, "full_future_sequences", [None] * n)
+                tracker = getattr(self.model, "choice_tracker_rtp", {})
+                decoded_rtp_preds = runner._decode_rtp(preds)
 
+            probs = tracker.get("prob", [None] * n)
+            padding_size = getattr(self.model, "_padding_size", 0)
+
+            rows = []
+            import json
+            for i in range(n):
+                prefix_data = prefixes[i]
+                case_id = str(prefix_data["case_id"])
+                raw_seq = prefix_data["prefix"]
+                real_seq_enc = raw_seq[padding_size:]
+                
+                decoded_seq = [runner._decode_activity(a) for a in real_seq_enc]
+                filtered_seq = [a for a in decoded_seq if a not in ["START", "END"]]
+                
+                case_index = len(filtered_seq)
+                if case_index == 0:
+                    continue
+
+                if self.task == "nap":
+                    true_next = runner._decode_activity(actuals_enc[i])
+                    pred_next = runner._decode_activity(preds[i])
+                else:
+                    pred_next = decoded_rtp_preds[i]
+                    seq = actuals_enc[i]
+                    if seq is None:
+                        true_next = None
+                    else:
+                        true_next = ", ".join(str(runner._decode_activity(idx)) for idx in seq if idx is not None)
+
+                rows.append({
+                    "case_id": case_id,
+                    "case_index": case_index,
+                    "sequence": json.dumps(filtered_seq),
+                    "true_next": true_next,
+                    "pred_next": pred_next,
+                    "confidence": probs[i] if i < len(probs) else None
+                })
+            
+            return pd.DataFrame(rows), n
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -425,7 +512,6 @@ class BESTExplainer:
         ax1.set_ylabel("Accuracy", color="#4C72B0")
         ax1.tick_params(axis="y", labelcolor="#4C72B0")
         ax1.set_ylim(0, 1.05)
-        ax1.set_title("BEST - Prediction Accuracy by Prefix Length")
         ax1.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
         ax2 = ax1.twinx()
@@ -441,6 +527,8 @@ class BESTExplainer:
         path = os.path.join(self.output_dir, "accuracy_by_prefix_length.png")
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
+
+
 
     def _plot_confidence_by_class(self, df: pd.DataFrame) -> None:
         """Horizontal bar chart: mean pattern confidence per predicted activity class."""
@@ -464,7 +552,6 @@ class BESTExplainer:
         ax.set_yticks(list(y_pos))
         ax.set_yticklabels(classes)
         ax.set_xlabel("Mean pattern confidence (+/- std)")
-        ax.set_title("Pattern Confidence by Predicted Activity")
         ax.set_xlim(0, 1.05)
         
         overall_mean = df["confidence"].dropna().mean()
@@ -500,7 +587,6 @@ class BESTExplainer:
         ax.set_xticks(x)
         ax.set_xticklabels(all_classes, rotation=35, ha="right", fontsize=9)
         ax.set_ylabel("Count")
-        ax.set_title("Actual vs Predicted Activity Distribution")
         ax.legend()
         fig.tight_layout()
         path = os.path.join(self.output_dir, "activity_distribution.png")
@@ -518,7 +604,6 @@ class BESTExplainer:
         ax.hist(distances, bins=30, color="#C44E52", edgecolor="white", alpha=0.85)
         ax.set_xlabel("RPIF distance")
         ax.set_ylabel("Count")
-        ax.set_title("Distribution of RPIF Distance Scores")
         fig.tight_layout()
         path = os.path.join(self.output_dir, "rpif_distances.png")
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -642,7 +727,6 @@ class BESTExplainer:
         ax.hist(probs, bins=30, color="#4C72B0", edgecolor="white", alpha=0.85)
         ax.set_xlabel("Pattern conditional probability")
         ax.set_ylabel("Count")
-        ax.set_title("Distribution of chosen-pattern probabilities")
         fig.tight_layout()
         path = os.path.join(self.output_dir, "pattern_probabilities.png")
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
@@ -656,7 +740,6 @@ class BESTExplainer:
         ax.bar(unique, counts, color="#55A868", edgecolor="white", alpha=0.85)
         ax.set_xlabel("Pattern length")
         ax.set_ylabel("Count")
-        ax.set_title("Distribution of chosen-pattern lengths")
         ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
         fig.tight_layout()
         path = os.path.join(self.output_dir, "pattern_lengths.png")

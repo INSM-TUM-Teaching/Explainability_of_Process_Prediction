@@ -29,7 +29,7 @@ env/
 # ----------------------------
 # Project outputs / artifacts
 # ----------------------------
-results/
+/results/
 comprehensive_test_results/
 
 # Backend runtime storage (uploads, datasets, runs, artifacts)
