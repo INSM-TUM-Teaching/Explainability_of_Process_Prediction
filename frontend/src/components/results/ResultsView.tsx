@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import NextActivityResults from "./NextActivityResults";
 import RemainingTimeResults from "./RemainingTimeResults";
+import EventTimeResults from "./EventTimeResults";
 import RemainingTraceResults from "./RemainingTraceResults";
 
 import {
@@ -273,17 +274,26 @@ export default function ResultsView({
     );
   }
 
-  if (summaryFile?.request?.task === "remaining_time") {
+  if (summaryFile?.request?.task === "remaining_time" || summaryFile?.request?.task === "event_time") {
     return (
       <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
         <div className="flex-1 overflow-auto min-w-0">
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-8 py-8">
-            <RemainingTimeResults
-              runId={runId}
-              summary={summaryFile}
-              uploadedFileName={uploadedFileName}
-              configMode={configMode}
-            />
+            {summaryFile?.request?.task === "remaining_time" ? (
+              <RemainingTimeResults
+                runId={runId}
+                summary={summaryFile}
+                uploadedFileName={uploadedFileName}
+                configMode={configMode}
+              />
+            ) : (
+              <EventTimeResults
+                runId={runId}
+                summary={summaryFile}
+                uploadedFileName={uploadedFileName}
+                configMode={configMode}
+              />
+            )}
           </div>
         </div>
 

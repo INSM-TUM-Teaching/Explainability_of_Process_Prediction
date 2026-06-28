@@ -6,6 +6,7 @@ from tensorflow import keras
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import os
+import json
 from ..model import build_time_prediction_model
 
 
@@ -55,6 +56,7 @@ class EventTimePredictor:
             next_event_times = []
             time_sequences = []
             case_ids = []
+            elapsed_times = []
 
             for case_id, group in grouped:
                 activities = group['activity_encoded'].values
@@ -75,8 +77,9 @@ class EventTimePredictor:
                     next_event_times.append(time_to_next)
                     time_sequences.append(time_seq)
                     case_ids.append(case_id)
+                    elapsed_times.append(fvt3_vals[i-1])
 
-            return sequences, np.array(temporal_features), np.array(next_event_times), time_sequences, case_ids
+            return sequences, np.array(temporal_features), np.array(next_event_times), time_sequences, case_ids, np.array(elapsed_times)
 
         if split_col:
             split_values = set(df[split_col].dropna().unique().tolist())
@@ -87,9 +90,9 @@ class EventTimePredictor:
             val_df = df[df[split_col] == "val"].drop(columns=[split_col])
             test_df = df[df[split_col] == "test"].drop(columns=[split_col])
 
-            seq_train, X_temp_train, y_train, time_train, _ = build_samples(train_df)
-            seq_val, X_temp_val, y_val, time_val, _ = build_samples(val_df)
-            seq_test, X_temp_test, y_test, time_test, test_case_ids = build_samples(test_df)
+            seq_train, X_temp_train, y_train, time_train, _, elapsed_train = build_samples(train_df)
+            seq_val, X_temp_val, y_val, time_val, _, elapsed_val = build_samples(val_df)
+            seq_test, X_temp_test, y_test, time_test, test_case_ids, test_elapsed = build_samples(test_df)
 
             X_seq_train = keras.preprocessing.sequence.pad_sequences(
                 seq_train, maxlen=self.max_len, padding='pre', value=0
@@ -114,7 +117,7 @@ class EventTimePredictor:
             X_temp_val_scaled = self.scaler.transform(X_temp_val) if len(X_temp_val) else X_temp_val
             X_temp_test_scaled = self.scaler.transform(X_temp_test) if len(X_temp_test) else X_temp_test
         else:
-            sequences, X_temp, y_event_time, time_seq, case_ids = build_samples(df)
+            sequences, X_temp, y_event_time, time_seq, case_ids, elapsed_times = build_samples(df)
             print(f"Total training samples: {len(sequences):,}")
             print(f"Example sequence length range: {min(map(len, sequences))} to {max(map(len, sequences))}")
 
@@ -127,12 +130,12 @@ class EventTimePredictor:
 
             X_temp_scaled = self.scaler.fit_transform(X_temp)
 
-            X_seq_train, X_seq_temp, X_temp_train_scaled, X_temp_temp, X_time_train, X_time_temp, y_train, y_temp, c_ids_train, c_ids_temp = train_test_split(
-                X_seq, X_temp_scaled, X_time, y_event_time, case_ids, test_size=test_size, random_state=42
+            X_seq_train, X_seq_temp, X_temp_train_scaled, X_temp_temp, X_time_train, X_time_temp, y_train, y_temp, c_ids_train, c_ids_temp, elapsed_train, elapsed_temp = train_test_split(
+                X_seq, X_temp_scaled, X_time, y_event_time, case_ids, elapsed_times, test_size=test_size, random_state=42
             )
             
-            X_seq_val, X_seq_test, X_temp_val_scaled, X_temp_test_scaled, X_time_val, X_time_test, y_val, y_test, c_ids_val, test_case_ids = train_test_split(
-                X_seq_temp, X_temp_temp, X_time_temp, y_temp, c_ids_temp, test_size=val_split, random_state=42
+            X_seq_val, X_seq_test, X_temp_val_scaled, X_temp_test_scaled, X_time_val, X_time_test, y_val, y_test, c_ids_val, test_case_ids, elapsed_val, test_elapsed = train_test_split(
+                X_seq_temp, X_temp_temp, X_time_temp, y_temp, c_ids_temp, elapsed_temp, test_size=val_split, random_state=42
             )
 
             X_temp_train_scaled = X_temp_train_scaled
@@ -207,7 +210,8 @@ class EventTimePredictor:
             'X_seq_val': X_seq_val, 'X_temp_val': X_temp_val_scaled, 'y_val': y_val,
             'X_seq_test': X_seq_test, 'X_temp_test': X_temp_test_scaled, 'y_test': y_test,
             'X_time_train': X_time_train, 'X_time_val': X_time_val, 'X_time_test': X_time_test,
-            'test_case_ids': test_case_ids
+            'test_case_ids': test_case_ids,
+            'test_elapsed_times': test_elapsed
         }
     
     def _calculate_temporal_features(self, df):
@@ -371,10 +375,34 @@ class EventTimePredictor:
         else:
             case_indexes = [None] * len(data['y_test'])
             c_ids = [None] * len(data['y_test'])
+            
+        test_elapsed_times = data.get('test_elapsed_times', [0] * len(data['y_test']))
+        
+        decoded_sequences = []
+        for i, seq in enumerate(data['X_seq_test']):
+            try:
+                actual_seq = seq[seq > 0] - 1
+                if len(actual_seq) == 0:
+                    decoded_sequences.append("[]")
+                    continue
+                decoded = self.label_encoder.inverse_transform(actual_seq)
+                dec_list = decoded.tolist()
+                
+                cidx = case_indexes[i]
+                if cidx is not None and cidx > 0:
+                    cidx = int(cidx)
+                    if len(dec_list) > cidx:
+                        dec_list = dec_list[-cidx:]
+                        
+                decoded_sequences.append(json.dumps(dec_list))
+            except:
+                decoded_sequences.append("[]")
         
         results = pd.DataFrame({
             'case_id': c_ids,
             'case_index': case_indexes,
+            'sequence': decoded_sequences,
+            'current_elapsed_time_days': test_elapsed_times,
             'actual_event_time_days': data['y_test'],
             'predicted_event_time_days': y_pred,
             'absolute_error_days': np.abs(data['y_test'] - y_pred)

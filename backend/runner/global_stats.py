@@ -292,7 +292,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     overall_true_sum = 0
     overall_pred_sum = 0
     total_preds = len(preds)
-    is_regression = task == "remaining_time"
+    is_regression = task in ["remaining_time", "event_time", "time"]
 
     for p in preds:
         c_id = str(p.get("case_id"))
@@ -319,8 +319,8 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
                 prefix_len = len([x for x in seq.split(",") if x.strip()]) if seq else 1
 
         if is_regression:
-            true_val = float(p.get("actual_remaining_time_days", 0) or p.get("true_remaining_time_days", 0))
-            pred_val = float(p.get("predicted_remaining_time_days", 0))
+            true_val = float(p.get("actual_remaining_time_days") or p.get("true_remaining_time_days") or p.get("actual_event_time_days") or 0)
+            pred_val = float(p.get("predicted_remaining_time_days") or p.get("predicted_event_time_days") or 0)
             error = abs(true_val - pred_val)
             sq_error = (true_val - pred_val) ** 2
 

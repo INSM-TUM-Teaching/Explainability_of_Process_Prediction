@@ -179,7 +179,7 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
         
         from transformers.model import build_time_prediction_model
         model = build_time_prediction_model(vocab_size=vocab_size, max_len=max_len, num_heads=4, d_model=64, num_blocks=2, use_timestep_explainability=True)
-        model_path = os.path.join(artifacts_dir, "remaining_time_transformer.keras")
+        model_path = os.path.join(artifacts_dir, f"{task}_transformer.keras")
     else:
         X_sample = X_sample_seq
         bg_data = []
