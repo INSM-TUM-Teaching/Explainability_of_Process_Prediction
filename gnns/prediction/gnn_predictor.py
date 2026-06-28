@@ -125,6 +125,7 @@ class GNNPredictor:
                 case_end_timestamp = timestamps[-1]
                 for k in range(1, trace_len):
                     label_next_activity = activities[k]
+                    label_next_timestamp = timestamps[k]
                     for pos in range(k):
                         row = {
                             "CaseID": case_id,
@@ -138,6 +139,7 @@ class GNNPredictor:
                             "Timestamp": timestamps[pos],
                             "case_end_timestamp": case_end_timestamp,
                             "next_activity": label_next_activity,
+                            "next_timestamp": label_next_timestamp,
                         }
                         if trace_attrs:
                             row.update(trace_attrs)
@@ -180,6 +182,7 @@ class GNNPredictor:
             "next_activity",
             "__ts_log",
             "case_end_timestamp",
+            "next_timestamp",
         }
         trace_attributes = [col for col in prefix_df.columns if col not in IGNORE_COLS]
 
@@ -214,6 +217,7 @@ class GNNPredictor:
             ts_logs = prefix_df["__ts_log"].values
             timestamps = prefix_df["Timestamp"].tolist()
             case_end_timestamps = prefix_df["case_end_timestamp"].tolist()
+            next_timestamps = prefix_df["next_timestamp"].tolist()
             next_activities = prefix_df["next_activity"].values
             case_ids = prefix_df["CaseID"].values
 
@@ -325,11 +329,10 @@ class GNNPredictor:
                 next_act = act_map[next_act_name]
                 data.y_activity = torch.tensor([next_act], dtype=torch.long)
 
-                if k > 1:
-                    t_next = p_timestamps[1].timestamp()
-                else:
-                    t_next = p_timestamps[0].timestamp()
-                data.y_timestamp = torch.tensor([np.log1p(t_next)], dtype=torch.float32)
+                t_next_abs = next_timestamps[start_idx].timestamp()
+                t_now = p_timestamps[-1].timestamp()
+                time_to_next = max(0, t_next_abs - t_now)
+                data.y_timestamp = torch.tensor([np.log1p(time_to_next)], dtype=torch.float32)
 
                 t_end = case_end_timestamps[start_idx].timestamp()
                 t_now = p_timestamps[-1].timestamp()
@@ -542,7 +545,7 @@ class GNNPredictor:
         patience=10,
         # `num_workers` make it either 4, 8 or 10 based on PC
         # its basically the number of CPU subprocess
-        num_workers=4,
+        num_workers=0,
         log_every=200,
         train_eval_batches=25,
     ):
@@ -684,8 +687,8 @@ class GNNPredictor:
                                 int(pred_act[i]), pred_act[i]
                             ),
                             "confidence_percent": round(float(confidences[i]), 2),
-                            "actual_event_time_days": float(y_time[i]),
-                            "predicted_event_time_days": float(pred_time[i]),
+                            "actual_event_time_days": float(np.expm1(y_time[i]) / 86400.0),
+                            "predicted_event_time_days": float(np.expm1(pred_time[i]) / 86400.0),
                             "actual_remaining_time_days": float(np.expm1(y_rem[i]) / 86400.0),
                             "predicted_remaining_time_days": float(np.expm1(pred_rem[i]) / 86400.0),
                             "current_elapsed_time_days": float(elapsed_days),
