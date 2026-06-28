@@ -178,6 +178,13 @@ class BESTRunner:
                     pred_output = self.model._predict_sequence(prefix=prefix_sequence, 
                                                               eval_pattern_size=eval_pattern_size, 
                                                               break_after_seq_len=break_after_seq_len)
+                    
+                    if filter_seqs:
+                        try:
+                            from best4ppm.util.sequence_utils import _filter_start_end
+                            pred_output = _filter_start_end(pred_output, self.model.start_activity, self.model.end_activity)
+                        except Exception:
+                            pass
 
                 self.predictions.append(pred_output)
                 
@@ -303,15 +310,26 @@ class BESTRunner:
             conf = probs[i] if i < len(probs) else None
             correct = int(true_next == pred_next) if (true_next is not None and pred_next is not None) else None
 
-            rows.append({
-                "case_id": case_id,
-                "case_index": case_index,
-                "sequence": json.dumps(filtered_seq),
-                "true_next_activity": true_next,
-                "predicted_next_activity": pred_next,
-                "confidence": conf,
-                "correct": correct
-            })
+            if self.task == "rtp":
+                rows.append({
+                    "case_id": case_id,
+                    "case_index": case_index,
+                    "sequence": json.dumps(filtered_seq),
+                    "actual_remaining_trace": true_next,
+                    "predicted_remaining_trace": pred_next,
+                    "confidence": conf,
+                    "correct": correct
+                })
+            else:
+                rows.append({
+                    "case_id": case_id,
+                    "case_index": case_index,
+                    "sequence": json.dumps(filtered_seq),
+                    "true_next_activity": true_next,
+                    "predicted_next_activity": pred_next,
+                    "confidence": conf,
+                    "correct": correct
+                })
 
         df_out = pd.DataFrame(rows)
         out_path = os.path.join(output_dir, "best_predictions.csv")
@@ -492,6 +510,10 @@ class BESTRunner:
             if seq is None:
                 result.append(None)
             else:
-                decoded = [self._decode_activity(idx) for idx in seq if idx is not None]
-                result.append(", ".join(str(a) for a in decoded))
+                decoded = []
+                for idx in seq:
+                    if idx is not None:
+                        act = self._decode_activity(idx)
+                        decoded.append(act)
+                result.append(", ".join(str(x) for x in decoded))
         return result

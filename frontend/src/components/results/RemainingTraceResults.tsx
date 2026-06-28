@@ -46,7 +46,9 @@ export default function RemainingTraceResults({ runId, summary, uploadedFileName
                 ...row,
                 case_id: String(row.case_id).replace(/^Case\s+/i, ""),
                 case_index: parseInt(String(row.case_index), 10),
-                confidence: parseFloat(String(row.confidence)) || 0
+                confidence: parseFloat(String(row.confidence)) || 0,
+                true_next_activity: row.actual_remaining_trace || row.true_next_activity,
+                predicted_next_activity: row.predicted_remaining_trace || row.predicted_next_activity
               }));
             setPredictions(validData);
           } else {
