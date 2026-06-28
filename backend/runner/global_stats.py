@@ -308,8 +308,8 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
             except Exception:
                 prefix_len = len([x for x in seq.split(",") if x.strip()]) if seq else 1
 
-        true_act = p.get("true_next_activity") or p.get("actual_next_activity")
-        pred_act = p.get("predicted_next_activity")
+        true_act = p.get("true_next_activity") or p.get("actual_next_activity") or p.get("actual_remaining_trace")
+        pred_act = p.get("predicted_next_activity") or p.get("predicted_remaining_trace")
 
         is_correct = (true_act == pred_act)
         if is_correct:
