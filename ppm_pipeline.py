@@ -632,3 +632,161 @@ def run_best_explainability(runner, output_dir, task):
         runner=runner,
     )
     explainer.explain()
+
+def run_outcome_prediction(
+    dataset_path,
+    output_dir,
+    model_type,
+    test_size,
+    val_split,
+    config,
+    explainability_method=None,
+    target_column=None,
+    skip_auto_mapping=False,
+):
+    """
+    Dispatcher for the Outcome Prediction task across different models.
+    """
+    import pandas as pd
+    
+    print(f"[OUTCOME PREDICTION] Starting for model: {model_type}")
+    
+    df = pd.read_csv(dataset_path)
+    
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
+
+    # Use Activity as the default outcome target if not specified
+    target_col = target_column if target_column else 'Activity'
+    
+    if model_type == "transformer":
+        from transformers.prediction.outcome import OutcomePredictor
+        
+        predictor = OutcomePredictor(
+            max_len=config.get('max_len', 16),
+            d_model=config.get('d_model', 64),
+            num_heads=config.get('num_heads', 4),
+            num_blocks=config.get('num_blocks', 2),
+            dropout_rate=config.get('dropout_rate', 0.1)
+        )
+        
+        data = predictor.prepare_data(
+            df,
+            target_column=target_col,
+            test_size=test_size,
+            val_split=val_split,
+            max_cases=config.get("max_cases"),
+            max_prefixes_per_case=config.get("max_prefixes_per_case")
+        )
+        
+        predictor.build_model()
+        predictor.train(
+            data,
+            epochs=config.get('epochs', 5),
+            batch_size=config.get('batch_size', 128),
+            patience=config.get('patience', 10)
+        )
+        
+        metrics = predictor.evaluate(data)
+        y_pred, y_pred_probs = predictor.predict(data)
+        predictor.save_results(data, y_pred, y_pred_probs, output_dir)
+        predictor.plot_training_history(output_dir)
+        predictor.plot_confusion_matrix(data, output_dir)
+        predictor.save_model(output_dir)
+
+        if explainability_method:
+            from explainability.transformers.transformer_explainer import run_transformer_explainability
+            print(f"[EXPLAINABILITY] Running for transformer (method={explainability_method})")
+            run_transformer_explainability(
+                model=predictor.model,
+                data=data,
+                output_dir=output_dir,
+                task="outcome",
+                label_encoder=predictor.outcome_encoder,
+                scaler=None,
+                methods=explainability_method
+            )
+
+        return metrics
+        
+    elif model_type == "gnn":
+        from gnns.prediction.gnn_predictor import GNNPredictor
+        
+        predictor = GNNPredictor(
+            hidden_channels=config.get('hidden', 64),
+            dropout=config.get('dropout_rate', 0.1),
+            lr=config.get('lr', 4e-4),
+            task='outcome'
+        )
+
+        data = predictor.prepare_data(
+            df,
+            test_size=test_size,
+            val_split=val_split,
+            target_column=target_col
+        )
+
+        predictor.build_model(
+            data['sample_graph'],
+            batch_size=config.get('batch_size', 64),
+            num_outcome_classes=len(data['vocabs']['Outcome'])
+        )
+
+        predictor.train(
+            data,
+            epochs=config.get('epochs', 50),
+            batch_size=config.get('batch_size', 64),
+            patience=config.get('patience', 10)
+        )
+
+        metrics = predictor.evaluate_test(data, batch_size=config.get('batch_size', 64))
+        predictor.save_model(output_dir)
+        predictor.plot_training_history(output_dir)
+        predictor.save_results(metrics, output_dir, data=data)
+
+        if explainability_method:
+            from explainability.gnns.gnn_explainer import run_gnn_explainability
+            print(f"[EXPLAINABILITY] Running for GNN (method={explainability_method})")
+            vocabularies = data.get("vocabs", {})
+            run_gnn_explainability(
+                model=predictor.model,
+                data=data,
+                output_dir=output_dir,
+                device=predictor.device,
+                vocabularies=vocabularies,
+                methods=explainability_method,
+                tasks="outcome"
+            )
+
+        return metrics
+    elif model_type == "best":
+        from best.predictor import BESTRunner
+
+        runner = BESTRunner(config=config, task="outcome", target_column=target_col)
+        runner.prepare_data(df, test_size=test_size)
+        runner.fit()
+        runner.predict()
+        metrics = runner.evaluate()
+        
+        runner.save_model(output_dir)
+        runner.save_results(output_dir)
+        runner.plot_performance(output_dir)
+
+        if explainability_method:
+            from explainability.best.best_explainer import BESTExplainer
+            print(f"[EXPLAINABILITY] Running for BEST (method={explainability_method})")
+            explainer = BESTExplainer(
+                model=runner.model,
+                output_dir=output_dir,
+                task="outcome",
+                runner=runner
+            )
+            explainer.explain()
+
+        return metrics
+    else:
+        raise RuntimeError(f"Unsupported model_type for outcome prediction: {model_type}")

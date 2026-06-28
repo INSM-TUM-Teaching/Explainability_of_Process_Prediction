@@ -58,6 +58,7 @@ class GNNPredictor:
         self.dropout = dropout
         self.lr = lr
         self.loss_weights = loss_weights
+        self.task = task
 
         self.model = None
         self.optimizer = None
@@ -81,8 +82,21 @@ class GNNPredictor:
         else:
             return torch.device("cpu")
 
-    def prepare_data(self, df, test_size=0.3, val_split=0.5):
+    def prepare_data(self, df, test_size=0.3, val_split=0.5, target_column='Activity',
+                     prefix_lengths=None, max_len=None):
         from torch_geometric.data import HeteroData
+        from utils.outcome_utils import extract_case_outcomes
+        
+        print(f"\nPreparing data for GNN (Task: {self.task})...")
+        # Ensure Timestamp is datetime before any time-based operations
+        df = df.copy()
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"], utc=False)
+        split_col = "__split" if "__split" in df.columns else None
+
+        outcome_series = None
+        if self.task == "outcome":
+            outcome_series = extract_case_outcomes(df, 'CaseID', 'Timestamp', target_column)
+        
 
         print("\nPreparing data for GNN...")
         split_col = "__split" if "__split" in df.columns else None
@@ -122,6 +136,11 @@ class GNNPredictor:
                     else None
                 )
 
+                limit = trace_len if max_len is None else min(trace_len, max_len + 1)
+                for k in range(1, limit):
+                    # Apply prefix-length filter if specified
+                    if prefix_lengths is not None and k not in prefix_lengths:
+                        continue
                 case_end_timestamp = timestamps[-1]
                 for k in range(1, trace_len):
                     label_next_activity = activities[k]
@@ -152,6 +171,9 @@ class GNNPredictor:
 
             prefix_df = pd.DataFrame(rows)
             print(f"Generated {len(prefix_df):,} prefix rows")
+            # Convert Timestamp to datetime64 (it may be a string or numpy object array
+            # when pulled out of the group via .to_numpy())
+            prefix_df["Timestamp"] = pd.to_datetime(prefix_df["Timestamp"], utc=False)
             prefix_df["__ts_log"] = np.log1p(
                 prefix_df["Timestamp"].astype("int64") // 1_000_000_000
             ).astype("float32")
@@ -168,6 +190,13 @@ class GNNPredictor:
         vocabs["Activity"] = {v: i for i, v in enumerate(values)}
         res_vals = sorted(prefix_df["Resource"].unique().tolist())
         vocabs["Resource"] = {v: i for i, v in enumerate(res_vals)}
+        
+        if self.task == "outcome":
+            outcomes_unique = sorted(outcome_series.dropna().unique().tolist())
+            vocabs["Outcome"] = {v: i for i, v in enumerate(outcomes_unique)}
+            self.outcome_decoder = {i: v for v, i in vocabs["Outcome"].items()}
+        
+        IGNORE_COLS = {"CaseID", "prefix_id", "prefix_pos", "prefix_length", "Activity", "Resource", "Timestamp", "next_activity", "__ts_log"}
 
         IGNORE_COLS = {
             "CaseID",
@@ -334,6 +363,13 @@ class GNNPredictor:
                 t_end = case_end_timestamps[start_idx].timestamp()
                 t_now = p_timestamps[-1].timestamp()
                 remaining = max(0, t_end - t_now)
+                data.y_remaining_time = torch.tensor([np.log1p(remaining)], dtype=torch.float32)
+
+                if self.task == "outcome":
+                    case_id = p.iloc[0]["CaseID"]
+                    true_outcome = outcome_series[case_id]
+                    outcome_idx = vocabs["Outcome"][true_outcome]
+                    data.y_outcome = torch.tensor([outcome_idx], dtype=torch.long)
                 data.y_remaining_time = torch.tensor(
                     [np.log1p(remaining)], dtype=torch.float32
                 )
@@ -425,7 +461,7 @@ class GNNPredictor:
             "sample_graph": dataset[0],
         }
 
-    def build_model(self, sample_graph, num_activity_classes=None, **kwargs):
+    def build_model(self, sample_graph, batch_size=64, num_workers=0, num_activity_classes=None, num_outcome_classes=None):
         print("\nBuilding GNN model...")
 
         metadata = sample_graph.metadata()
@@ -443,11 +479,13 @@ class GNNPredictor:
             num_activity_classes=num_classes,
             dropout=self.dropout,
             loss_weights=self.loss_weights,
+            task=self.task,
+            num_outcome_classes=num_outcome_classes,
         ).to(self.device)
 
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
 
-        print(f"Model built with {num_classes} activity classes")
+        print(f"Model built with {num_classes} activity classes and task={self.task}")
         print(f"Using device: {self.device}")
 
     def create_loaders(
@@ -484,8 +522,8 @@ class GNNPredictor:
 
         for batch_idx, batch in enumerate(loader, 1):
             batch = batch.to(self.device)
-            act_logits, time_pred, rem_pred = self.model(batch)
-            loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch)
+            outputs = self.model(batch)
+            loss = self.model.compute_loss(outputs, batch)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -510,20 +548,29 @@ class GNNPredictor:
         with torch.no_grad():
             for batch in loader:
                 batch = batch.to(self.device)
-                act_logits, time_pred, rem_pred = self.model(batch)
-                loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch)
+                outputs = self.model(batch)
+                loss = self.model.compute_loss(outputs, batch)
                 total_loss += loss.item()
                 batches += 1
 
-                y_act = batch.y_activity.view(-1)
-                pred = act_logits.argmax(dim=1)
-                correct += (pred == y_act).sum().item()
-                total += y_act.numel()
+                if self.task == "outcome":
+                    outcome_logits = outputs
+                    y_outcome = batch.y_outcome.view(-1)
+                    pred = outcome_logits.argmax(dim=1)
+                    correct += (pred == y_outcome).sum().item()
+                    total += y_outcome.numel()
+                else:
+                    act_logits, time_pred, rem_pred = outputs
+                    y_act = batch.y_activity.view(-1)
+                    pred = act_logits.argmax(dim=1)
+                    correct += (pred == y_act).sum().item()
+                    total += y_act.numel()
 
-                y_time = batch.y_timestamp.view(-1)
-                y_rem = batch.y_remaining_time.view(-1)
-                mae_time += torch.abs(time_pred - y_time).mean().item()
-                mae_rem += torch.abs(rem_pred - y_rem).mean().item()
+                    y_time = batch.y_timestamp.view(-1)
+                    y_rem = batch.y_remaining_time.view(-1)
+                    mae_time += torch.abs(time_pred - y_time).mean().item()
+                    mae_rem += torch.abs(rem_pred - y_rem).mean().item()
+                
                 if max_batches is not None and batches >= max_batches:
                     break
 
@@ -744,65 +791,82 @@ class GNNPredictor:
 
         print(f"Training history plot saved to: {output_path}")
 
-    def save_results(self, metrics, output_dir):
+    def save_results(self, metrics, output_dir, data=None):
         os.makedirs(output_dir, exist_ok=True)
+
+        if self.task == "outcome" and data is not None:
+            self._save_outcome_csv(data['test'], output_dir)
 
         results_file = os.path.join(output_dir, "gnn_results.txt")
         with open(results_file, "w") as f:
             f.write("=" * 50 + "\n")
             f.write("GNN MODEL - EVALUATION RESULTS\n")
-            f.write("=" * 50 + "\n\n")
-            f.write(f"Test Accuracy (Activity):  {metrics['accuracy']*100:.2f}%\n")
-            f.write(f"Test MAE (Event Time):     {metrics['mae_time']:.4f}\n")
-            f.write(f"Test MAE (Remaining Time): {metrics['mae_rem']:.4f}\n")
-            f.write(f"Test Loss:                 {metrics['loss']:.4f}\n")
-            f.write("\n" + "=" * 50 + "\n")
+            f.write("="*50 + "\n\n")
+            if self.task == "outcome":
+                f.write(f"Test Accuracy (Outcome):   {metrics['accuracy']*100:.2f}%\n")
+                f.write(f"Test Loss:                 {metrics['loss']:.4f}\n")
+            else:
+                f.write(f"Test Accuracy (Activity):  {metrics['accuracy']*100:.2f}%\n")
+                f.write(f"Test MAE (Event Time):     {metrics['mae_time']:.4f}\n")
+                f.write(f"Test MAE (Remaining Time): {metrics['mae_rem']:.4f}\n")
+                f.write(f"Test Loss:                 {metrics['loss']:.4f}\n")
+            f.write("\n" + "="*50 + "\n")
 
         print(f"Results saved to: {results_file}")
 
-        if "predictions_df" in metrics:
-            pred_file = os.path.join(output_dir, "gnn_predictions.csv")
-            # Create clean case id similarly
-            df = metrics["predictions_df"].copy()
-            df["case_id"] = (
-                df["case_id"]
-                .astype(str)
-                .str.replace("Case ", "", regex=False)
-                .str.replace("case ", "", regex=False)
-                .str.replace(" ", "_")
-                .str.strip()
-            )
+    def _save_outcome_csv(self, test_graphs, output_dir):
+        """Save predictions to outcome_predictions.csv with decoded sequences."""
+        from torch_geometric.data import Batch
 
-            # Filter out target columns we didn't train on (loss weight == 0.0)
-            if hasattr(self, "loss_weights"):
-                if self.loss_weights[0] == 0.0:
-                    df = df.drop(
-                        columns=[
-                            "true_next_activity",
-                            "predicted_next_activity",
-                            "confidence_percent",
-                        ],
-                        errors="ignore",
-                    )
-                if self.loss_weights[1] == 0.0:
-                    df = df.drop(
-                        columns=["actual_event_time_days", "predicted_event_time_days"],
-                        errors="ignore",
-                    )
-                if self.loss_weights[2] == 0.0:
-                    df = df.drop(
-                        columns=[
-                            "actual_remaining_time_days",
-                            "predicted_remaining_time_days",
-                        ],
-                        errors="ignore",
-                    )
+        self.model.eval()
 
-            df.to_csv(pred_file, index=False)
-            print(f"Predictions saved to: {pred_file}")
+        # Build a reverse vocab for Activity decoding (index -> name)
+        activity_vocab = getattr(self, 'vocabs', {}).get('Activity', {})
+        idx_to_activity = {v: k for k, v in activity_vocab.items()}
 
-            json_file = os.path.join(output_dir, "gnn_predictions.json")
-            df.to_json(json_file, orient="records", indent=2)
+        results = []
+        with torch.no_grad():
+            for i in range(len(test_graphs)):
+                graph = test_graphs[i]
+                batch = Batch.from_data_list([graph]).to(self.device)
 
-            # Remove from metrics dictionary so it doesn't break JSON serialization down the line
-            del metrics["predictions_df"]
+                outputs = self.model(batch)
+                probs = F.softmax(outputs, dim=1)
+
+                pred_idx = probs.argmax(dim=1).item()
+                conf = probs[0][pred_idx].item() * 100
+                true_idx = graph.y_outcome.item()
+
+                pred_decoded = self.outcome_decoder.get(pred_idx, str(pred_idx))
+                true_decoded = self.outcome_decoder.get(true_idx, str(true_idx))
+
+                # Recover prefix length from the activity node count
+                seq_len = graph["activity"].x.shape[0]
+
+                # Decode the activity sequence from one-hot encoding
+                act_one_hot = graph["activity"].x  # shape: (seq_len, num_activities)
+                act_indices = act_one_hot.argmax(dim=1).tolist()
+                decoded_acts = [idx_to_activity.get(idx, f"act_{idx}") for idx in act_indices]
+                prefix_sequence = ", ".join(decoded_acts)
+
+                # Recover case_id if stored on the graph, else fall back to index
+                case_id = getattr(graph, 'case_id', f"test_{i}")
+
+                results.append({
+                    "case_id": case_id,
+                    "prefix_length": seq_len,
+                    "prefix_sequence": prefix_sequence,
+                    "true_outcome": true_decoded,
+                    "predicted_outcome": pred_decoded,
+                    "correct": true_decoded == pred_decoded,
+                    "confidence_percent": round(conf, 2),
+                })
+
+        df = pd.DataFrame(results)
+        total = len(df)
+        correct = df["correct"].sum() if total > 0 else 0
+        csv_path = os.path.join(output_dir, "outcome_predictions.csv")
+        df.to_csv(csv_path, index=False)
+        print(f"Detailed outcome predictions saved to: {csv_path} ({total} rows)")
+        if total > 0:
+            print(f"Overall accuracy: {correct}/{total} ({100*correct/total:.1f}%)")

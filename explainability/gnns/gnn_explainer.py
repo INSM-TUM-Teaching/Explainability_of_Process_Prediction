@@ -242,6 +242,11 @@ class GradientExplainer:
         elif task == "remaining_time":
             score = out[2]
             true_val = graph.y_remaining_time.item()
+        elif task in ['activity', 'outcome']:
+            logits = out[0] if task == 'activity' else out
+            predicted_class = logits.argmax()
+            score = logits[predicted_class]
+            true_val = graph.y_activity.item() if task == 'activity' else graph.y_outcome.item()
         elif task in ["activity", "next_activity"]:
             predicted_class = out[0].argmax()
             score = out[0].view(-1)[predicted_class]
@@ -275,6 +280,12 @@ class GradientExplainer:
                     if "resource" in graph.x_dict:
                         res_inp = graph.x_dict["resource"][step]
                         res_idx = res_inp.argmax().item()
+                        info['resource'] = self._get_resource_name(res_idx)
+                
+                elif task in ['activity', 'outcome']:
+                    if 'activity' in graph.x_dict and graph.x_dict['activity'].grad is not None:
+                        act_grad = graph.x_dict['activity'].grad[step]
+                        act_inp = graph.x_dict['activity'][step]
                         info["resource"] = self._get_resource_name(res_idx)
 
                 elif task in ["activity", "next_activity"]:
@@ -877,15 +888,15 @@ class TemporalGradientExplainer:
             if score.numel() > 1:
                 score = score.sum()
             true_val = graph.y_remaining_time.item()
-        elif task == "activity":
-            logits = out[0]
+        elif task in ['activity', 'outcome']:
+            logits = out[0] if task == 'activity' else out
             if logits.dim() > 1:
                 logits = logits[0]
             predicted_class = logits.argmax()
             score = logits[predicted_class]
             if score.numel() > 1:
                 score = score.sum()
-            true_val = graph.y_activity.item()
+            true_val = graph.y_activity.item() if task == 'activity' else graph.y_outcome.item()
         else:
             return None, None, None, None
 
@@ -1377,12 +1388,12 @@ class GraphLIMEExplainer:
             elif task == "remaining_time":
                 base_score = out[2].item()
                 true_val = graph.y_remaining_time.item()
-            else:
-                logits = out[0].view(-1)
+            elif task in ['activity', 'outcome']:
+                logits = out[0].view(-1) if task == 'activity' else out.view(-1)
                 probs = torch.softmax(logits, dim=0)
                 predicted_class = int(torch.argmax(probs).item())
                 base_score = float(probs[predicted_class].item())
-                true_val = float(graph.y_activity.view(-1)[0].item())
+                true_val = float(graph.y_activity.view(-1)[0].item() if task == 'activity' else graph.y_outcome.view(-1)[0].item())
 
         activity_features = (
             graph["activity"].x.shape[1] if "activity" in graph.x_dict else 0
@@ -1475,6 +1486,18 @@ class GraphLIMEExplainer:
                     masked_graph["resource"].x * res_mask_tensor
                 )
 
+            with torch.no_grad():
+                out_p = self.model(masked_graph)
+                if task == 'event_time':
+                    score = out_p[1].item()
+                elif task == 'remaining_time':
+                    score = out_p[2].item()
+                elif task in ['activity', 'outcome']:
+                    logits = out_p[0].view(-1) if task == 'activity' else out_p.view(-1)
+                    probs = torch.softmax(logits, dim=0)
+                    cls = predicted_class if predicted_class is not None else int(torch.argmax(probs).item())
+                    score = float(probs[cls].item())
+                y_perturb.append(score)
             perturbed_graphs.append(masked_graph)
 
         # Batch inference
@@ -1581,6 +1604,28 @@ class GraphLIMEExplainer:
             linewidth=0.8,
         )
 
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(df["Feature"].tolist(), fontsize=9)
+        ax.set_xlabel('Feature Contribution (GraphLIME)', fontweight='bold', fontsize=12)
+
+        task_name = task.replace('_', ' ').title()
+        if task in ['activity', 'outcome']:
+            if task == 'outcome' and 'Outcome' in self.vocabs:
+                inv_vocab = {v: k for k, v in self.vocabs['Outcome'].items()}
+                pred_activity = inv_vocab.get(int(predicted_class), f"Outcome_{predicted_class}") if predicted_class is not None else "Unknown"
+                if true_val is not None:
+                    true_activity = inv_vocab.get(int(true_val), f"Outcome_{true_val}")
+            else:
+                pred_activity = self._get_activity_name(int(predicted_class)) if predicted_class is not None else "Unknown"
+                if true_val is not None:
+                    true_activity = self._get_activity_name(int(true_val))
+                    
+            if true_val is not None:
+                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%), True: {true_activity}"
+            else:
+                subtitle = f"Prediction: {pred_activity} ({base_score*100:.1f}%)"
+        else:
+            subtitle = f"Prediction: {base_score:.3f}" + (f", True: {true_val:.3f}" if true_val is not None else "")
         for i, bar in enumerate(bars):
             val = df["importance"].values[i]
             offset = 0.01 if val >= 0 else -0.01
@@ -1733,7 +1778,7 @@ class ExplainabilityBenchmark:
             return self.model(graph)
 
     def _select_output(self, out):
-        if self.task in ["activity", "next_activity"]:
+        if self.task in ['activity', 'next_activity', 'outcome']:
             return out[0]
         if self.task == "event_time":
             return out[1]
@@ -1741,7 +1786,7 @@ class ExplainabilityBenchmark:
 
     def _prediction_value(self, out):
         pred = self._select_output(out)
-        if self.task in ["activity", "next_activity"]:
+        if self.task in ['activity', 'next_activity', 'outcome']:
             return pred.max()
         return pred.mean()
 
@@ -1796,7 +1841,7 @@ class ExplainabilityBenchmark:
                 g.x_dict[key].requires_grad = True
 
             out = self.model(g)
-            if self.task in ["activity", "next_activity"]:
+            if self.task in ['activity', 'next_activity', 'outcome']:
                 logits = out[0]
                 pred_idx = logits.argmax(dim=1)
                 score = logits[0, pred_idx]
@@ -1918,7 +1963,9 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task in ["activity", "next_activity"]:
+                if self.task in ['activity', 'outcome', "next_activity"]:
+
+
                     pred_change = (orig_pred - masked_pred).abs().max().item()
                 else:
                     pred_change = (orig_pred - masked_pred).abs().mean().item()
@@ -1979,7 +2026,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task in ["activity", "next_activity"]:
+                if self.task in ['activity', 'next_activity', 'outcome']:
                     comp = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     comp = (orig_pred - masked_pred).abs().mean().item()
@@ -2026,7 +2073,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task in ["activity", "next_activity"]:
+                if self.task in ['activity', 'next_activity', 'outcome']:
                     suff = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     suff = (orig_pred - masked_pred).abs().mean().item()
@@ -2686,6 +2733,36 @@ def run_gnn_explainability(
             print(f"\n[{task.upper()}]")
 
             try:
+                if task in ['activity', 'outcome']:
+                    imp = explainer.explain_global_activity(graphs, num_samples)
+                    explainer.plot_global_importance_activity(imp, grad_dir)
+                    
+                elif task in ['event_time', 'remaining_time']:
+                    print(f"  Creating individual sample explanations...")
+                    num_individual = min(5, len(graphs))
+                    
+                    sample_indices = []
+                    if len(graphs) > 100:
+                        sample_indices = [
+                            len(graphs) // 4,
+                            len(graphs) // 2,
+                            3 * len(graphs) // 4,
+                            len(graphs) - 100,
+                            len(graphs) - 50,
+                        ]
+                    else:
+                        start = min(10, len(graphs) // 3)
+                        sample_indices = list(range(start, min(start + num_individual, len(graphs))))
+                    
+                    for i, idx in enumerate(sample_indices):
+                        print(f"  Sample {i} (graph index {idx}):")
+                        graph = graphs[idx]
+                        contrib, pred, true_val, step_info = explainer.explain_individual_sample(graph, task)
+                        explainer.plot_individual_gradient_explanation(contrib, pred, true_val, step_info, grad_dir, task, i)
+                
+                else:
+                    print(f"  [SKIP] No gradient handler for task '{task}'")
+                    
                 print(f"  Creating global summary for {task}...")
                 imp = explainer.explain_global_importance(
                     graphs, task=task, num_samples=num_samples
@@ -2693,7 +2770,9 @@ def run_gnn_explainability(
                 explainer.plot_global_importance(imp, grad_dir, task=task)
 
             except Exception as e:
+                import traceback
                 print(f"[ERROR] Failed {task}: {e}")
+                traceback.print_exc()
         if not _dir_has_png(grad_dir):
             print("[WARNING] No gradient plots generated.")
 
@@ -2810,6 +2889,12 @@ def run_gnn_explainability(
             combined_df.to_csv(combined_path, index=False)
             print(f"[OK] Combined benchmark summary saved to: {combined_path}")
 
+    if methods in ['gradient', 'all'] and not _dir_has_png(os.path.join(output_dir, 'gradient')):
+        print("[WARNING] GNN explainability: gradient plots were not generated.")
+    if methods == 'temporal' and not _dir_has_png(os.path.join(output_dir, 'temporal')):
+        print("[WARNING] GNN explainability: temporal plots were not generated.")
+    if methods in ['lime', 'all'] and not _dir_has_png(os.path.join(output_dir, 'graphlime')):
+        print("[WARNING] GNN explainability: GraphLIME plots were not generated.")
     if methods in ["gradient", "all"] and not _dir_has_png(
         os.path.join(output_dir, "gradient")
     ):

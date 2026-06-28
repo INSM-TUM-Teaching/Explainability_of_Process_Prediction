@@ -174,7 +174,6 @@ class BESTExplainer:
                 seq_indices = [int(idx) for idx in pattern_seq.split(",")]
                 decoded_seq = [self.runner._decode_activity(idx) for idx in seq_indices]
                 
-                # Predicted next activity (or remaining trace) for this pattern
                 center_idx = len(seq_indices) // 2
                 
                 if getattr(self.runner, "task", None) == "rtp":
@@ -308,10 +307,7 @@ class BESTExplainer:
                 pid = pattern_id_map.get(pattern_name)
                 if pid:
                     pattern_len = len(pattern_name.split(","))
-                    # BEST patterns match with their center as the prediction.
-                    # A pattern of length L has (L // 2) activities to the left of the center.
-                    # These (L // 2) activities are matched against the prefix.
-                    num_prefix_elements = pattern_len // 2
+                    num_prefix_elements = (pattern_len // 2) + 1
                     start_offset = max(0, case_index - num_prefix_elements)
                     end_offset = case_index - 1
                     
@@ -365,58 +361,58 @@ class BESTExplainer:
             if predictions is None or len(predictions) == 0:
                 return None, 0
 
+            if self.task not in ["nap", "outcome"]:
+                return None, 0
+
             prefixes = runner.test_seq.relevant_prefixes
             n = min(len(prefixes), len(predictions))
-            preds = predictions[:n]
-            
-            if self.task == "nap":
-                actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
-                tracker = getattr(self.model, "choice_tracker_nap", {})
-            else:
-                actuals_enc = getattr(runner.test_seq, "full_future_sequences", [None] * n)
-                tracker = getattr(self.model, "choice_tracker_rtp", {})
-                decoded_rtp_preds = runner._decode_rtp(preds)
-
-            probs = tracker.get("prob", [None] * n)
             padding_size = getattr(self.model, "_padding_size", 0)
+            
+            if self.task == "outcome":
+                tracker = getattr(self.model, "choice_tracker_rtp", {})
+                probs = tracker.get("prob", [None] * n)
+                true_vals = getattr(runner, "outcome_y_true", [None] * n)
+                pred_vals = getattr(runner, "outcome_y_pred", [None] * n)
+            else:
+                tracker = getattr(self.model, "choice_tracker_nap", {})
+                probs = tracker.get("prob", [None] * n)
+                actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
 
             rows = []
             import json
             for i in range(n):
                 prefix_data = prefixes[i]
-                case_id = str(prefix_data["case_id"])
                 raw_seq = prefix_data["prefix"]
                 real_seq_enc = raw_seq[padding_size:]
                 
-                decoded_seq = [runner._decode_activity(a) for a in real_seq_enc]
-                filtered_seq = [a for a in decoded_seq if a not in ["START", "END"]]
-                
-                case_index = len(filtered_seq)
+                case_index = len(real_seq_enc)
                 if case_index == 0:
                     continue
 
-                if self.task == "nap":
-                    true_next = runner._decode_activity(actuals_enc[i])
-                    pred_next = runner._decode_activity(preds[i])
+                decoded_seq = [runner._decode_activity(a) for a in real_seq_enc]
+                # Filter out START/END for the UI sequence
+                filtered_seq = [a for a in decoded_seq if a not in ["START", "END"]]
+                
+                if self.task == "outcome":
+                    true_val = true_vals[i]
+                    pred_val = pred_vals[i]
                 else:
-                    pred_next = decoded_rtp_preds[i]
-                    seq = actuals_enc[i]
-                    if seq is None:
-                        true_next = None
-                    else:
-                        true_next = ", ".join(str(runner._decode_activity(idx)) for idx in seq if idx is not None)
-
+                    true_val = runner._decode_activity(actuals_enc[i])
+                    pred_val = runner._decode_activity(predictions[i])
+                
                 rows.append({
-                    "case_id": case_id,
-                    "case_index": case_index,
+                    "case_id": str(prefix_data["case_id"]),
+                    "case_index": len(filtered_seq), # Update case_index to reflect true length
                     "sequence": json.dumps(filtered_seq),
-                    "true_next": true_next,
-                    "pred_next": pred_next,
+                    "true_next": true_val,
+                    "pred_next": pred_val,
                     "confidence": probs[i] if i < len(probs) else None
                 })
             
             return pd.DataFrame(rows), n
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"[BEST Explainer] Warning: could not build prediction frame: {e}")
             return None, 0
 

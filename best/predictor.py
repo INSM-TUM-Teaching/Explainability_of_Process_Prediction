@@ -17,6 +17,8 @@ class BESTPredictorCustom(BESTPredictor):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.all_matches_tracker = [] # List of {'case_id': ..., 'case_index': ..., 'matches': [...]}
+        self.outcome_mapping = None # Maps final activity (or trace token) to its actual outcome string
+        self.prefix_to_outcome_train = None # Used for outcome mapping directly from training prefixes if needed.
 
     def _pred_for_process_stage(self, eval_pattern_size: int, stage: int, sequence: list[int], verbose: bool = False) -> tuple[list[int], dict]:
         # We call the original but also capture all matching patterns
@@ -35,12 +37,14 @@ class BESTPredictorCustom(BESTPredictor):
         lens_all_children = [len(p['name'].split(',')) for p in all_applying_children]
         applying_children = [c for c, c_len in zip(all_applying_children, lens_all_children) if c_len <= eval_pattern_size]
 
+        # Store these for pattern_analysis.json
         # Store temporarily to match with case identifiers in the predictor loop for pattern analysis
         self._last_all_matches = applying_children
 
         if len(applying_children) == 0:
             return [], {}
 
+        # Rest of original logic to pick the best one
         # Select the best matching child pattern based on probabilities and lengths
         probs = [p['prob'] for p in applying_children]
         global_probs = [p['global_prob'] for p in applying_children]
@@ -71,35 +75,62 @@ class BESTPredictorCustom(BESTPredictor):
 class BESTRunner:
     """Adapter that wraps BESTPredictor + SequenceData into the pipeline interface."""
 
-    def __init__(self, config: dict, task: str):
+    def __init__(self, config: dict, task: str, target_column: str = "Activity"):
         """
         Args:
             config: dict with keys:
                 max_pattern_size_train, max_pattern_size_eval,
                 process_stage_width_percentage, min_freq,
                 break_buffer, filter_sequences, ncores
-            task: 'nap' (next activity) or 'rtp' (remaining trace)
+            task: 'nap' (next activity), 'rtp' (remaining trace), or 'outcome'
         """
         self.config = config
-        self.task = task  # 'nap' or 'rtp'
+        self.task = task  # 'nap' or 'rtp' or 'outcome'
+        self.target_column = target_column
 
         self.model: BESTPredictor | None = None
         self.train_seq: SequenceData | None = None
         self.test_seq: SequenceData | None = None
         self.predictions = None
         self._act_encoder = None
+        self.test_outcomes = None # Actual outcomes for test prefixes
+        self.test_prefixes = None # The prefixes evaluated
+        self.train_outcomes_mapping = None
 
     # ------------------------------------------------------------------
     # Data preparation
     # ------------------------------------------------------------------
 
-    def prepare_data(self, df: pd.DataFrame, test_size: float = 0.2) -> None:
+    def prepare_data(self, df: pd.DataFrame, test_size: float = 0.2,
+                     prefix_lengths: list | None = None, max_len: int | None = None) -> None:
         """Build SequenceData objects and perform the train/test split.
 
         Args:
             df: DataFrame with standardised columns CaseID, Activity, Timestamp.
             test_size: Fraction of cases reserved for testing (default 0.2).
+            prefix_lengths: Optional list of specific prefix lengths to evaluate
+                            (e.g. [3, 5, 7]). If None, all prefixes are used.
         """
+        self.prefix_lengths = prefix_lengths
+        from utils.outcome_utils import extract_case_outcomes
+
+        if self.task == "outcome":
+            # Extract case outcomes and map to the sequence data
+            df_outcomes = extract_case_outcomes(df, 'CaseID', 'Timestamp', self.target_column)
+            self.train_outcomes_mapping = df_outcomes.to_dict()
+            
+            # Append OUTCOME event
+            df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+            new_rows = []
+            for case_id, outcome in self.train_outcomes_mapping.items():
+                last_event = df[df['CaseID'] == case_id].iloc[-1].copy()
+                last_event['Activity'] = f"OUTCOME_{outcome}"
+                last_event['Timestamp'] = last_event['Timestamp'] + pd.Timedelta(seconds=1)
+                new_rows.append(last_event)
+                
+            df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+            df = df.sort_values(by=['CaseID', 'Timestamp']).reset_index(drop=True)
+
         seq = SequenceData(
             data=df,
             case_identifier="CaseID",
@@ -108,6 +139,14 @@ class BESTRunner:
         )
         train_pct = 1.0 - test_size
         self.train_seq, self.test_seq = seq.train_test_split(train_pct=train_pct)
+
+        # Apply max_len cap if specified (BEST natively uses all prefixes otherwise)
+        if max_len is not None:
+            # We filter relevant_prefixes for both train and test directly
+            for s in [self.train_seq, self.test_seq]:
+                if s and hasattr(s, 'relevant_prefixes'):
+                    s.relevant_prefixes = [p for p in s.relevant_prefixes if len(p['prefix']) <= max_len]
+
         self._act_encoder = None
 
     # ------------------------------------------------------------------
@@ -152,9 +191,6 @@ class BESTRunner:
 
         self._prepare_test_data(filter_sequences=filter_seqs)
         
-        # Note: Match tracking for explainability currently only supports single-core execution (ncores=1).
-        # We process predictions sequentially to capture local matches for pattern analysis.
-        
         if ncores == 1 and self.task in ["nap", "rtp"]:
             from tqdm import tqdm
             self.predictions = []
@@ -198,26 +234,40 @@ class BESTRunner:
                     "matches": matches
                 })
         else:
-            # Fallback to multi-core (match tracking not supported in this mode)
+            # Fallback to original multi-core or RTP prediction (without all-matches tracking for now)
+            task_arg = "rtp" if self.task == "outcome" else self.task
             self.predictions = self.model.predict(
                 eval_pattern_size=eval_pattern_size,
-                task=self.task,
+                task=task_arg,
                 break_buffer=break_buffer,
-                filter_tokens=filter_seqs,
-                ncores=ncores
+                filter_tokens=True,
+                ncores=ncores,
             )
+
+        # Apply prefix-length filtering if requested
+        if self.task == "outcome" and getattr(self, "prefix_lengths", None):
+            allowed = set(self.prefix_lengths)
+            padding_size = getattr(self.model, "_padding_size", 0)
+            filtered_preds = []
+            filtered_prefixes = []
+            for i, p in enumerate(self.test_seq.relevant_prefixes):
+                raw_seq = p["prefix"]
+                real_len = len([a for a in raw_seq[padding_size:]
+                                if self._decode_activity(a) not in [None, "START", "END"]])
+                if real_len in allowed:
+                    filtered_preds.append(self.predictions[i])
+                    filtered_prefixes.append(p)
+            self.predictions = filtered_preds
+            self.test_seq.relevant_prefixes = filtered_prefixes
+            print(f"[BEST] Prefix-length filter applied — kept "
+                  f"{len(self.predictions)} prefixes with lengths {sorted(allowed)}")
 
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
 
     def evaluate(self) -> dict:
-        """Compute task-specific metrics and return them as a dict.
-
-        Returns:
-            For NAP: {'nap_accuracy': float, 'nap_balanced_accuracy': float, 'none_share': float}
-            For RTP: {'rtp_ndls': float, 'none_share': float}
-        """
+        """Compute task-specific metrics and return them as a dict."""
         if self.predictions is None:
             raise RuntimeError("Call predict() before evaluate().")
 
@@ -229,6 +279,42 @@ class BESTRunner:
                 "nap_accuracy": float(ev.calc_accuracy_score()),
                 "nap_balanced_accuracy": float(ev.calc_balanced_accuracy_score()),
                 "none_share": float(ev.get_nan_share()),
+            }
+        elif self.task == "outcome":
+            from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
+            y_true = []
+            y_pred = []
+            self.outcome_confidences = []  # track per-prediction confidence
+            most_freq = pd.Series(list(self.train_outcomes_mapping.values())).mode()[0]
+
+            for i, p in enumerate(self.test_seq.relevant_prefixes):
+                case_id = p["case_id"]
+                true_outcome = self.train_outcomes_mapping.get(case_id, None)
+
+                pred_seq = self.predictions[i]
+                pred_outcome = None
+                conf = None  # no probability signal from BEST
+                if pred_seq:
+                    for token_idx in pred_seq:
+                        token_str = self._decode_activity(token_idx)
+                        if token_str and str(token_str).startswith("OUTCOME_"):
+                            pred_outcome = str(token_str).replace("OUTCOME_", "")
+                            break
+
+                if pred_outcome is None:
+                    pred_outcome = most_freq
+
+                y_true.append(true_outcome)
+                y_pred.append(pred_outcome)
+                self.outcome_confidences.append(conf)
+
+            self.outcome_y_true = y_true
+            self.outcome_y_pred = y_pred
+
+            return {
+                "accuracy": float(accuracy_score(y_true, y_pred)),
+                "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+                "f1_score": float(f1_score(y_true, y_pred, average='weighted'))
             }
         else:  # rtp
             ev = RTPEvaluator(pred=self.predictions, actual=self.test_seq.full_future_sequences)
@@ -258,6 +344,14 @@ class BESTRunner:
         import json
         os.makedirs(output_dir, exist_ok=True)
 
+        if self.task == "outcome":
+            self._save_results_outcome(output_dir)
+            return
+        elif self.task != "nap":
+            # For RTP we keep the old format for now or implement similarly if needed
+            self._save_results_rtp(output_dir)
+            return
+
         # Pull per-prefix case ids from relevant_prefixes (same ordering as predictions)
         if hasattr(self.test_seq, "relevant_prefixes") and self.test_seq.relevant_prefixes:
             prefixes = self.test_seq.relevant_prefixes
@@ -267,15 +361,10 @@ class BESTRunner:
 
         n = min(len(prefixes), len(self.predictions))
         preds = self.predictions[:n]
+        actuals_enc = getattr(self.test_seq, "next_activities", [None] * n)
         
-        if self.task == "nap":
-            actuals_enc = getattr(self.test_seq, "next_activities", [None] * n)
-            tracker = getattr(self.model, "choice_tracker_nap", {})
-        else:
-            actuals_enc = getattr(self.test_seq, "full_future_sequences", [None] * n)
-            tracker = getattr(self.model, "choice_tracker_rtp", {})
-            decoded_rtp_preds = self._decode_rtp(preds)
-
+        # Tracker for confidence
+        tracker = getattr(self.model, "choice_tracker_nap", {})
         probs = tracker.get("prob", [None] * n)
 
         rows = []
@@ -296,45 +385,102 @@ class BESTRunner:
             if case_index == 0:
                 continue # Skip the initial "empty" state for the UI
 
-            if self.task == "nap":
-                true_next = self._decode_activity(actuals_enc[i])
-                pred_next = self._decode_activity(preds[i])
-            else:
-                pred_next = decoded_rtp_preds[i]
-                seq = actuals_enc[i]
-                if seq is None:
-                    true_next = None
-                else:
-                    true_next = ", ".join(str(self._decode_activity(idx)) for idx in seq if idx is not None)
-
+            true_next = self._decode_activity(actuals_enc[i])
+            pred_next = self._decode_activity(preds[i])
             conf = probs[i] if i < len(probs) else None
             correct = int(true_next == pred_next) if (true_next is not None and pred_next is not None) else None
 
-            if self.task == "rtp":
-                rows.append({
-                    "case_id": case_id,
-                    "case_index": case_index,
-                    "sequence": json.dumps(filtered_seq),
-                    "actual_remaining_trace": true_next,
-                    "predicted_remaining_trace": pred_next,
-                    "confidence": conf,
-                    "correct": correct
-                })
-            else:
-                rows.append({
-                    "case_id": case_id,
-                    "case_index": case_index,
-                    "sequence": json.dumps(filtered_seq),
-                    "true_next_activity": true_next,
-                    "predicted_next_activity": pred_next,
-                    "confidence": conf,
-                    "correct": correct
-                })
+            rows.append({
+                "case_id": case_id,
+                "case_index": case_index,
+                "sequence": json.dumps(filtered_seq),
+                "true_next_activity": true_next,
+                "predicted_next_activity": pred_next,
+                "confidence": conf,
+                "correct": correct
+            })
 
         df_out = pd.DataFrame(rows)
         out_path = os.path.join(output_dir, "best_predictions.csv")
         df_out.to_csv(out_path, index=False)
         print(f"[BEST] Predictions saved -> {out_path} ({len(df_out)} rows)")
+
+    def _save_results_rtp(self, output_dir: str) -> None:
+        """Fallback for RTP results."""
+        if hasattr(self.test_seq, "relevant_prefixes") and self.test_seq.relevant_prefixes:
+            prefixes = self.test_seq.relevant_prefixes
+            case_ids = [p["case_id"] for p in prefixes]
+            prefix_ids = [len(p["prefix"]) for p in prefixes]
+        else:
+            print("[BEST] No relevant prefixes found, cannot save results.")
+            return
+
+        n = min(len(prefixes), len(self.predictions))
+        preds = self.predictions[:n]
+
+        decoded_preds = self._decode_rtp(preds)
+        actuals_enc = getattr(self.test_seq, "full_future_sequences", [None] * n)
+        decoded_actuals = []
+        for seq in actuals_enc[:n]:
+            if seq is None:
+                decoded_actuals.append(None)
+            else:
+                decoded_actuals.append(", ".join(
+                    str(self._decode_activity(idx)) for idx in seq if idx is not None
+                ))
+        df_out = pd.DataFrame({
+            "CaseID": case_ids,
+            "prefix_length": prefix_ids,
+            "actual_remaining_trace": decoded_actuals,
+            "predicted_remaining_trace": decoded_preds,
+        })
+
+        out_path = os.path.join(output_dir, "best_predictions.csv")
+        df_out.to_csv(out_path, index=False)
+        print(f"[BEST] RTP Predictions saved -> {out_path}")
+
+    def _save_results_outcome(self, output_dir: str) -> None:
+        rows = []
+        padding_size = getattr(self.model, "_padding_size", 0)
+        confidences = getattr(self, "outcome_confidences", [None] * len(self.outcome_y_true))
+
+        for i, p in enumerate(self.test_seq.relevant_prefixes):
+            case_id = p["case_id"]
+            prefix_seq = p["prefix"]
+
+            true_outcome = self.outcome_y_true[i]
+            pred_outcome = self.outcome_y_pred[i]
+
+            # Decode the real (non-padding) prefix activities
+            decoded_prefix = []
+            for act_enc in prefix_seq[padding_size:]:
+                act = self._decode_activity(act_enc)
+                if act and str(act) not in ["START", "END"] and not str(act).startswith("OUTCOME_"):
+                    decoded_prefix.append(str(act))
+
+            # BEST produces no softmax confidence — report None (not a fake 100%)
+            conf = confidences[i]  # None unless a future version captures it
+
+            rows.append({
+                "case_id": str(case_id),
+                "prefix_length": len(decoded_prefix),
+                "prefix_sequence": ", ".join(decoded_prefix),
+                "true_outcome": true_outcome,
+                "predicted_outcome": pred_outcome,
+                "correct": true_outcome == pred_outcome,
+                # BEST uses pattern-frequency distance, not a probability score.
+                # confidence_percent is left as N/A when unavailable.
+                "confidence_percent": round(conf, 2) if conf is not None else "N/A",
+            })
+
+        df_out = pd.DataFrame(rows)
+        out_path = os.path.join(output_dir, "outcome_predictions.csv")
+        df_out.to_csv(out_path, index=False)
+
+        total = len(df_out)
+        correct = df_out["correct"].sum()
+        print(f"[BEST] Outcome Predictions saved -> {out_path} ({total} rows)")
+        print(f"[BEST] Overall accuracy: {correct}/{total} ({100*correct/total:.1f}%)")
 
     def plot_performance(self, output_dir: str) -> None:
         """Generate a performance overview chart and save it to output_dir."""

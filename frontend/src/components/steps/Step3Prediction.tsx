@@ -66,6 +66,15 @@ export default function Step3Prediction({
           </div>
 
           <div
+            onClick={() => onSelectTask("outcome")}
+            className={`${baseCard} ${
+              isSelected("outcome") ? selectedCard : unselectedCard
+            }`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Outcome Prediction</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the final outcome of the case based on the current prefix.
             onClick={() => onSelectTask("remaining_trace")}
             className={`${baseCard} ${isSelected("remaining_trace") ? selectedCard : unselectedCard}`}
           >
@@ -79,12 +88,15 @@ export default function Step3Prediction({
             </div>
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("outcome")
                 isSelected("remaining_trace")
                   ? "border-brand-600 bg-brand-600"
                   : "border-gray-300"
               }`}
             />
           </div>
+          
+
 
         </div>
       ) : (
@@ -173,9 +185,32 @@ export default function Step3Prediction({
             />
           </div>
 
+          <div
+            onClick={() => onSelectTask("outcome")}
+            className={`${baseCard} ${
+              isSelected("outcome") ? selectedCard : unselectedCard
+            }`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Outcome Prediction</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the final outcome of the case based on the current prefix.
+              </div>
+            </div>
+            <div
+              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("outcome")
+                  ? "border-brand-600 bg-brand-600"
+                  : "border-gray-300"
+              }`}
+            />
+          </div>
+
           {isSelected("custom_activity") && (
             <div className="border rounded-lg bg-white p-4">
-              <div className="text-sm font-medium text-gray-900">Target Column</div>
+              <div className="text-sm font-medium text-gray-900">
+                Target Column
+              </div>
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
                 <div className="text-sm text-gray-700">Select categorical column</div>
                 <div className="sm:col-span-2">

@@ -40,9 +40,16 @@ if TENSORFLOW_AVAILABLE:
     from transformers.prediction.next_activity import NextActivityPredictor
     from transformers.prediction.event_time import EventTimePredictor
     from transformers.prediction.remaining_time import RemainingTimePredictor
+    from transformers.prediction.outcome import OutcomePredictor
 
 if PYTORCH_AVAILABLE:
     from gnns.prediction.gnn_predictor import GNNPredictor
+
+try:
+    from best.predictor import BESTRunner
+    BEST_AVAILABLE = True
+except ImportError:
+    BEST_AVAILABLE = False
 
 
 from conv_and_viz.xes_to_csv import load_event_log, log_to_dataframe_preserve_all
@@ -461,10 +468,39 @@ def get_data_split():
                 print("Please enter valid numbers.")
 
 
+def get_prefix_lengths():
+    """Let the user restrict which prefix lengths (trace positions) to evaluate."""
+    print("\n" + "-"*70)
+    print("PREFIX LENGTH CONFIGURATION")
+    print("-"*70)
+    print("\nOutcome prediction creates one sample per prefix length per case.")
+    print("By default ALL prefix lengths are used (e.g. 1, 2, 3, …, N).")
+    print("Restricting to specific lengths makes results more interpretable and")
+    print("avoids inflated metrics caused by very long, near-complete prefixes.")
+
+    use_all = get_yes_no("\nUse ALL prefix lengths? (recommended: No for meaningful evaluation)")
+    if use_all:
+        return None
+
+    while True:
+        raw = input(
+            "\nEnter prefix lengths as comma-separated integers (e.g. 3,5,7): "
+        ).strip()
+        try:
+            lengths = sorted({int(x.strip()) for x in raw.split(",") if x.strip()})
+            if not lengths or any(l < 1 for l in lengths):
+                print("Please enter at least one positive integer.")
+                continue
+            print(f"✓ Evaluating at prefix lengths: {lengths}")
+            return lengths
+        except ValueError:
+            print("Invalid input. Please enter comma-separated integers (e.g. 3,5,7).")
+
+
 def get_explainability_choice(model_type='transformer'):
     if not EXPLAINABILITY_AVAILABLE:
         return None
-    
+
     print("\n" + "-"*70)
     print("EXPLAINABILITY CONFIGURATION")
     print("-"*70)
@@ -473,7 +509,7 @@ def get_explainability_choice(model_type='transformer'):
     print("  - Visualizing decision-making process")
     print("  - Providing interpretable insights")
     print("\nNote: Explainability analysis may take additional time")
-    
+
     if model_type == 'gnn':
         explainability_options = {
             1: "Gradient-Based Attribution",
@@ -488,9 +524,9 @@ def get_explainability_choice(model_type='transformer'):
             3: "All methods (SHAP + LIME)",
             4: "Skip Explainability"
         }
-    
+
     choice = get_user_choice("Select explainability method:", explainability_options)
-    
+
     if model_type == 'gnn':
         if choice == 1:
             return "gradient"
@@ -519,6 +555,7 @@ def get_gnn_config():
     if use_default:
         print("\nUsing default configuration:")
         config = {
+            'max_len': 16,
             'hidden': 64,
             'dropout_rate': 0.1,
             'lr': 4e-4,
@@ -530,6 +567,7 @@ def get_gnn_config():
         print("\nEnter custom configuration:")
         config = {}
         try:
+            config['max_len'] = int(input("  Max prefix length [16]: ") or 16)
             config['hidden'] = int(input("  Hidden channels [64]: ") or 64)
             config['dropout_rate'] = float(input("  Dropout rate [0.1]: ") or 0.1)
             config['lr'] = float(input("  Learning rate [4e-4]: ") or 4e-4)
@@ -539,6 +577,44 @@ def get_gnn_config():
         except ValueError:
             print("Invalid input. Using default configuration.")
             return get_gnn_config()
+    print("\nConfiguration:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    return config
+
+
+def get_best_config():
+    print("\n" + "-"*70)
+    print("BEST MODEL CONFIGURATION")
+    print("-"*70)
+    use_default = get_yes_no("Use default configuration?")
+    if use_default:
+        print("\nUsing default configuration:")
+        config = {
+            'max_len': 16,
+            'max_pattern_size_train': 21,
+            'max_pattern_size_eval': 21,
+            'process_stage_width_percentage': 0.2,
+            'min_freq': 1e-14,
+            'break_buffer': 1.2,
+            'filter_sequences': True,
+            'ncores': 1
+        }
+    else:
+        print("\nEnter custom configuration:")
+        config = {}
+        try:
+            config['max_len'] = int(input("  Max prefix length [16]: ") or 16)
+            config['max_pattern_size_train'] = int(input("  Max pattern size (train) [21]: ") or 21)
+            config['max_pattern_size_eval'] = int(input("  Max pattern size (eval) [21]: ") or 21)
+            config['process_stage_width_percentage'] = float(input("  Process stage width [0.2]: ") or 0.2)
+            config['min_freq'] = float(input("  Min frequency [1e-14]: ") or 1e-14)
+            config['break_buffer'] = float(input("  Break buffer [1.2]: ") or 1.2)
+            config['ncores'] = int(input("  Number of cores [1]: ") or 1)
+            config['filter_sequences'] = True
+        except ValueError:
+            print("Invalid input. Using default configuration.")
+            return get_best_config()
     print("\nConfiguration:")
     for key, value in config.items():
         print(f"  {key}: {value}")
@@ -655,9 +731,70 @@ def run_next_activity_prediction(dataset_path, output_dir, test_size, val_split,
     print("="*70)
 
 
-def run_event_time_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
+def run_best_prediction(dataset_path, output_dir, test_size, val_split, config, task='nap', prefix_lengths=None):
+    """Run BEST model for prediction."""
     print("\n" + "="*70)
-    print("EVENT TIME PREDICTION")
+    task_str = "NEXT ACTIVITY" if task == "nap" else "REMAINING TIME" if task == "rtp" else "OUTCOME"
+    print(f"BEST PREDICTION ({task_str})")
+    print("="*70)
+
+    if not BEST_AVAILABLE:
+        print("\n[X] BEST dependencies not available.")
+        return
+
+    print("\nLoading dataset...")
+    df = pd.read_csv(dataset_path)
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Missing required columns: {required_cols - set(df.columns)}")
+
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    df = df.sort_values(['CaseID', 'Timestamp']).reset_index(drop=True)
+    print(f"Dataset loaded: {len(df):,} events")
+    if prefix_lengths and task == 'outcome':
+        print(f"Prefix-length filter: {prefix_lengths}")
+
+    runner = BESTRunner(config=config, task=task)
+    
+    # Prepare data
+    if task == 'outcome':
+        runner.prepare_data(df, test_size=test_size, prefix_lengths=prefix_lengths, max_len=config.get('max_len', None))
+    else:
+        runner.prepare_data(df, test_size=test_size, max_len=config.get('max_len', None))
+
+    # Train (Fit)
+    print("\nFitting BEST model (extracting patterns)...")
+    runner.fit()
+
+    # Predict
+    print("\nRunning BEST predictions...")
+    runner.predict()
+
+    # Evaluate
+    metrics = runner.evaluate()
+
+    # Save and Plot
+    runner.save_results(output_dir)
+    runner.plot_performance(output_dir)
+    
+    print("\n" + "="*70)
+    print(f"BEST {task_str} PREDICTION - FINAL RESULTS")
+    print("="*70)
+    print(f"\n{'Metric':<35} {'Value':>20}")
+    print("-"*70)
+    for k, v in metrics.items():
+        if isinstance(v, float):
+            print(f"{k:<35} {v:>20.4f}")
+        else:
+            print(f"{k:<35} {str(v):>20}")
+    print("-"*70)
+    print(f"\n[OK] All results saved to: {output_dir}")
+    print("="*70)
+
+
+def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method, task='unified'):
+    print("\n" + "="*70)
+    if task == 'unified':nt("EVENT TIME PREDICTION")
     print("="*70)
     print("\nLoading dataset...")
     df = pd.read_csv(dataset_path)
@@ -805,7 +942,197 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print("="*70)
 
 
-def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method, task='unified'):
+
+def run_outcome_prediction(dataset_path, output_dir, test_size, val_split, config,
+                           prefix_lengths=None):
+    """Run Transformer-based outcome prediction."""
+    print("\n" + "="*70)
+    print("OUTCOME PREDICTION (Transformer)")
+    print("="*70)
+
+    if not TENSORFLOW_AVAILABLE:
+        print("\n[X] TensorFlow not available. Cannot run Transformer outcome prediction.")
+        return
+
+    print("\nLoading dataset...")
+    df = pd.read_csv(dataset_path)
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Missing required columns: {required_cols - set(df.columns)}")
+
+    print(f"Dataset loaded: {len(df):,} events")
+    if prefix_lengths:
+        print(f"Prefix-length filter: {prefix_lengths}")
+
+    predictor = OutcomePredictor(
+        max_len=config['max_len'],
+        d_model=config['d_model'],
+        num_heads=config['num_heads'],
+        num_blocks=config['num_blocks'],
+        dropout_rate=config['dropout_rate'],
+    )
+
+    # max_prefixes_per_case can be used to limit prefixes; prefix_lengths filter
+    # is applied inside prepare_data via the _build_prefix_sequences helper.
+    # We pass max_prefixes_per_case=None here (all) so that the prefix_lengths
+    # list is the only filter.
+    data = predictor.prepare_data(
+        df,
+        test_size=test_size,
+        val_split=val_split,
+        # Limit per-case prefixes to only the requested lengths when specified
+        max_prefixes_per_case=len(prefix_lengths) if prefix_lengths else None,
+    )
+
+    # Post-filter by prefix length (the predictor stores prefix lengths per sample)
+    if prefix_lengths is not None:
+        allowed = set(prefix_lengths)
+        mask_train = np.isin(predictor._test_prefix_lengths or [], list(allowed))
+        # For test set only — training benefits from all prefixes
+        print(f"Prefix-length filter applied to test set ({mask_train.sum()} samples kept)")
+        data['X_test'] = data['X_test'][mask_train]
+        data['y_test'] = data['y_test'][mask_train]
+        if predictor._test_case_ids is not None:
+            predictor._test_case_ids = [
+                v for v, m in zip(predictor._test_case_ids, mask_train) if m
+            ]
+        if predictor._test_prefix_lengths is not None:
+            predictor._test_prefix_lengths = [
+                v for v, m in zip(predictor._test_prefix_lengths, mask_train) if m
+            ]
+
+    predictor.build_model()
+    predictor.train(
+        data,
+        epochs=config['epochs'],
+        batch_size=config['batch_size'],
+        patience=config['patience'],
+    )
+    metrics = predictor.evaluate(data)
+    y_pred, y_pred_probs = predictor.predict(data)
+    predictor.save_results(data, y_pred, y_pred_probs, output_dir)
+    predictor.plot_training_history(output_dir)
+    predictor.plot_confusion_matrix(data, output_dir)
+    predictor.save_model(output_dir)
+
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        from explainability.transformers.transformer_explainer import run_transformer_explainability
+        run_transformer_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            task='outcome',
+            num_samples=20,
+            methods=explainability_method,
+            label_encoder=getattr(predictor, 'label_encoder', None),
+            scaler=getattr(predictor, 'scaler', None)
+        )
+
+    print("\n" + "="*70)
+    print("OUTCOME PREDICTION - FINAL RESULTS")
+    print("="*70)
+    print(f"\n{'Metric':<30} {'Value':>20}")
+    print("-"*70)
+    print(f"{'Test Accuracy':<30} {metrics['test_accuracy']*100:>19.2f}%")
+    print(f"{'Balanced Accuracy':<30} {metrics['balanced_accuracy']*100:>19.2f}%")
+    print(f"{'F1 (weighted)':<30} {metrics['f1_score_weighted']*100:>19.2f}%")
+    print(f"{'F1 (macro)':<30} {metrics['f1_score_macro']*100:>19.2f}%")
+    print(f"{'Test Loss':<30} {metrics['test_loss']:>20.4f}")
+    print(f"{'Test Samples':<30} {len(data['X_test']):>20,}")
+    print("-"*70)
+    print(f"\n[OK] All results saved to: {output_dir}")
+    print("="*70)
+
+
+def run_gnn_outcome_prediction(dataset_path, output_dir, test_size, val_split, config,
+                               prefix_lengths=None):
+    """Run GNN-based outcome prediction."""
+    print("\n" + "="*70)
+    print("OUTCOME PREDICTION (GNN)")
+    print("="*70)
+
+    if not PYTORCH_AVAILABLE:
+        print("\n[X] PyTorch not available. Please install PyTorch and PyTorch Geometric.")
+        return
+
+    print("\nLoading dataset...")
+    df = pd.read_csv(dataset_path)
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Missing required columns: {required_cols - set(df.columns)}")
+
+    df['Timestamp'] = pd.to_datetime(df['Timestamp'])
+    df = df.sort_values(['CaseID', 'Timestamp']).reset_index(drop=True)
+    print(f"Dataset loaded: {len(df):,} events")
+    if prefix_lengths:
+        print(f"Prefix-length filter: {prefix_lengths}")
+
+    predictor = GNNPredictor(
+        hidden_channels=config.get('hidden', 64),
+        dropout=config.get('dropout_rate', 0.1),
+        lr=config.get('lr', 4e-4),
+        loss_weights=(1.0, 0.0, 0.0),  # outcome only
+        task='outcome',
+    )
+
+    data = predictor.prepare_data(
+        df,
+        test_size=test_size,
+        val_split=val_split,
+        prefix_lengths=prefix_lengths,
+        max_len=config.get('max_len', None)
+    )
+
+    num_outcome_classes = len(predictor.outcome_decoder)
+    predictor.build_model(
+        data['sample_graph'],
+        batch_size=config.get('batch_size', 64),
+        num_activity_classes=data.get('num_activity_classes'),
+        num_outcome_classes=num_outcome_classes,
+    )
+
+    predictor.train(
+        data,
+        epochs=config.get('epochs', 50),
+        batch_size=config.get('batch_size', 64),
+        patience=config.get('patience', 10),
+    )
+
+    metrics = predictor.evaluate_test(data, batch_size=config.get('batch_size', 64))
+    predictor.save_model(output_dir)
+    predictor.plot_training_history(output_dir)
+    predictor.save_results(metrics, output_dir, data=data)
+
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        vocabularies = getattr(predictor, 'vocabs', data.get('vocabs', {}))
+        from explainability.gnns.gnn_explainer import run_gnn_explainability
+        run_gnn_explainability(
+            model=predictor.model,
+            data=data,
+            output_dir=explainability_dir,
+            device=predictor.device,
+            vocabularies=vocabularies,
+            num_samples=10,
+            methods=explainability_method,
+            tasks=['outcome']
+        )
+
+    print("\n" + "="*70)
+    print("GNN OUTCOME PREDICTION - FINAL RESULTS")
+    print("="*70)
+    print(f"\n{'Metric':<35} {'Value':>20}")
+    print("-"*70)
+    print(f"{'Test Accuracy (Outcome)':<35} {metrics['accuracy']*100:>19.2f}%")
+    print(f"{'Test Loss':<35} {metrics['loss']:>20.4f}")
+    print("-"*70)
+    print(f"\n[OK] All results saved to: {output_dir}")
+    print("="*70)
+
+
     print("\n" + "="*70)
     if task == 'unified':
         print("GNN UNIFIED PREDICTION")
@@ -857,7 +1184,8 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
     data = predictor.prepare_data(
         df, 
         test_size=test_size, 
-        val_split=val_split
+        val_split=val_split,
+        max_len=config.get('max_len', None)
     )
 
     predictor.build_model(
@@ -892,8 +1220,10 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         explain_tasks = ['event_time']
     elif task == 'remaining_time':
         explain_tasks = ['remaining_time']
+    elif task == 'outcome':
+        explain_tasks = ['outcome']
     else:  # unified
-        explain_tasks = ['activity', 'event_time', 'remaining_time']
+        explain_tasks = ['activity', 'event_time', 'remaining_time', 'outcome']
     
     run_gnn_explainability(
         model=predictor.model,
@@ -1007,9 +1337,11 @@ def main():
     # Step 5: Select model type
     model_type_options = {
         1: "Transformer",
-        2: "GNN (Graph Neural Network)"
+        2: "GNN (Graph Neural Network)",
+        3: "BEST (Pattern Matching)"
     }
     model_type = get_user_choice("Select model type:", model_type_options)
+
     
     if model_type == 1 and not TENSORFLOW_AVAILABLE:
         print("\n" + "="*70)
@@ -1027,6 +1359,11 @@ def main():
         sys.exit(1)
 
     # Step 6: Select task
+    gnn_task = None  # only set when using GNN
+    best_task = None # only set when using BEST
+    run_gnn = False
+    run_best = False
+
     if model_type == 2:
         print("\n" + "-"*70)
         print("GNN Model: Task Selection")
@@ -1035,35 +1372,70 @@ def main():
             1: "Next Activity Prediction",
             2: "Event Time Prediction",
             3: "Remaining Time Prediction",
-            4: "All Tasks (Unified Prediction)"
+            4: "All Tasks (Unified Prediction)",
+            5: "Outcome Prediction",
         }
         task = get_user_choice("Select prediction task:", task_options)
         if task == 4:
             task_name = "GNN Unified Prediction"
             gnn_task = "unified"
+        elif task == 5:
+            task_name = "GNN Outcome Prediction"
+            gnn_task = "outcome"
         else:
             task_name = task_options[task]
             task_mapping = {
                 1: "next_activity",
                 2: "event_time",
-                3: "remaining_time"
+                3: "remaining_time",
             }
             gnn_task = task_mapping[task]
         run_gnn = True
+    elif model_type == 3:
+        print("\n" + "-"*70)
+        print("BEST Model: Task Selection")
+        print("-"*70)
+        task_options = {
+            1: "Next Activity Prediction (NAP)",
+            2: "Remaining Time/Trace Prediction (RTP)",
+            3: "Outcome Prediction",
+        }
+        task = get_user_choice("Select prediction task:", task_options)
+        task_name = f"BEST {task_options[task]}"
+        best_task_mapping = {
+            1: "nap",
+            2: "rtp",
+            3: "outcome",
+        }
+        best_task = best_task_mapping[task]
+        run_best = True
     else:
         task_options = {
             1: "Next Activity Prediction",
             2: "Event Time Prediction",
-            3: "Remaining Time Prediction"
+            3: "Remaining Time Prediction",
+            4: "Outcome Prediction",
         }
         task = get_user_choice("Select prediction task:", task_options)
         task_name = task_options[task]
-        run_gnn = False
 
     # Step 7: Configure explainability
-    model_type_name = "gnn" if run_gnn else "transformer"
-    explainability_method = get_explainability_choice(model_type=model_type_name)
-    
+    if run_best:
+        model_type_name = "best"
+        explainability_method = None  # BEST uses inherently interpretable extracted patterns, not post-hoc explainers
+    else:
+        model_type_name = "gnn" if run_gnn else "transformer"
+        explainability_method = get_explainability_choice(model_type=model_type_name)
+
+    outcome_task = (run_gnn and gnn_task == 'outcome') or (run_best and best_task == 'outcome') or (not run_gnn and not run_best and task == 4)
+
+
+    # Step 7b: Prefix-length selection (only for outcome tasks)
+    prefix_lengths = None
+    if outcome_task:
+        prefix_lengths = get_prefix_lengths()
+
+
     # Step 8: Create output directory
     output_dir = create_output_directory(final_dataset_path, task_name, model_type_name, explainability_method)
     
@@ -1073,8 +1445,11 @@ def main():
     # Step 10: Configure model
     if run_gnn:
         config = get_gnn_config()
+    elif run_best:
+        config = get_best_config()
     else:
         config = get_model_config()
+
     
     # Save configuration
     config_file = os.path.join(output_dir, "configuration.txt")
@@ -1114,14 +1489,42 @@ def main():
     # Step 11: Train model
     try:
         if run_gnn:
-            run_gnn_unified_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method, gnn_task)
+            if gnn_task == 'outcome':
+                run_gnn_outcome_prediction(
+                    final_dataset_path, output_dir, test_size, val_split,
+                    config, prefix_lengths=prefix_lengths
+                )
+            else:
+                run_gnn_unified_prediction(
+                    final_dataset_path, output_dir, test_size, val_split,
+                    config, explainability_method, gnn_task
+                )
+        elif run_best:
+            run_best_prediction(
+                final_dataset_path, output_dir, test_size, val_split,
+                config, task=best_task, prefix_lengths=prefix_lengths
+            )
         else:
             if task == 1:
-                run_next_activity_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method)
+                run_next_activity_prediction(
+                    final_dataset_path, output_dir, test_size, val_split,
+                    config, explainability_method
+                )
             elif task == 2:
-                run_event_time_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method)
+                run_event_time_prediction(
+                    final_dataset_path, output_dir, test_size, val_split,
+                    config, explainability_method
+                )
             elif task == 3:
-                run_remaining_time_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method)
+                run_remaining_time_prediction(
+                    final_dataset_path, output_dir, test_size, val_split,
+                    config, explainability_method
+                )
+            elif task == 4:
+                run_outcome_prediction(
+                    final_dataset_path, output_dir, test_size, val_split,
+                    config, prefix_lengths=prefix_lengths
+                )
     except Exception as e:
         print(f"\n[X] Error occurred: {str(e)}")
         import traceback
@@ -1135,7 +1538,7 @@ def main():
             traceback.print_exc(file=f)
         print(f"\n[X] Error log saved to: {error_file}")
         sys.exit(1)
-    
+
     print("\n" + "="*70)
     print("Thank you for using Predictive Process Monitoring!")
     print("="*70 + "\n")
