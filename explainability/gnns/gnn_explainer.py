@@ -355,14 +355,20 @@ class GradientExplainer:
         if task in ["event_time", "remaining_time"]:
             x_labels = []
             for i, info in enumerate(step_info):
+                activity = info.get("activity", "N/A")
+                if len(activity) > 15:
+                    activity = activity[:13] + ".."
+                    
                 if timestamps[i] is not None:
                     timestamp = timestamps[i]
                     if timestamp < 1:
-                        x_labels.append(f"{timestamp*24:.1f}h")
+                        time_str = f"{timestamp*24:.1f}h"
                     else:
-                        x_labels.append(f"Day {timestamp:.1f}")
+                        time_str = f"Day {timestamp:.1f}"
                 else:
-                    x_labels.append(f"Step {info['step']}")
+                    time_str = f"Step {info['step']}"
+                
+                x_labels.append(f"{activity}\n{time_str}")
         else:
             x_labels = []
             for info in step_info:
@@ -426,46 +432,6 @@ class GradientExplainer:
 
         ax.axhline(y=0, color="black", linestyle="-", linewidth=2)
 
-        if task in ["event_time", "remaining_time"]:
-            max_contrib = (
-                np.max(np.abs(centered_contrib)) if len(centered_contrib) > 0 else 1
-            )
-            label_offset = max_contrib * 0.15
-
-            for i in range(num_steps):
-                info = step_info[i]
-                activity = info.get("activity", "N/A")
-
-                if len(activity) > 12:
-                    activity = activity[:10] + ".."
-
-                contrib_val = centered_contrib[i]
-
-                if contrib_val > 0:
-                    y_pos = contrib_val + label_offset
-                    va = "bottom"
-                else:
-                    y_pos = contrib_val - label_offset
-                    va = "top"
-
-                bbox_props = dict(
-                    boxstyle="round,pad=0.35",
-                    facecolor="lightyellow",
-                    edgecolor="gray",
-                    linewidth=0.6,
-                    alpha=0.85,
-                )
-
-                ax.text(
-                    time_steps[i],
-                    y_pos,
-                    activity,
-                    ha="center",
-                    va=va,
-                    fontsize=8,
-                    bbox=bbox_props,
-                    rotation=0,
-                )
 
         if task in ["event_time", "remaining_time"]:
             xlabel = "Event (Timestamp)"
@@ -805,7 +771,7 @@ class GradientExplainer:
                     elif n_type == "resource":
                         name = self._get_resource_name(idx)
                     elif n_type == "time":
-                        name = "Timestamp"
+                        name = "Elapsed Time"
                     else:
                         name = f"{n_type}_{idx}"
 
@@ -1292,7 +1258,7 @@ class GraphLIMEExplainer:
         elif node_type == "resource":
             return f"resource_{feature_idx} [Resource]"
         elif node_type == "time":
-            return "Timestamp"
+            return "Elapsed Time"
         return f"{node_type}_{feature_idx}"
 
     def _aggregate_features(self, explanation):
@@ -1368,23 +1334,34 @@ class GraphLIMEExplainer:
         x_feat = normalized.reshape(d, -1).T
         y_target = l_bar.reshape(-1)
 
+        alpha = self.hsic_lambda
+        best_coef = None
+        best_non_zero = -1
+
         import warnings
         from sklearn.exceptions import ConvergenceWarning
         from sklearn.linear_model import Lasso
 
-        alpha = self.hsic_lambda
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=ConvergenceWarning)
-            # Try progressively smaller alphas if coefficients shrink to exactly 0
-            for _ in range(4):
+            # Try progressively smaller alphas if coefficients are too sparse
+            for _ in range(5):
                 # Faster Lasso with fewer iterations
                 model = Lasso(alpha=alpha, fit_intercept=False, max_iter=1000)
                 model.fit(x_feat, y_target)
-                if not np.allclose(model.coef_, 0):
+                
+                num_non_zero = np.count_nonzero(model.coef_)
+                if num_non_zero > best_non_zero:
+                    best_non_zero = num_non_zero
+                    best_coef = model.coef_.copy()
+                    
+                # Stop if we found a reasonable number of non-zero features
+                if num_non_zero >= 3:
                     return model.coef_
+                    
                 alpha *= 0.1
 
-        return model.coef_
+        return best_coef if best_coef is not None else model.coef_
 
     def explain_local(self, graph, task="activity", num_perturbations=100):
         self.model.eval()

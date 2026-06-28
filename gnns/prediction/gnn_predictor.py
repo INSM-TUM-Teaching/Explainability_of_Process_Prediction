@@ -538,7 +538,7 @@ class GNNPredictor:
         patience=10,
         # `num_workers` make it either 4, 8 or 10 based on PC
         # its basically the number of CPU subprocess
-        num_workers=4,
+        num_workers=0,
         log_every=200,
         train_eval_batches=25,
     ):
@@ -655,6 +655,18 @@ class GNNPredictor:
                         if hasattr(case_indices[i], "item")
                         else case_indices[i]
                     )
+                    
+                    # Dynamically calculate elapsed time from PyG batch tensors
+                    # __ts_log is log1p(Timestamp_seconds / 1_000_000_000)
+                    ptr_start = int(batch["time"].ptr[i])
+                    ptr_end = int(batch["time"].ptr[i+1]) - 1
+                    
+                    first_ts_log = float(batch["time"].x[ptr_start][0])
+                    last_ts_log = float(batch["time"].x[ptr_end][0])
+                    
+                    first_ts_sec = np.expm1(first_ts_log)
+                    last_ts_sec = np.expm1(last_ts_log)
+                    elapsed_days = (last_ts_sec - first_ts_sec) / 86400.0
 
                     results.append(
                         {
@@ -672,6 +684,7 @@ class GNNPredictor:
                             "predicted_event_time_days": float(pred_time[i]),
                             "actual_remaining_time_days": float(y_rem[i]),
                             "predicted_remaining_time_days": float(pred_rem[i]),
+                            "current_elapsed_time_days": float(elapsed_days),
                         }
                     )
 
