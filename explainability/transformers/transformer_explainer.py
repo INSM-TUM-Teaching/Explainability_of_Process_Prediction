@@ -154,7 +154,7 @@ class SHAPExplainer:
                 x_seq = x_seq_flat.reshape((n_samples,) + self._seq_shape)
                 x_temp = x_temp_flat.reshape((n_samples,) + self._temp_shape)
                 preds = self.model.predict([x_seq, x_temp], verbose=0)
-                return preds if self.task == 'activity' else preds.flatten()
+                return preds if self.task in ['activity', 'outcome'] else preds.flatten()
             
             self._predict_fn_flat = predict_fn_flat
             self._background_flat = background_flat
@@ -191,7 +191,7 @@ class SHAPExplainer:
                 print(f"[WARNING] SHAP explainer init fallback: {e}")
                 def predict_fn_single(x):
                     preds = self.model.predict(x, verbose=0)
-                    return preds if self.task == 'activity' else preds.flatten()
+                    return preds if self.task in ['activity', 'outcome'] else preds.flatten()
                 self.explainer = shap.Explainer(predict_fn_single, background_sample, max_evals=self.max_evals)
 
     def _retry_with_required_max_evals(self, err):
@@ -302,8 +302,10 @@ class SHAPExplainer:
             return None, None, None
 
         values = self.shap_values.values
-        if isinstance(values, list):
-            values = values[0]
+        # If SHAP returned a list of arrays (one for each class), keep it so shap.summary_plot can draw stacked bars
+        was_list = isinstance(values, list)
+        if was_list:
+            pass # We will process each array in the list
         
         seq_len = self.test_data.shape[1] if self.test_data is not None else None
         if seq_len is None:
@@ -336,7 +338,7 @@ class SHAPExplainer:
         values = np.moveaxis(values, seq_axis, 1)
         
         if values.ndim > 2:
-            if self.task == 'activity':
+            if self.task in ['activity', 'outcome']:
                 values = np.abs(values).mean(axis=tuple(range(2, values.ndim)))
             else:
                 values = values.mean(axis=tuple(range(2, values.ndim)))
@@ -748,7 +750,7 @@ class LIMEExplainer:
         class_names = None
         mode = 'regression'
         
-        if self.task == 'activity':
+        if self.task in ['activity', 'outcome']:
             mode = 'classification'
             if self.label_encoder:
                 class_names = self.label_encoder.classes_.tolist()
@@ -790,13 +792,13 @@ class LIMEExplainer:
                         x_seq = np.clip(np.round(x_seq), 0, vocab_size-1).astype(int)
                         temp_batch = np.repeat(current_temp, x_seq.shape[0], axis=0)
                         preds = self.model.predict([x_seq, temp_batch], verbose=0)
-                        return preds.flatten() if self.task != 'activity' else preds
+                        return preds.flatten() if self.task not in ['activity', 'outcome'] else preds
                 else:
                     def predict_fn(x_seq):
                         if x_seq.ndim == 1: x_seq = x_seq.reshape(1, -1)
                         x_seq = np.clip(np.round(x_seq), 0, vocab_size-1).astype(int)
                         preds = self.model.predict(x_seq, verbose=0)
-                        return preds.flatten() if self.task != 'activity' else preds
+                        return preds.flatten() if self.task not in ['activity', 'outcome'] else preds
 
                 exp = self.explainer.explain_instance(
                     self.test_data_seq[i],
@@ -816,9 +818,11 @@ class LIMEExplainer:
             return "[PAD]"
         if self.label_encoder:
             try: 
+                # LIME perturbations might create token indices slightly outside the trained vocabulary
+                # due to its sampling. We fail gracefully instead of spamming warnings.
                 return self.label_encoder.inverse_transform([int(token_idx)-1])[0]
-            except Exception as e:
-                print(f"[WARNING] Failed to decode activity token {int(token_idx)}: {e}")
+            except Exception:
+                # Do not spam the console during LIME perturbations
                 pass
         return f"Activity_{int(token_idx)}"
 
@@ -835,7 +839,7 @@ class LIMEExplainer:
         
         pred_activity_name = None
         try:
-            if self.task == 'activity':
+            if self.task in ['activity', 'outcome']:
                 if hasattr(exp, 'top_labels') and exp.top_labels:
                     label_to_explain = exp.top_labels[0]
                 else:
@@ -1047,7 +1051,7 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
 def select_diverse_samples(data, task, num_diverse=10, label_encoder=None):
     import numpy as np
     
-    if task == 'activity':
+    if task in ['activity', 'outcome']:
         X_test = data.get('X_test', [])
         y_test = data.get('y_test', [])
         test_size = len(y_test)
@@ -1169,7 +1173,7 @@ class ExplainabilityBenchmark:
         else:
             preds = self.model.predict(x_seq, verbose=0)
         
-        if self.task == 'activity':
+        if self.task in ['activity', 'outcome']:
             return preds
         else:
             return preds.flatten()
@@ -1225,7 +1229,7 @@ class ExplainabilityBenchmark:
                 masked_pred = self._predict(x_masked, x_temp[i:i+1] if x_temp is not None else None)
                 
                 # Calculate prediction change
-                if self.task == 'activity':
+                if self.task in ['activity', 'outcome']:
                     # For classification: change in predicted class probability
                     pred_change = np.abs(orig_pred - masked_pred).max()
                 else:
@@ -1285,7 +1289,7 @@ class ExplainabilityBenchmark:
                 
                 masked_pred = self._predict(x_masked, x_temp[i:i+1] if x_temp is not None else None)
                 
-                if self.task == 'activity':
+                if self.task in ['activity', 'outcome']:
                     orig_conf = orig_pred.max()
                     masked_conf = masked_pred.max()
                     comp = orig_conf - masked_conf
@@ -1333,7 +1337,7 @@ class ExplainabilityBenchmark:
                 
                 top_pred = self._predict(x_only_top, x_temp[i:i+1] if x_temp is not None else None)
                 
-                if self.task == 'activity':
+                if self.task in ['activity', 'outcome']:
                     orig_conf = orig_pred.max()
                     top_conf = top_pred.max()
                     suff = orig_conf - top_conf
@@ -1490,14 +1494,14 @@ class ExplainabilityBenchmark:
             sample_attr = np.abs(attributions[i])
             sorted_indices = np.argsort(sample_attr)[::-1]  # Most important first
             
-            predictions = [orig_pred.flatten()[0] if self.task != 'activity' else orig_pred.max()]
+            predictions = [orig_pred.flatten()[0] if self.task not in ['activity', 'outcome'] else orig_pred.max()]
             x_masked = x_seq[i:i+1].copy()
             
             # Progressively remove features
             for j, idx in enumerate(sorted_indices[:min(10, seq_len)]):
                 x_masked[0, idx] = 0
                 pred = self._predict(x_masked, x_temp[i:i+1] if x_temp is not None else None)
-                pred_val = pred.flatten()[0] if self.task != 'activity' else pred.max()
+                pred_val = pred.flatten()[0] if self.task not in ['activity', 'outcome'] else pred.max()
                 predictions.append(pred_val)
             
             # Count monotonic decreases
@@ -1786,7 +1790,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
     
     is_time_task = task in ['time', 'event_time', 'remaining_time']
 
-    if task == 'activity':
+    if task in ['activity', 'outcome']:
         train_data = data['X_train']
         test_data = data['X_test']
         num_classes = len(np.unique(data['y_train']))
@@ -1809,7 +1813,7 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 se = SHAPExplainer(model, task, label_encoder, scaler)
             se.initialize_explainer(train_data)
             shap_indices = None
-            if task == 'activity':
+            if task in ['activity', 'outcome']:
                 shap_indices = select_diverse_samples(
                     data, task, num_diverse=num_samples, label_encoder=label_encoder
                 )
@@ -1880,10 +1884,11 @@ def run_transformer_explainability(model, data, output_dir, task='activity', num
                 # Plot all explained samples (now they match 0-9)
                 print(f"\n[LIME] Plotting {len(le.explanations)} explanations...")
                 plots_saved = 0
-                for i in range(len(le.explanations)):
+                # Limit to 5 plots to avoid overwhelming the user with a graph for each outcome
+                max_plots = min(5, len(le.explanations))
+                for i in range(max_plots):
                     try:
                         if le.explanations[i] is not None:
-                            # Use original test set index in filename
                             original_idx = diverse_samples[i]
                             print(f"[LIME] Plotting sample {i} (original index: {original_idx})...")
                             le.plot_explanation(lime_dir, sample_idx=i, original_idx=original_idx)

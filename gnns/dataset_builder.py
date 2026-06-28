@@ -22,6 +22,7 @@ def load_prefix_table(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, parse_dates=["Timestamp"])
     print(f"Loaded {len(df)} rows")
 
+    df["Timestamp"] = pd.to_datetime(df["Timestamp"], utc=False)
     df["__ts_log"] = np.log1p(df["Timestamp"].astype("int64") // 1_000_000_000).astype("float32")
 
     return df

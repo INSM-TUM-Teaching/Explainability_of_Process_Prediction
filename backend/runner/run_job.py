@@ -215,6 +215,7 @@ def main():
             run_gnn_unified_prediction,
             run_best_nap_prediction,
             run_best_rtp_prediction,
+            run_outcome_prediction,
         )
 
         if model_type == "transformer" and not config:
@@ -248,25 +249,38 @@ def main():
                     explainability_method=explainability,
                     skip_auto_mapping=skip_auto_mapping,
                 )
+            elif task == "outcome":
+                metrics = run_outcome_prediction(
+                    dataset_path, artifacts_dir, model_type, test_size, val_split, config,
+                    explainability_method=explainability, target_column=target_column,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
             else:
                 raise RuntimeError(f"Unsupported transformer task: {task}")
 
         elif model_type == "gnn":
-            if task not in {"next_activity", "custom_activity", "event_time", "remaining_time", "unified"}:
+            if task not in {"next_activity", "custom_activity", "event_time", "remaining_time", "unified", "outcome"}:
                 raise RuntimeError(f"Unsupported gnn task: {task}")
 
-            gnn_task = "next_activity" if task == "custom_activity" else task
-            metrics = run_gnn_unified_prediction(
-                dataset_path,
-                artifacts_dir,
-                test_size,
-                val_split,
-                config,
-                explainability_method=explainability,
-                task=gnn_task,
-                target_column=target_column if task == "custom_activity" else None,
-                skip_auto_mapping=skip_auto_mapping,
-            )
+            if task == "outcome":
+                metrics = run_outcome_prediction(
+                    dataset_path, artifacts_dir, model_type, test_size, val_split, config,
+                    explainability_method=explainability, target_column=target_column,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
+            else:
+                gnn_task = "next_activity" if task == "custom_activity" else task
+                metrics = run_gnn_unified_prediction(
+                    dataset_path,
+                    artifacts_dir,
+                    test_size,
+                    val_split,
+                    config,
+                    explainability_method=explainability,
+                    task=gnn_task,
+                    target_column=target_column if task == "custom_activity" else None,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
         elif model_type == "best":
             if task == "next_activity":
                 metrics = run_best_nap_prediction(
@@ -284,6 +298,12 @@ def main():
                     config=config,
                     split=split,
                     explainability=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
+            elif task == "outcome":
+                metrics = run_outcome_prediction(
+                    dataset_path, artifacts_dir, model_type, test_size, val_split, config,
+                    explainability_method=explainability, target_column=target_column,
                     skip_auto_mapping=skip_auto_mapping,
                 )
             else:

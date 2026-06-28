@@ -142,7 +142,8 @@ class NextActivityPredictor:
             group = grouped.get_group(case_id)
             activities = group['activity'].values
 
-            prefix_indices = list(range(1, len(activities)))
+            limit = len(activities) if self.max_len is None else min(len(activities), self.max_len + 1)
+            prefix_indices = list(range(1, limit))
             if max_prefixes_per_case is not None and len(prefix_indices) > max_prefixes_per_case:
                 step = max(1, len(prefix_indices) // max_prefixes_per_case)
                 prefix_indices = prefix_indices[::step][:max_prefixes_per_case]

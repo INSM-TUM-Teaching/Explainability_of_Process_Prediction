@@ -104,7 +104,7 @@ function normalizeModelType(v: string | null): "gnn" | "transformer" | "best" | 
 
 function normalizeTask(
   v: string | null
-): "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace" | null {
+): "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace" | "outcome" | null {
   if (!v) return null;
   const s = v.toLowerCase().trim();
 
@@ -114,6 +114,7 @@ function normalizeTask(
   if (s === "remaining_time" || s.includes("remaining time")) return "remaining_time";
   if (s === "unified") return "unified";
   if (s === "remaining_trace") return "remaining_trace";
+  if (s === "outcome" || s.includes("outcome")) return "outcome";
 
   return null;
 }

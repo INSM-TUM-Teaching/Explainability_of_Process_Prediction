@@ -344,16 +344,22 @@ class BESTExplainer:
             if predictions is None or len(predictions) == 0:
                 return None, 0
 
-            if self.task != "nap":
+            if self.task not in ["nap", "outcome"]:
                 return None, 0
 
-            # Use the same logic as save_results in predictor.py
             prefixes = runner.test_seq.relevant_prefixes
             n = min(len(prefixes), len(predictions))
-            actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
-            tracker = getattr(self.model, "choice_tracker_nap", {})
-            probs = tracker.get("prob", [None] * n)
             padding_size = getattr(self.model, "_padding_size", 0)
+            
+            if self.task == "outcome":
+                tracker = getattr(self.model, "choice_tracker_rtp", {})
+                probs = tracker.get("prob", [None] * n)
+                true_vals = getattr(runner, "outcome_y_true", [None] * n)
+                pred_vals = getattr(runner, "outcome_y_pred", [None] * n)
+            else:
+                tracker = getattr(self.model, "choice_tracker_nap", {})
+                probs = tracker.get("prob", [None] * n)
+                actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
 
             rows = []
             import json
@@ -370,18 +376,27 @@ class BESTExplainer:
                 # Filter out START/END for the UI sequence
                 filtered_seq = [a for a in decoded_seq if a not in ["START", "END"]]
                 
+                if self.task == "outcome":
+                    true_val = true_vals[i]
+                    pred_val = pred_vals[i]
+                else:
+                    true_val = runner._decode_activity(actuals_enc[i])
+                    pred_val = runner._decode_activity(predictions[i])
+                
                 rows.append({
                     "case_id": str(prefix_data["case_id"]),
                     "case_index": len(filtered_seq), # Update case_index to reflect true length
                     "sequence": json.dumps(filtered_seq),
-                    "true_next": runner._decode_activity(actuals_enc[i]),
-                    "pred_next": runner._decode_activity(predictions[i]),
+                    "true_next": true_val,
+                    "pred_next": pred_val,
                     "confidence": probs[i] if i < len(probs) else None
                 })
             
             return pd.DataFrame(rows), n
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"[BEST Explainer] Warning: could not build prediction frame: {e}")
             return None, 0
 

@@ -64,7 +64,8 @@ class RemainingTimePredictor:
                 fvt3_vals = group['fvt3'].values
                 case_start = timestamps[0]
 
-                for i in range(1, len(activities)):
+                limit = len(activities) if self.max_len is None else min(len(activities), self.max_len + 1)
+                for i in range(1, limit):
                     seq = activities[:i]
                     temp_feat = [fvt1_vals[i], fvt2_vals[i], fvt3_vals[i]]
                     time_remaining = (timestamps[-1] - timestamps[i-1]).astype('timedelta64[s]').astype(float) / 86400

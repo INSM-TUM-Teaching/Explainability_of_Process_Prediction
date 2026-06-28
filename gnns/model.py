@@ -52,11 +52,14 @@ class HeteroGNN(nn.Module):
         dropout: float = 0.1,
         loss_weights=(1.0, 1.0, 1.0),
         num_layers: int = 2,
+        task: str = "unified",
+        num_outcome_classes: int = None,
     ):
         super().__init__()
         node_types, edge_types = metadata
         self.loss_weights = loss_weights
         self.num_layers = num_layers
+        self.task = task
 
         # Input projection for each node type
         self.proj = nn.ModuleDict(
@@ -86,9 +89,12 @@ class HeteroGNN(nn.Module):
         self.drop = nn.Dropout(dropout)
 
         # Output heads
-        self.out_act = Linear(hidden_channels, num_activity_classes)
-        self.out_time = Linear(hidden_channels, 1)
-        self.out_rem = Linear(hidden_channels, 1)
+        if self.task == "outcome":
+            self.out_outcome = Linear(hidden_channels, num_outcome_classes)
+        else:
+            self.out_act = Linear(hidden_channels, num_activity_classes)
+            self.out_time = Linear(hidden_channels, 1)
+            self.out_rem = Linear(hidden_channels, 1)
 
     def forward(self, data):
         """
@@ -151,11 +157,14 @@ class HeteroGNN(nn.Module):
             raise ValueError("No activity, resource, or time nodes found in graph!")
         
         # Generate predictions from LAST state
-        act = self.out_act(pooled)
-        time = self.out_time(pooled).squeeze(-1)
-        rem = self.out_rem(pooled).squeeze(-1)
-        
-        return act, time, rem
+        if self.task == "outcome":
+            outcome_logits = self.out_outcome(pooled)
+            return outcome_logits
+        else:
+            act = self.out_act(pooled)
+            time = self.out_time(pooled).squeeze(-1)
+            rem = self.out_rem(pooled).squeeze(-1)
+            return act, time, rem
 
     def _get_last_node_per_graph(self, node_features, batch):
         """
@@ -182,22 +191,26 @@ class HeteroGNN(nn.Module):
         
         return torch.stack(pooled)
 
-    def compute_loss(self, act_logits, time_pred, rem_pred, batch):
+    def compute_loss(self, outputs, batch):
         """
-        Compute weighted multi-task loss.
-        
-        Now with balanced default weights (1.0, 1.0, 1.0) instead of (1.0, 0.1, 0.1)
+        Compute weighted multi-task loss or single outcome loss.
         """
-        y_act = batch.y_activity.view(-1)
-        y_time = batch.y_timestamp.view(-1)
-        y_rem = batch.y_remaining_time.view(-1)
+        if self.task == "outcome":
+            outcome_logits = outputs
+            y_outcome = batch.y_outcome.view(-1)
+            loss = F.cross_entropy(outcome_logits, y_outcome)
+            return loss
+        else:
+            act_logits, time_pred, rem_pred = outputs
+            y_act = batch.y_activity.view(-1)
+            y_time = batch.y_timestamp.view(-1)
+            y_rem = batch.y_remaining_time.view(-1)
 
-        w_act, w_time, w_rem = self.loss_weights
+            w_act, w_time, w_rem = self.loss_weights
 
-        loss = (
-            w_act * F.cross_entropy(act_logits, y_act)
-            + w_time * F.l1_loss(time_pred, y_time)
-            + w_rem * F.l1_loss(rem_pred, y_rem)
-        )
-        
-        return loss
+            loss = (
+                w_act * F.cross_entropy(act_logits, y_act)
+                + w_time * F.l1_loss(time_pred, y_time)
+                + w_rem * F.l1_loss(rem_pred, y_rem)
+            )
+            return loss

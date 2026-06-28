@@ -76,6 +76,31 @@ def build_next_activity_model(vocab_size, max_len, d_model=64, num_heads=4,
     model = keras.Model(inputs=inputs, outputs=outputs)
     return model
 
+# ============================================================================
+# OUTCOME PREDICTION MODEL
+# ============================================================================
+def build_outcome_model(vocab_size, num_outcome_classes, max_len, d_model=64, num_heads=4, 
+                               num_blocks=2, dropout_rate=0.1):
+    """
+    Build model for outcome prediction.
+    Uses GlobalAveragePooling1D, outputs probability distribution over outcome classes.
+    """
+    inputs = layers.Input(shape=(max_len,))
+    x = layers.Embedding(vocab_size, d_model, mask_zero=True)(inputs)
+    x = PositionalEncoding(max_len, d_model)(x)
+    
+    for _ in range(num_blocks):
+        x = TransformerBlock(d_model, num_heads, dff=128, dropout_rate=dropout_rate)(x)
+    
+    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.Dropout(dropout_rate)(x)
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dropout(dropout_rate)(x)
+    outputs = layers.Dense(num_outcome_classes, activation='softmax')(x)
+    
+    model = keras.Model(inputs=inputs, outputs=outputs)
+    return model
+
 
 # ============================================================================
 # TIME PREDICTION MODEL - TIMESTEP-PRESERVING VERSION (RECOMMENDED)
