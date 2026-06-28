@@ -17,7 +17,7 @@ type PredictionRecord = {
   variant_id?: string | number;
 };
 
-export default function NextActivityResults({ runId, summary, uploadedFileName, configMode }: any) {
+export default function RemainingTraceResults({ runId, summary, uploadedFileName, configMode }: any) {
   const [predictions, setPredictions] = useState<PredictionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -46,7 +46,9 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
                 ...row,
                 case_id: String(row.case_id).replace(/^Case\s+/i, ""),
                 case_index: parseInt(String(row.case_index), 10),
-                confidence: parseFloat(String(row.confidence)) || 0
+                confidence: parseFloat(String(row.confidence)) || 0,
+                true_next_activity: row.actual_remaining_trace || row.true_next_activity,
+                predicted_next_activity: row.predicted_remaining_trace || row.predicted_next_activity
               }));
             setPredictions(validData);
           } else {
@@ -171,7 +173,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
                     records={predictions.filter(p => p.case_id === cid)} 
                     runId={runId}
                     modelType={summary.request?.model_type}
-                    taskType={summary.request?.task}
+                    taskType="remaining_trace"
                     autoExpand={search === cid}
                     explainabilityType={summary.request?.explainability || "none"}
                   />
@@ -186,7 +188,7 @@ export default function NextActivityResults({ runId, summary, uploadedFileName, 
 }
 
 
-function CasePredictionBlock({ caseId, records, runId, modelType, taskType, explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, taskType?: string, explainabilityType?: string, autoExpand?: boolean }) {
+function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "remaining_trace", explainabilityType, autoExpand = false }: { caseId: string, records: any[], runId: string, modelType: string, taskType?: string, explainabilityType?: string, autoExpand?: boolean }) {
   const [expanded, setExpanded] = useState(autoExpand);
   const maxIndex = Math.max(...records.map(r => r.case_index));
 
@@ -305,23 +307,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
       setExplaining(true);
       try {
         await explainOnDemand(runId, caseId, selectedIndex, selectedExplain);
-        let shapValues = null;
-        if (selectedExplain.toLowerCase() === "shap") {
-          try {
-            const shapRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/shap_values.json`));
-            if (shapRes.ok) {
-              shapValues = await shapRes.json();
-            }
-          } catch(e) {}
-        } else if (selectedExplain.toLowerCase() === "gradient") {
-          try {
-            const gradRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/gradient_values.json`));
-            if (gradRes.ok) {
-              shapValues = await gradRes.json();
-            }
-          } catch(e) {}
-        }
-        setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now(), shapValues });
+        setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now() });
       } catch(e) {
         console.error(e);
         alert("Explanation failed");
@@ -376,52 +362,42 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
                 } catch {
                   activities = selectedRecord.sequence.split(',').map((a: string) => a.trim());
                 }
-                return activities.map((act: string, i: number, arr: string[]) => {
-                  let shapVal = null;
-                  if (explainResult?.shapValues && explainResult.shapValues[i] !== undefined) {
-                    shapVal = Number(explainResult.shapValues[i]);
-                  }
-                  
-                  return (
-                    <div key={i} className="flex items-center gap-2">
-                      <div 
-                        className="relative bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap cursor-help"
-                        title={shapVal !== null ? `Contribution: ${shapVal > 0 ? '+' : ''}${shapVal.toFixed(3)} to target probability` : act.trim()}
-                      >
-                        {act.trim()}
-                      </div>
-                      {/* Arrow: Solid for history, Longer Dashed for the transition to target */}
-                      {i === arr.length - 1 ? (
-                        <svg className="w-10 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 40 24">
-                          {/* The Stem - Dashed */}
-                          <path 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round" 
-                            strokeWidth={2} 
-                            strokeDasharray="6 6"
-                            d="M3 12h34" 
-                          />
-                          {/* The Head - Solid */}
-                          <path 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round" 
-                            strokeWidth={2} 
-                            d="M30 5l7 7-7 7" 
-                          />
-                        </svg>
-                      ) : (
-                        <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path 
-                            strokeLinecap="round" 
-                            strokeLinejoin="round" 
-                            strokeWidth={2} 
-                            d="M14 5l7 7-7 7M21 12H3" 
-                          />
-                        </svg>
-                      )}
+                return activities.map((act: string, i: number, arr: string[]) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <div className="bg-brand-50 border border-brand-500 text-brand-800 px-3 py-1.5 rounded-md shadow-sm text-xs font-medium whitespace-nowrap">
+                      {act.trim()}
                     </div>
-                  );
-                });
+                    {/* Arrow: Solid for history, Longer Dashed for the transition to target */}
+                    {i === arr.length - 1 ? (
+                      <svg className="w-10 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 40 24">
+                        {/* The Stem - Dashed */}
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          strokeDasharray="6 6"
+                          d="M3 12h34" 
+                        />
+                        {/* The Head - Solid */}
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          d="M30 5l7 7-7 7" 
+                        />
+                      </svg>
+                    ) : (
+                      <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path 
+                          strokeLinecap="round" 
+                          strokeLinejoin="round" 
+                          strokeWidth={2} 
+                          d="M14 5l7 7-7 7M21 12H3" 
+                        />
+                      </svg>
+                    )}
+                  </div>
+                ));
               })()}
               
               {/* True Next Activity (Target) */}
@@ -436,13 +412,13 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
           <div className="grid grid-cols-3 gap-4">
             <div className="p-3 border rounded">
               <div className="text-slate-500 mb-1">
-                True Next Activity
+                True Remaining Trace
               </div>
               <div className="font-semibold">{selectedRecord.true_next_activity}</div>
             </div>
             <div className={`p-3 border rounded ${isCorrect ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
               <div className={`mb-1 ${isCorrect ? 'text-green-700' : 'text-red-700'}`}>
-                Predicted Next Activity
+                Predicted Remaining Trace
               </div>
               <div className={`font-semibold ${isCorrect ? 'text-green-800' : 'text-red-800'}`}>{selectedRecord.predicted_next_activity}</div>
             </div>
@@ -468,23 +444,24 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
             </div>
           </div>
 
-          <div className="mt-4 pt-4 border-t flex flex-col gap-3">
-            <div className="flex gap-3 items-center">
-              <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
-              {!isBestModel && (
-                <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
-                  {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
-                </select>
-              )}
-              <button 
-                onClick={handleExplain} 
-                disabled={explaining}
-                className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
-              >
-                {explaining ? "Generating..." : "Generate"}
-              </button>
-            </div>
-          
+          {explainabilityType !== "none" && (
+            <div className="mt-4 pt-4 border-t flex flex-col gap-3">
+              <div className="flex gap-3 items-center">
+                <strong>{isBestModel ? "Pattern Analysis:" : "Generate Explanation:"}</strong>
+                {!isBestModel && (
+                  <select className="border rounded px-2 py-1" value={selectedExplain} onChange={e => setSelectedExplain(e.target.value)}>
+                    {explains.map(ex => <option key={ex} value={ex}>{ex}</option>)}
+                  </select>
+                )}
+                <button 
+                  onClick={handleExplain} 
+                  disabled={explaining}
+                  className="bg-brand-600 text-white px-4 py-1.5 rounded text-sm hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {explaining ? "Generating..." : "Generate"}
+                </button>
+              </div>
+            
             {explainResult && (
               <div className="mt-4 border rounded p-4 bg-slate-50">
                 {explainResult.type === "pattern_heatmap" ? (
@@ -599,6 +576,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType, expl
               </div>
             )}
           </div>
+          )}
         </div>
       )}
     </div>

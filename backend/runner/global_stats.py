@@ -218,29 +218,24 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     if model_type == "gnn":
         pred_file = os.path.join(artifacts_dir, "gnn_predictions.json")
     elif model_type == "transformer":
-        if task in ["remaining_time", "time", "event_time"]:
-            pred_file = os.path.join(artifacts_dir, f"{task}_predictions.csv")
-        else:
-            pred_file = os.path.join(artifacts_dir, "transformer_predictions.json")
+        pred_file = os.path.join(artifacts_dir, "transformer_predictions.json")
     else:
         pred_file = os.path.join(artifacts_dir, "best_predictions.json")
         
     if not os.path.exists(pred_file):
-        # Fallback to CSV if expected JSON is missing (or vice versa)
+        # Fallback to CSV (BEST model outputs CSV by default)
         csv_file = pred_file.replace(".json", ".csv")
         if os.path.exists(csv_file):
-            pred_file = csv_file
+            try:
+                preds_df = pd.read_csv(csv_file)
+                # Ensure sequence is treated safely if empty
+                if 'sequence' in preds_df.columns:
+                    preds_df['sequence'] = preds_df['sequence'].fillna("")
+                preds = preds_df.to_dict(orient="records")
+            except Exception as e:
+                return {"error": f"Could not read predictions CSV: {e}"}
         else:
             return {"error": "Predictions not found"}
-            
-    if pred_file.endswith(".csv"):
-        try:
-            preds_df = pd.read_csv(pred_file)
-            if 'sequence' in preds_df.columns:
-                preds_df['sequence'] = preds_df['sequence'].fillna("")
-            preds = preds_df.to_dict(orient="records")
-        except Exception as e:
-            return {"error": f"Could not read predictions CSV: {e}"}
     else:
         with open(pred_file, 'r') as f:
             preds = json.load(f)
@@ -287,12 +282,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     seen_case_variants: dict = {}  # case_id -> variant_sig (to avoid double-counting)
 
     overall_correct = 0
-    overall_error_sum = 0
-    overall_sq_error_sum = 0
-    overall_true_sum = 0
-    overall_pred_sum = 0
     total_preds = len(preds)
-    is_regression = task == "remaining_time"
 
     for p in preds:
         c_id = str(p.get("case_id"))
@@ -323,12 +313,12 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
             pred_val = float(p.get("predicted_remaining_time_days", 0))
             error = abs(true_val - pred_val)
             sq_error = (true_val - pred_val) ** 2
-            
+
             overall_error_sum += error
             overall_sq_error_sum += sq_error
             overall_true_sum += true_val
             overall_pred_sum += pred_val
-            
+
             if var_sig not in variant_stats:
                 variant_stats[var_sig] = {"case_ids": set(), "correct": 0, "total_rows": 0, "error_sum": 0, "sq_error_sum": 0, "true_sum": 0, "pred_sum": 0}
             variant_stats[var_sig]["total_rows"] += 1
@@ -338,32 +328,33 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
             variant_stats[var_sig]["pred_sum"] += pred_val
             variant_stats[var_sig]["case_ids"].add(c_id)
             seen_case_variants[c_id] = var_sig
-            
+
             if prefix_len not in prefix_stats:
                 prefix_stats[prefix_len] = {"total": 0, "correct": 0, "error_sum": 0}
             prefix_stats[prefix_len]["total"] += 1
             prefix_stats[prefix_len]["error_sum"] += error
         else:
-            true_act = p.get("true_next_activity") or p.get("actual_next_activity")
-            pred_act = p.get("predicted_next_activity")
+            true_act = p.get("true_next_activity") or p.get("actual_next_activity") or p.get("actual_remaining_trace")
+            pred_act = p.get("predicted_next_activity") or p.get("predicted_remaining_trace")
 
-            is_correct = (true_act == pred_act)
-            if is_correct:
-                overall_correct += 1
+        is_correct = (true_act == pred_act)
+        if is_correct:
+            overall_correct += 1
 
-            if var_sig not in variant_stats:
-                variant_stats[var_sig] = {"case_ids": set(), "correct": 0, "total_rows": 0}
-            variant_stats[var_sig]["total_rows"] += 1
-            if is_correct:
-                variant_stats[var_sig]["correct"] += 1
-            variant_stats[var_sig]["case_ids"].add(c_id)
-            seen_case_variants[c_id] = var_sig
+        if var_sig not in variant_stats:
+            variant_stats[var_sig] = {"case_ids": set(), "correct": 0, "total_rows": 0}
+        variant_stats[var_sig]["total_rows"] += 1
+        if is_correct:
+            variant_stats[var_sig]["correct"] += 1
+        # Track unique cases per variant (not rows)
+        variant_stats[var_sig]["case_ids"].add(c_id)
+        seen_case_variants[c_id] = var_sig
 
-            if prefix_len not in prefix_stats:
-                prefix_stats[prefix_len] = {"total": 0, "correct": 0}
-            prefix_stats[prefix_len]["total"] += 1
-            if is_correct:
-                prefix_stats[prefix_len]["correct"] += 1
+        if prefix_len not in prefix_stats:
+            prefix_stats[prefix_len] = {"total": 0, "correct": 0}
+        prefix_stats[prefix_len]["total"] += 1
+        if is_correct:
+            prefix_stats[prefix_len]["correct"] += 1
 
     # Save updated predictions with variant IDs back to files
     try:
@@ -383,48 +374,25 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
     variant_list = []
     for var_sig, stats in variant_stats.items():
         unique_cases = len(stats["case_ids"])
-        if is_regression:
-            mae = stats["error_sum"] / stats["total_rows"] if stats["total_rows"] > 0 else 0
-            rmse = (stats["sq_error_sum"] / stats["total_rows"]) ** 0.5 if stats["total_rows"] > 0 else 0
-            mean_actual = stats["true_sum"] / stats["total_rows"] if stats["total_rows"] > 0 else 0
-            mean_pred = stats["pred_sum"] / stats["total_rows"] if stats["total_rows"] > 0 else 0
-            variant_list.append({
-                "id": _generate_variant_id(var_sig),
-                "variant": var_sig,
-                "total_cases_in_test": unique_cases,
-                "accuracy": mae,  # Used as sorting key
-                "mae": mae,
-                "rmse": rmse,
-                "mean_actual": mean_actual,
-                "mean_predicted": mean_pred
-            })
-        else:
-            acc = (stats["correct"] / stats["total_rows"]) * 100 if stats["total_rows"] > 0 else 0
-            variant_list.append({
-                "id": _generate_variant_id(var_sig),
-                "variant": var_sig,
-                "total_cases_in_test": unique_cases,
-                "accuracy": acc
-            })
+        # Accuracy = correct rows / total rows (per-step accuracy)
+        acc = (stats["correct"] / stats["total_rows"]) * 100 if stats["total_rows"] > 0 else 0
+        variant_list.append({
+            "id": _generate_variant_id(var_sig),
+            "variant": var_sig,
+            "total_cases_in_test": unique_cases,
+            "accuracy": acc
+        })
     variant_list.sort(key=lambda x: x["total_cases_in_test"], reverse=True)
 
     
     prefix_list = []
     for plen, stats in prefix_stats.items():
-        if is_regression:
-            mae = stats["error_sum"] / stats["total"] if stats["total"] > 0 else 0
-            prefix_list.append({
-                "prefix_length": plen,
-                "total_cases": stats["total"],
-                "accuracy": mae
-            })
-        else:
-            acc = (stats["correct"] / stats["total"]) * 100 if stats["total"] > 0 else 0
-            prefix_list.append({
-                "prefix_length": plen,
-                "total_cases": stats["total"],
-                "accuracy": acc
-            })
+        acc = (stats["correct"] / stats["total"]) * 100 if stats["total"] > 0 else 0
+        prefix_list.append({
+            "prefix_length": plen,
+            "total_cases": stats["total"],
+            "accuracy": acc
+        })
     prefix_list.sort(key=lambda x: x["prefix_length"])
     
     # Extract Global Explainability (if available)
@@ -473,12 +441,7 @@ def calculate_global_metrics(run_dir: str, dataset_path: str):
                 pass
 
     res = {
-        "overall_accuracy": (overall_correct / total_preds * 100) if (not is_regression and total_preds > 0) else ((overall_error_sum / total_preds) if total_preds > 0 else 0),
-        "overall_mae": (overall_error_sum / total_preds) if (is_regression and total_preds > 0) else None,
-        "overall_rmse": ((overall_sq_error_sum / total_preds) ** 0.5) if (is_regression and total_preds > 0) else None,
-        "mean_actual": (overall_true_sum / total_preds) if (is_regression and total_preds > 0) else None,
-        "mean_predicted": (overall_pred_sum / total_preds) if (is_regression and total_preds > 0) else None,
-        "is_regression": is_regression,
+        "overall_accuracy": (overall_correct / total_preds * 100) if total_preds > 0 else 0,
         "total_dataset_cases": len(case_groups.keys()),
         "unique_variants": len(set(variants.values())),
         "total_test_events": total_preds,
