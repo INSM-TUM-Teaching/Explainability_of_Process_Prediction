@@ -78,7 +78,7 @@ class RemainingTimePredictor:
                     remaining_times.append(time_remaining)
                     time_sequences.append(time_seq)
                     case_ids.append(case_id)
-                    elapsed_times.append(fvt2_vals[i] / 86400.0)
+                    elapsed_times.append(fvt2_vals[i-1] / 86400.0)
 
             return sequences, np.array(temporal_features), np.array(remaining_times), time_sequences, case_ids, np.array(elapsed_times)
 
