@@ -26,8 +26,10 @@ export default function DynamicHorizontalBarChart({ data, baseValue, task, metho
   // We reverse it to show the most important features at the top.
   const sortedData = [...data].reverse();
   
-  const maxPos = Math.max(...data.map(d => Math.max(0, d.importance)), 0.001);
-  const maxNeg = Math.max(...data.map(d => Math.max(0, -d.importance)), 0.001);
+  const maxPosRaw = Math.max(...data.map(d => Math.max(0, d.importance)), 0);
+  const maxNegRaw = Math.max(...data.map(d => Math.max(0, -d.importance)), 0);
+  const maxPos = maxPosRaw === 0 && maxNegRaw === 0 ? 1 : maxPosRaw;
+  const maxNeg = maxPosRaw === 0 && maxNegRaw === 0 ? 0 : maxNegRaw;
   const totalSpan = maxPos + maxNeg;
 
   // We use 20% margin on both ends of the chart area for local explanations to allow space for values
@@ -41,6 +43,13 @@ export default function DynamicHorizontalBarChart({ data, baseValue, task, metho
   const formatValue = (val: number) => {
     if (isTemporal) {
       return `${val > 0 ? '+' : ''}${val.toFixed(2)} d`;
+    }
+    const absVal = Math.abs(val);
+    if (absVal === 0) {
+      return '0.000';
+    }
+    if (absVal < 0.001) {
+      return `${val > 0 ? '+' : ''}${val.toExponential(2)}`;
     }
     return `${val > 0 ? '+' : ''}${val.toFixed(3)}`;
   };
@@ -60,6 +69,7 @@ export default function DynamicHorizontalBarChart({ data, baseValue, task, metho
       <div 
         className={`grid w-full relative z-20 ${description ? 'mt-14' : 'mt-8'}`}
         style={{ gridTemplateColumns: 'max-content 1fr' }}
+        onMouseLeave={() => setHoveredIdx(null)}
       >
         
         {/* Overlay for grid lines in the 2nd column */}
@@ -87,7 +97,7 @@ export default function DynamicHorizontalBarChart({ data, baseValue, task, metho
         </div>
 
         {sortedData.map((item, idx) => {
-          const isZero = Math.abs(item.importance) < 1e-6;
+          const isZero = Math.abs(item.importance) < 1e-15;
           const isPositive = item.importance > 0;
           const barWidthPct = (Math.abs(item.importance) / totalSpan) * usableWidth;
           const isHovered = hoveredIdx === idx;

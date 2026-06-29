@@ -199,7 +199,9 @@ class SHAPExplainer:
             )
             def fast_predict(x_seq, x_temp):
                 preds = self.model([x_seq, x_temp], training=False)
-                return preds[0] if isinstance(preds, (list, tuple)) else preds
+                if isinstance(preds, (list, tuple)):
+                    return preds[1] if self.task == "outcome" and len(preds) > 1 else preds[0]
+                return preds
 
             def predict_fn_flat(x_flat):
                 """Prediction function that takes flattened input and returns model output."""
@@ -276,7 +278,9 @@ class SHAPExplainer:
                 )
                 def fast_predict_single(x):
                     preds = self.model(x, training=False)
-                    return preds[0] if isinstance(preds, (list, tuple)) else preds
+                    if isinstance(preds, (list, tuple)):
+                        return preds[1] if self.task == "outcome" and len(preds) > 1 else preds[0]
+                    return preds
 
                 def predict_fn_single(x):
                     n_samples = x.shape[0] if hasattr(x, 'shape') else len(x)
@@ -1358,11 +1362,11 @@ class LIMEExplainer:
                         if n_samples > 1024:
                             preds = self.model.predict([x_seq, temp_batch], batch_size=512, verbose=0)
                             if isinstance(preds, list):
-                                preds = preds[0]
+                                preds = preds[1] if self.task == "outcome" and len(preds) > 1 else preds[0]
                         else:
                             preds = self.model([x_seq, temp_batch], training=False)
                             if isinstance(preds, (list, tuple)):
-                                preds = preds[0].numpy()
+                                preds = preds[1].numpy() if self.task == "outcome" and len(preds) > 1 else preds[0].numpy()
                             else:
                                 preds = preds.numpy()
 
@@ -1380,11 +1384,11 @@ class LIMEExplainer:
                         if n_samples > 1024:
                             preds = self.model.predict(x_seq, batch_size=512, verbose=0)
                             if isinstance(preds, list):
-                                preds = preds[0]
+                                preds = preds[1] if self.task == "outcome" and len(preds) > 1 else preds[0]
                         else:
                             preds = self.model(x_seq, training=False)
                             if isinstance(preds, (list, tuple)):
-                                preds = preds[0].numpy()
+                                preds = preds[1].numpy() if self.task == "outcome" and len(preds) > 1 else preds[0].numpy()
                             else:
                                 preds = preds.numpy()
 
