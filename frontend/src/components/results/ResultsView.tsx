@@ -8,7 +8,7 @@ import NextActivityResults from "./NextActivityResults";
 import RemainingTimeResults from "./RemainingTimeResults";
 import EventTimeResults from "./EventTimeResults";
 import RemainingTraceResults from "./RemainingTraceResults";
-
+import OutcomePredictionResults from "./OutcomePredictionResults";
 import {
   artifactUrl,
   artifactsZipUrl,
@@ -229,13 +229,20 @@ export default function ResultsView({
     );
   }
 
-  if (summaryFile?.request?.task === "next_activity" || summaryFile?.request?.task === "custom_activity" || summaryFile?.request?.task === "remaining_trace") {
+  if (summaryFile?.request?.task === "next_activity" || summaryFile?.request?.task === "custom_activity" || summaryFile?.request?.task === "remaining_trace" || summaryFile?.request?.task === "outcome") {
     return (
       <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
         <div className="flex-1 overflow-auto min-w-0">
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-8 py-8">
             {summaryFile?.request?.task === "remaining_trace" ? (
               <RemainingTraceResults
+                runId={runId}
+                summary={summaryFile}
+                uploadedFileName={uploadedFileName}
+                configMode={configMode}
+              />
+            ) : summaryFile?.request?.task === "outcome" ? (
+              <OutcomePredictionResults
                 runId={runId}
                 summary={summaryFile}
                 uploadedFileName={uploadedFileName}
