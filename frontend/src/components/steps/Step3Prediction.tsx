@@ -86,6 +86,26 @@ export default function Step3Prediction({
             />
           </div>
 
+          <div
+            onClick={() => onSelectTask("outcome")}
+            className={`${baseCard} ${isSelected("outcome") ? selectedCard : unselectedCard}`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Outcome Prediction</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the final outcome of a running process instance. Evaluated with accuracy
+                and none-share (BEST task: outcome).
+              </div>
+            </div>
+            <div
+              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("outcome")
+                  ? "border-brand-600 bg-brand-600"
+                  : "border-gray-300"
+              }`}
+            />
+          </div>
+
         </div>
       ) : (
         <>
@@ -167,6 +187,28 @@ export default function Step3Prediction({
             <div
               className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
                 isSelected("custom_activity")
+                  ? "border-brand-600 bg-brand-600"
+                  : "border-gray-300"
+              }`}
+            />
+          </div>
+
+          <div
+            onClick={() => onSelectTask("outcome")}
+            className={`${baseCard} ${
+              isSelected("outcome") ? selectedCard : unselectedCard
+            }`}
+          >
+            <div className="pr-6 min-w-0">
+              <div className="font-medium text-gray-900">Outcome Prediction</div>
+              <div className="text-sm text-gray-600 mt-1 break-words">
+                Predict the final outcome of a running process instance based on its
+                activity prefix. Each case&apos;s last activity is used as its outcome label.
+              </div>
+            </div>
+            <div
+              className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+                isSelected("outcome")
                   ? "border-brand-600 bg-brand-600"
                   : "border-gray-300"
               }`}

@@ -221,7 +221,7 @@ class SHAPExplainer:
                 else:
                     preds = fast_predict(x_seq, x_temp).numpy()
 
-                return preds if self.task in ("activity", "next_activity") else preds.flatten()
+                return preds if self.task in ("activity", "next_activity", "outcome") else preds.flatten()
 
             self._predict_fn_flat = predict_fn_flat
             self._background_flat = background_flat
@@ -290,8 +290,8 @@ class SHAPExplainer:
                     else:
                         preds = fast_predict_single(x_cast).numpy()
 
-                    return preds if self.task == "activity" else preds.flatten()
-                    return preds if self.task == "activity" else preds.flatten()
+                    return preds if self.task in ("activity", "outcome") else preds.flatten()
+                    return preds if self.task in ("activity", "outcome") else preds.flatten()
 
                 self.explainer = shap.Explainer(
                     predict_fn_single, background_sample, max_evals=self.max_evals
@@ -475,7 +475,7 @@ class SHAPExplainer:
         values = np.moveaxis(values, seq_axis, 1)
 
         if values.ndim > 2:
-            if self.task in ("activity", "next_activity"):
+            if self.task in ("activity", "next_activity", "outcome"):
                 max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
                 values = np.take_along_axis(values, max_abs_idx, axis=-1).squeeze(
                     axis=-1
@@ -579,7 +579,7 @@ class SHAPExplainer:
 
         # Aggregate logic for Local Sample
         if values.ndim > 2:
-            if self.task in ("activity", "next_activity"):
+            if self.task in ("activity", "next_activity", "outcome"):
                 max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
                 sample_values = np.take_along_axis(
                     values, max_abs_idx, axis=-1
@@ -808,7 +808,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
                 else:
                     values = values.reshape((values.shape[0],) + self._seq_shape)
                     if values.ndim > 2:
-                        if self.task in ("activity", "next_activity"):
+                        if self.task in ("activity", "next_activity", "outcome"):
                             max_abs_idx = np.argmax(
                                 np.abs(values), axis=-1, keepdims=True
                             )
@@ -827,7 +827,7 @@ class TimestepSHAPExplainer(SHAPExplainer):
             if seq_axis is not None:
                 values = np.moveaxis(values, seq_axis, 1)
                 if values.ndim > 2:
-                    if self.task in ("activity", "next_activity"):
+                    if self.task in ("activity", "next_activity", "outcome"):
                         max_abs_idx = np.argmax(np.abs(values), axis=-1, keepdims=True)
                         values = np.take_along_axis(
                             values, max_abs_idx, axis=-1
@@ -1264,7 +1264,7 @@ class LIMEExplainer:
         class_names = None
         mode = "regression"
 
-        if self.task in ("activity", "next_activity"):
+        if self.task in ("activity", "next_activity", "outcome"):
             mode = "classification"
             if self.label_encoder:
                 class_names = self.label_encoder.classes_.tolist()
@@ -1366,7 +1366,7 @@ class LIMEExplainer:
                             else:
                                 preds = preds.numpy()
 
-                        return preds if self.task in ("activity", "next_activity") else preds.flatten()
+                        return preds if self.task in ("activity", "next_activity", "outcome") else preds.flatten()
 
                 else:
                     instance_to_explain = self.test_data_seq[i]
@@ -1388,7 +1388,7 @@ class LIMEExplainer:
                             else:
                                 preds = preds.numpy()
 
-                        return preds if self.task in ("activity", "next_activity") else preds.flatten()
+                        return preds if self.task in ("activity", "next_activity", "outcome") else preds.flatten()
 
                 exp = self.explainer.explain_instance(
                     instance_to_explain,
@@ -1416,7 +1416,7 @@ class LIMEExplainer:
                 continue
 
             exp_list = None
-            if self.task in ("activity", "next_activity"):
+            if self.task in ("activity", "next_activity", "outcome"):
                 true_class = self.y_true[i] if self.y_true is not None else None
                 if true_class is not None:
                     try:
@@ -1621,7 +1621,7 @@ class LIMEExplainer:
 
         pred_activity_name = None
         try:
-            if self.task in ("activity", "next_activity"):
+            if self.task in ("activity", "next_activity", "outcome"):
                 if hasattr(exp, "top_labels") and exp.top_labels:
                     label_to_explain = exp.top_labels[0]
                 else:
@@ -1976,7 +1976,7 @@ def generate_comparison_report(output_dir, shap_dir, lime_dir):
 def select_diverse_samples(data, task, num_diverse=10, label_encoder=None):
     import numpy as np
 
-    if task == "activity":
+    if task in ("activity", "outcome"):
         X_test = data.get("X_test", [])
         y_test = data.get("y_test", [])
         test_size = len(y_test)
@@ -2000,7 +2000,7 @@ def select_diverse_samples(data, task, num_diverse=10, label_encoder=None):
     selected = []
     selected_set = set()
 
-    if task == "activity" and num_classes:
+    if task in ("activity", "outcome") and num_classes:
         required = num_classes
         if num_diverse < required:
             print(
@@ -2142,7 +2142,7 @@ class ExplainabilityBenchmark:
         if isinstance(preds, list):
             preds = preds[0]
 
-        if self.task in ("activity", "next_activity"):
+        if self.task in ("activity", "next_activity", "outcome"):
             return preds
         else:
             return preds.flatten()
@@ -2199,7 +2199,7 @@ class ExplainabilityBenchmark:
                 orig_pred = orig_preds_all[i : i + 1]
                 masked_pred = masked_preds_all[i : i + 1]
 
-                if self.task in ("activity", "next_activity"):
+                if self.task in ("activity", "next_activity", "outcome"):
                     pred_change = np.abs(orig_pred - masked_pred).max()
                 else:
                     pred_change = np.abs(orig_pred - masked_pred).mean()
@@ -2263,7 +2263,7 @@ class ExplainabilityBenchmark:
             x_masked_batch = np.array(x_masked_list)
             masked_preds = self._predict(x_masked_batch, x_temp)
 
-            if self.task == "activity":
+            if self.task in ("activity", "outcome"):
                 orig_confs = orig_preds.max(axis=1)
                 masked_confs = masked_preds.max(axis=1)
                 comp_scores = orig_confs - masked_confs
@@ -2316,7 +2316,7 @@ class ExplainabilityBenchmark:
             x_only_top_batch = np.array(x_only_top_list)
             top_preds = self._predict(x_only_top_batch, x_temp)
 
-            if self.task == "activity":
+            if self.task in ("activity", "outcome"):
                 orig_confs = orig_preds.max(axis=1)
                 top_confs = top_preds.max(axis=1)
                 suff_scores = orig_confs - top_confs
@@ -2903,7 +2903,7 @@ def run_transformer_explainability(
 
     is_time_task = task in ["time", "event_time", "remaining_time"]
 
-    if task == "activity":
+    if task in ("activity", "outcome"):
         train_data = data["X_train"]
         test_data = data["X_test"]
         num_classes = len(np.unique(data["y_train"]))
@@ -2930,7 +2930,7 @@ def run_transformer_explainability(
                 se = SHAPExplainer(model, task, label_encoder, scaler)
             se.initialize_explainer(train_data)
             shap_indices = None
-            if task == "activity":
+            if task in ("activity", "outcome"):
                 shap_indices = select_diverse_samples(
                     data, task, num_diverse=num_samples, label_encoder=label_encoder
                 )
@@ -3094,7 +3094,7 @@ def run_transformer_explainability(
                         if exp is not None:
                             # Extract feature weights from LIME explanation
                             if (
-                                task == "activity"
+                                task in ("activity", "outcome")
                                 and hasattr(exp, "top_labels")
                                 and exp.top_labels
                             ):

@@ -51,6 +51,7 @@ if TENSORFLOW_AVAILABLE:
     from transformers.prediction.next_activity import NextActivityPredictor
     from transformers.prediction.event_time import EventTimePredictor
     from transformers.prediction.remaining_time import RemainingTimePredictor
+    from transformers.prediction.outcome import OutcomePredictor
 
 if PYTORCH_AVAILABLE:
     from gnns.prediction.gnn_predictor import GNNPredictor
@@ -429,6 +430,90 @@ def run_remaining_time_prediction(
     return metrics
 
 
+def run_outcome_prediction(
+    dataset_path,
+    output_dir,
+    test_size,
+    val_split,
+    config,
+    explainability_method=None,
+    skip_auto_mapping=False,
+):
+    if not TENSORFLOW_AVAILABLE:
+        raise RuntimeError("TensorFlow not available. Transformer runs cannot execute.")
+
+    df = pd.read_csv(dataset_path)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
+
+    df = _safe_rename_columns(df, {
+        'CaseID': 'case:id',
+        'Activity': 'concept:name',
+        'Timestamp': 'time:timestamp'
+    })
+
+    predictor = OutcomePredictor(
+        max_len=config['max_len'],
+        d_model=config['d_model'],
+        num_heads=config['num_heads'],
+        num_blocks=config['num_blocks'],
+        dropout_rate=config['dropout_rate']
+    )
+
+    data = predictor.prepare_data(
+        df,
+        test_size=test_size,
+        val_split=val_split,
+        max_cases=config.get("max_cases"),
+        max_prefixes_per_case=config.get("max_prefixes_per_case"),
+    )
+    predictor.build_model()
+    predictor.train(
+        data,
+        epochs=config['epochs'],
+        batch_size=config['batch_size'],
+        patience=config['patience']
+    )
+
+    metrics = predictor.evaluate(data)
+    y_pred, y_pred_probs = predictor.predict(data)
+    predictor.save_results(data, y_pred, y_pred_probs, output_dir)
+    predictor.plot_training_history(output_dir)
+    predictor.save_model(output_dir)
+
+    if explainability_method and not EXPLAINABILITY_AVAILABLE:
+        raise RuntimeError(
+            "Explainability requested, but explainability modules are unavailable: "
+            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
+        )
+
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        explainability_samples = config.get("explainability_samples", 50)
+        feature_config = {}
+        if hasattr(predictor, "vocab_size") and predictor.vocab_size is not None:
+            feature_config["vocab_size"] = predictor.vocab_size
+
+        run_transformer_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            task='outcome',
+            num_samples=explainability_samples,
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=None,
+            feature_config=feature_config,
+            run_benchmark=False
+        )
+
+    return metrics
+
+
 def run_gnn_unified_prediction(
     dataset_path,
     output_dir,
@@ -468,6 +553,8 @@ def run_gnn_unified_prediction(
         loss_weights = (0.0, 1.0, 0.0)
     elif task == 'remaining_time':
         loss_weights = (0.0, 0.0, 1.0)
+    elif task == 'outcome':
+        loss_weights = (0.0, 0.0, 0.0, 1.0)
     else:
         loss_weights = (1.0, 0.1, 0.1)
 
@@ -516,6 +603,8 @@ def run_gnn_unified_prediction(
             tasks_to_explain = ['event_time']
         elif task == 'remaining_time':
             tasks_to_explain = ['remaining_time']
+        elif task == 'outcome':
+            tasks_to_explain = ['outcome']
         else:
             tasks_to_explain = ['activity']
 
@@ -620,6 +709,51 @@ def run_best_rtp_prediction(
     if explainability:
         print("[BEST RTP] Running explainability...")
         run_best_explainability(runner, output_dir, task="rtp")
+
+    return metrics
+
+def run_best_outcome_prediction(
+    dataset_path,
+    output_dir,
+    config,
+    split,
+    explainability=None,
+    skip_auto_mapping=False,
+):
+    if not BEST_AVAILABLE:
+        raise RuntimeError(
+            f"best4ppm not available. Install with: pip install git+https://github.com/lmu-dbs/BEST.git"
+            f" ({BEST_IMPORT_ERROR})"
+        )
+
+    df = pd.read_csv(dataset_path)
+    if skip_auto_mapping:
+        missing = [c for c in ["CaseID", "Activity", "Timestamp"] if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required columns (manual mapping): {missing}")
+    else:
+        df, _, _ = detect_and_standardize_columns(df, verbose=False)
+
+    test_size = float(split.get("test_size", 0.2))
+
+    runner = BESTRunner(config=config, task="outcome")
+    print("[BEST OUTCOME] Preparing data...")
+    runner.prepare_data(df, test_size=test_size)
+    print("[BEST OUTCOME] Fitting model...")
+    runner.fit()
+    print("[BEST OUTCOME] Running predictions...")
+    runner.predict()
+
+    print("[BEST OUTCOME] Evaluating...")
+    metrics = runner.evaluate()
+    print(f"[BEST OUTCOME] Metrics: {metrics}")
+    runner.save_results(output_dir)
+    runner.plot_performance(output_dir)
+    runner.save_model(output_dir)
+
+    if explainability:
+        print("[BEST OUTCOME] Running explainability...")
+        run_best_explainability(runner, output_dir, task="outcome")
 
     return metrics
 

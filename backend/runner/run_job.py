@@ -221,6 +221,7 @@ def main():
             run_next_activity_prediction,
             run_event_time_prediction,
             run_remaining_time_prediction,
+            run_outcome_prediction,
             run_gnn_unified_prediction,
             run_best_nap_prediction,
             run_best_rtp_prediction,
@@ -267,6 +268,16 @@ def main():
                     explainability_method=explainability,
                     skip_auto_mapping=skip_auto_mapping,
                 )
+            elif task == "outcome":
+                metrics = run_outcome_prediction(
+                    dataset_path,
+                    artifacts_dir,
+                    test_size,
+                    val_split,
+                    config,
+                    explainability_method=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
             else:
                 raise RuntimeError(f"Unsupported transformer task: {task}")
 
@@ -278,6 +289,7 @@ def main():
                 "event_time",
                 "remaining_time",
                 "unified",
+                "outcome",
             }:
                 raise RuntimeError(f"Unsupported gnn task: {task}")
 
@@ -308,6 +320,16 @@ def main():
                 )
             elif task == "remaining_trace":
                 metrics = run_best_rtp_prediction(
+                    dataset_path,
+                    artifacts_dir,
+                    config=config,
+                    split=split,
+                    explainability=explainability,
+                    skip_auto_mapping=skip_auto_mapping,
+                )
+            elif task == "outcome":
+                from ppm_pipeline import run_best_outcome_prediction
+                metrics = run_best_outcome_prediction(
                     dataset_path,
                     artifacts_dir,
                     config=config,
