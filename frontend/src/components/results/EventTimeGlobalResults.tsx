@@ -6,7 +6,8 @@ import dagre from 'dagre';
 import { artifactUrl, API_BASE } from "../../lib/api";
 import ProcessMapNode from "./ProcessMapNode";
 import ProcessMapTerminalNode from "./ProcessMapTerminalNode";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Line } from "recharts";
+import { ResponsiveContainer, ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
+import DynamicHorizontalBarChart from "./DynamicHorizontalBarChart";
 
 interface EventTimeGlobalResultsProps {
   runId: string;
@@ -538,11 +539,11 @@ export default function EventTimeGlobalResults({ runId, datasetId, summary, onCa
         {/* Prediction Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-2">
           <div className="rounded border bg-brand-50 border-brand-200 p-4 text-center shadow-sm">
-              <div className="text-sm text-brand-600 uppercase tracking-wide font-semibold">Test MAE</div>
+              <div className="text-sm text-brand-600 uppercase tracking-wide font-semibold cursor-help" title="Mean Absolute Error">Test MAE</div>
               <div className="mt-1 text-2xl font-bold text-brand-800">{(globalStats.overall_mae || 0).toFixed(2)} d</div>
           </div>
           <div className="rounded border bg-white p-4 text-center shadow-sm">
-              <div className="text-sm text-slate-500 uppercase tracking-wide">Test RMSE</div>
+              <div className="text-sm text-slate-500 uppercase tracking-wide cursor-help" title="Root Mean Square Error">Test RMSE</div>
               <div className="mt-1 text-2xl font-semibold text-slate-700">{(globalStats.overall_rmse || 0).toFixed(2)} d</div>
           </div>
           <div className="rounded border bg-white p-4 text-center shadow-sm">
@@ -578,12 +579,12 @@ export default function EventTimeGlobalResults({ runId, datasetId, summary, onCa
             <ComposedChart data={variantChartData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
-              <YAxis yAxisId="right" orientation="right" stroke="#16a34a" />
+              <YAxis yAxisId="left" orientation="left" stroke="#2855A3" />
+              <YAxis yAxisId="right" orientation="right" stroke="#f58220" />
               <Tooltip />
               <Legend verticalAlign="top" />
-              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
-              <Line yAxisId="right" type="monotone" dataKey="mae" name="MAE (Days)" stroke="#16a34a" strokeWidth={3} />
+              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#2855A3" />
+              <Line yAxisId="right" type="monotone" dataKey="mae" name="MAE (Days)" stroke="#f58220" strokeWidth={3} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -595,12 +596,12 @@ export default function EventTimeGlobalResults({ runId, datasetId, summary, onCa
             <ComposedChart data={lowestAccuracyVariantsData} margin={{ top: 5, right: 30, left: 20, bottom: 50 }}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="left" orientation="left" stroke="#8884d8" />
-              <YAxis yAxisId="right" orientation="right" stroke="#16a34a" />
+              <YAxis yAxisId="left" orientation="left" stroke="#2855A3" />
+              <YAxis yAxisId="right" orientation="right" stroke="#f58220" />
               <Tooltip />
               <Legend verticalAlign="top" />
-              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#8884d8" />
-              <Line yAxisId="right" type="monotone" dataKey="mae" name="MAE (Days)" stroke="#16a34a" strokeWidth={3} />
+              <Bar yAxisId="left" dataKey="total" name="Test Cases" fill="#2855A3" />
+              <Line yAxisId="right" type="monotone" dataKey="mae" name="MAE (Days)" stroke="#f58220" strokeWidth={3} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -613,50 +614,47 @@ export default function EventTimeGlobalResults({ runId, datasetId, summary, onCa
           <h2 className="text-xl font-bold text-brand-900 border-b pb-2">Explainability Results (for test set)</h2>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {globalStats.global_explanations && globalStats.global_explanations.shap_features && globalStats.global_explanations.shap_features.length > 0 && (
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-            <h3 className="text-md font-semibold mb-2 text-brand-900">Global Feature Importance (SHAP)</h3>
-            <p className="text-xs text-slate-500 mb-4">Averaged SHAP impact across a sample of {summary?.request?.config?.explainability_samples || 100} predictions.</p>
-            <ResponsiveContainer width="100%" height="80%">
-              <BarChart layout="vertical" data={globalStats.global_explanations.shap_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
-                <Tooltip />
-                <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <DynamicHorizontalBarChart 
+            title="Global Feature Importance (SHAP)"
+            description={`Averaged SHAP impact across a sample of ${summary?.request?.config?.explainability_samples || 100} predictions.`}
+            data={globalStats.global_explanations.shap_features
+              .sort((a: any, b: any) => b.importance - a.importance)
+              .slice(0, 15)
+              .reverse()
+              .map((f: any) => ({ activity: f.feature, importance: f.importance }))}
+            task={summary?.request?.task || "event_time"}
+            method="SHAP"
+            isGlobal={true}
+          />
         )}
 
         {globalStats.global_explanations && globalStats.global_explanations.gnn_features && globalStats.global_explanations.gnn_features.length > 0 && (
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-            <h3 className="text-md font-semibold mb-2 text-brand-900">Global Feature Importance (Gradient)</h3>
-            <p className="text-xs text-slate-500 mb-4">Averaged Gradient magnitude across a sample of {summary?.request?.config?.explainability_samples || 100} predictions.</p>
-            <ResponsiveContainer width="100%" height="80%">
-              <BarChart layout="vertical" data={globalStats.global_explanations.gnn_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
-                <Tooltip />
-                <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <DynamicHorizontalBarChart 
+            title="Global Feature Importance (Gradient)"
+            description={`Averaged Gradient magnitude across a sample of ${summary?.request?.config?.explainability_samples || 100} predictions.`}
+            data={globalStats.global_explanations.gnn_features
+              .sort((a: any, b: any) => b.importance - a.importance)
+              .slice(0, 15)
+              .reverse()
+              .map((f: any) => ({ activity: f.feature, importance: f.importance }))}
+            task={summary?.request?.task || "event_time"}
+            method="Gradient"
+            isGlobal={true}
+          />
         )}
 {globalStats.global_explanations && globalStats.global_explanations.lime_features && globalStats.global_explanations.lime_features.length > 0 && (
-          <div className="rounded border bg-white p-4 shadow-sm h-[400px]">
-            <h3 className="text-md font-semibold mb-2 text-brand-900">Global Feature Importance ({summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"})</h3>
-            <p className="text-xs text-slate-500 mb-4">Averaged {summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"} weights across a sample of {summary?.request?.config?.explainability_samples || 100} predictions.</p>
-            <ResponsiveContainer width="100%" height="80%">
-              <BarChart layout="vertical" data={globalStats.global_explanations.lime_features.sort((a: any, b: any) => b.importance - a.importance).slice(0, 15)} margin={{ top: 5, right: 30, left: 100, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" />
-                <YAxis dataKey="feature" type="category" width={100} tick={{fontSize: 12}} />
-                <Tooltip />
-                <Bar dataKey="importance" fill="#8884d8" name="Mean Impact" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <DynamicHorizontalBarChart 
+            title={`Global Feature Importance (${summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"})`}
+            description={`Averaged ${summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"} weights across a sample of ${summary?.request?.config?.explainability_samples || 100} predictions.`}
+            data={globalStats.global_explanations.lime_features
+              .sort((a: any, b: any) => b.importance - a.importance)
+              .slice(0, 15)
+              .reverse()
+              .map((f: any) => ({ activity: f.feature, importance: f.importance }))}
+            task={summary?.request?.task || "event_time"}
+            method={summary?.request?.model_type === "gnn" ? "GraphLIME" : "LIME"}
+            isGlobal={true}
+          />
         )}
         </div>
         

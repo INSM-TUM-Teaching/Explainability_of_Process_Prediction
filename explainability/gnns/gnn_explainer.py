@@ -65,14 +65,14 @@ class GradientExplainer:
         if "Activity" in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs["Activity"].items()}
             name = inv_vocab.get(int(idx), f"Act_{idx}")
-            return name[:18] + ".." if len(name) > 18 else name
+            return name
         return f"activity_{idx}"
 
     def _get_resource_name(self, idx):
         if "Resource" in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs["Resource"].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
-            name = name[:12] + ".." if len(name) > 12 else name
+            name = name
             return f"{name} [Resource]"
         return f"Resource_{idx} [Resource]"
 
@@ -327,7 +327,21 @@ class GradientExplainer:
                 step_contributions.append(contrib_sum)
                 step_info.append(info)
 
-        return np.array(step_contributions), score.item(), true_val, step_info
+        step_contributions = np.array(step_contributions)
+        score_val = score.item()
+        
+        if task in ["remaining_time", "time", "event_time"] and getattr(self, "scaler", None) is not None:
+            try:
+                scale_factor = self.scaler.scale_[0]
+                mean_val = self.scaler.mean_[0]
+                step_contributions = step_contributions * scale_factor
+                score_val = score_val * scale_factor + mean_val
+                if true_val is not None:
+                    true_val = true_val * scale_factor + mean_val
+            except Exception:
+                pass
+
+        return step_contributions, score_val, true_val, step_info
 
     def plot_individual_gradient_explanation(
         self, contributions, pred, true_val, step_info, output_dir, task, sample_id
@@ -352,30 +366,10 @@ class GradientExplainer:
             contributions  # removed np.mean(contributions) mean-centering
         )
 
-        if task in ["event_time", "remaining_time"]:
-            x_labels = []
-            for i, info in enumerate(step_info):
-                activity = info.get("activity", "N/A")
-                if len(activity) > 15:
-                    activity = activity[:13] + ".."
-                    
-                if timestamps[i] is not None:
-                    timestamp = timestamps[i]
-                    if timestamp < 1:
-                        time_str = f"{timestamp*24:.1f}h"
-                    else:
-                        time_str = f"Day {timestamp:.1f}"
-                else:
-                    time_str = f"Step {info['step']}"
-                
-                x_labels.append(f"{activity}\n{time_str}")
-        else:
-            x_labels = []
-            for info in step_info:
-                activity = info.get("activity", f"Step_{info['step']}")
-                if len(activity) > 15:
-                    activity = activity[:13] + ".."
-                x_labels.append(activity)
+        x_labels = []
+        for info in step_info:
+            activity = info.get("activity", f"Step_{info.get('step', 'N/A')}")
+            x_labels.append(activity)
 
         time_steps = np.arange(num_steps)
         positive = np.maximum(centered_contrib, 0)
@@ -510,6 +504,15 @@ class GradientExplainer:
 
             print(f"  [✓] Details CSV saved")
 
+        import json
+        gradient_local_data = {
+            "features": [{"activity": act, "importance": float(imp)} for act, imp in zip(x_labels, centered_contrib)],
+            "base_value": float(pred - sum(centered_contrib)) if task in ["remaining_time", "time", "event_time"] else 0.0,
+            "task": task
+        }
+        with open(os.path.join(output_dir, "gradient_local_data.json"), "w") as f:
+            json.dump(gradient_local_data, f)
+
     def plot_with_readable_table(self, results, output_dir, task):
         os.makedirs(output_dir, exist_ok=True)
 
@@ -636,8 +639,7 @@ class GradientExplainer:
         ):
             if abs(contrib) >= threshold:
                 activity_str = str(activity)
-                if len(activity_str) > 12:
-                    activity_str = activity_str[:10] + ".."
+                # No truncation
 
                 if contrib > 0:
                     y_pos = contrib + label_offset
@@ -843,14 +845,14 @@ class TemporalGradientExplainer:
         if "Activity" in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs["Activity"].items()}
             name = inv_vocab.get(int(idx), f"Act_{idx}")
-            return name[:18] + ".." if len(name) > 18 else name
+            return name
         return f"activity_{idx}"
 
     def _get_resource_name(self, idx):
         if "Resource" in self.vocabs:
             inv_vocab = {v: k for k, v in self.vocabs["Resource"].items()}
             name = inv_vocab.get(int(idx), f"Res_{idx}")
-            name = name[:12] + ".." if len(name) > 12 else name
+            name = name
             return f"{name} [Resource]"
         return f"Resource_{idx} [Resource]"
 
@@ -967,7 +969,21 @@ class TemporalGradientExplainer:
                 step_contributions.append(contrib_sum)
                 step_info.append(info)
 
-        return np.array(step_contributions), score.item(), true_val, step_info
+        step_contributions = np.array(step_contributions)
+        score_val = score.item()
+        
+        if task in ["remaining_time", "time", "event_time"] and getattr(self, "scaler", None) is not None:
+            try:
+                scale_factor = self.scaler.scale_[0]
+                mean_val = self.scaler.mean_[0]
+                step_contributions = step_contributions * scale_factor
+                score_val = score_val * scale_factor + mean_val
+                if true_val is not None:
+                    true_val = true_val * scale_factor + mean_val
+            except Exception:
+                pass
+
+        return step_contributions, score_val, true_val, step_info
 
     def plot_individual_gradient_explanation(
         self, contributions, pred, true_val, step_info, output_dir, task, sample_id
@@ -984,31 +1000,17 @@ class TemporalGradientExplainer:
                 timestamps.append(info["timestamp"])
             else:
                 timestamps.append(None)
-
+        
         fig, ax = plt.subplots(figsize=(18, 8))
 
         centered_contrib = (
             contributions  # removed np.mean(contributions) mean-centering
         )
 
-        if task in ["event_time", "remaining_time"]:
-            x_labels = []
-            for i, info in enumerate(step_info):
-                if timestamps[i] is not None:
-                    timestamp = timestamps[i]
-                    if timestamp < 1:
-                        x_labels.append(f"{timestamp*24:.1f}h")
-                    else:
-                        x_labels.append(f"Day {timestamp:.1f}")
-                else:
-                    x_labels.append(f"Step {info['step']}")
-        else:
-            x_labels = []
-            for info in step_info:
-                activity = info.get("activity", f"Step_{info['step']}")
-                if len(activity) > 15:
-                    activity = activity[:13] + ".."
-                x_labels.append(activity)
+        x_labels = []
+        for info in step_info:
+            activity = info.get("activity", f"Step_{info.get('step', 'N/A')}")
+            x_labels.append(activity)
 
         time_steps = np.arange(num_steps)
         positive = np.maximum(centered_contrib, 0)
@@ -1074,8 +1076,7 @@ class TemporalGradientExplainer:
             for i in range(num_steps):
                 info = step_info[i]
                 activity = info.get("activity", "N/A")
-                if len(activity) > 12:
-                    activity = activity[:10] + ".."
+                # No truncation
 
                 contrib_val = centered_contrib[i]
                 if contrib_val > 0:
@@ -1536,6 +1537,19 @@ class GraphLIMEExplainer:
             )
 
         step_info = [{"feature": row["activity"]} for row in aggregated_explanation]
+        
+        if task in ["remaining_time", "time", "event_time"] and getattr(self, "scaler", None) is not None:
+            try:
+                scale_factor = self.scaler.scale_[0]
+                mean_val = self.scaler.mean_[0]
+                for row in aggregated_explanation:
+                    row["importance"] *= scale_factor
+                base_score = base_score * scale_factor + mean_val
+                if true_val is not None:
+                    true_val = true_val * scale_factor + mean_val
+            except Exception:
+                pass
+                
         return aggregated_explanation, base_score, true_val, step_info, predicted_class
 
     def plot_local(
@@ -1617,6 +1631,14 @@ class GraphLIMEExplainer:
 
         csv_path = os.path.join(output_dir, f"graphlime_sample_{sample_id}_{task}.csv")
         df.to_csv(csv_path, index=False)
+
+        graphlime_local_data = {
+            "features": df[["activity", "importance"]].to_dict(orient="records"),
+            "base_value": float(base_score) if base_score is not None and task in ["remaining_time", "time", "event_time"] else 0.0,
+            "task": task
+        }
+        with open(os.path.join(output_dir, "graphlime_local_data.json"), "w") as f:
+            json.dump(graphlime_local_data, f)
 
     def plot_local_explanation(
         self,

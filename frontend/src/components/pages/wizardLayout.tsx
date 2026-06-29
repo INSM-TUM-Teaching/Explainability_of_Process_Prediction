@@ -271,7 +271,7 @@ export default function WizardLayout() {
   const [artifacts, setArtifacts] = useLocalStorage<string[]>("wizard_artifacts", []);
   const [runError, setRunError] = useLocalStorage<string | null>("wizard_runError", null);
   const [runLogs, setRunLogs] = useLocalStorage<string[]>("wizard_runLogs", []);
-  const [autoDownloadedRunId, setAutoDownloadedRunId] = useLocalStorage<string | null>("wizard_autoDownloadedRunId", null);
+
 
   const [viewMode, setViewMode] = useLocalStorage<ViewMode>("wizard_viewMode", "wizard");
 
@@ -358,7 +358,6 @@ export default function WizardLayout() {
     setRunStatus(null);
     setArtifacts([]);
     setRunError(null);
-    setAutoDownloadedRunId(null);
     setRunLogs([]);
   };
 
@@ -395,7 +394,6 @@ export default function WizardLayout() {
     setRunStatus(null);
     setArtifacts([]);
     setRunError(null);
-    setAutoDownloadedRunId(null);
     setRunLogs([]);
   };
 
@@ -568,15 +566,6 @@ export default function WizardLayout() {
           setPipelineStatus("completed");
           setStep(7);
           setViewMode("results");
-          if (autoDownloadedRunId !== runId) {
-            const link = document.createElement("a");
-            link.href = artifactsZipUrl(runId);
-            link.download = `run_${runId}_artifacts.zip`;
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            setAutoDownloadedRunId(runId);
-          }
         }
 
         if (st.status === "failed") {

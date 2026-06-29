@@ -666,8 +666,8 @@ class SHAPExplainer:
         with open(os.path.join(output_dir, "shap_values.json"), "w") as f:
             json.dump(seq_shap_values, f)
 
-        if self.task == "remaining_time":
-            base_val = 0.0
+        base_val = 0.0
+        if self.task in ["remaining_time", "time", "event_time"]:
             if hasattr(self.shap_values, 'base_values'):
                 bvs = self.shap_values.base_values
                 base_val = float(bvs[sample_idx]) if isinstance(bvs, (list, np.ndarray)) else float(bvs)
@@ -679,7 +679,16 @@ class SHAPExplainer:
                     base_val = self.scaler.inverse_transform([[base_val]])[0][0]
                 except Exception:
                     pass
-                
+                    
+        shap_local_data = {
+            "features": df[["activity", "importance"]].to_dict(orient="records"),
+            "base_value": base_val,
+            "task": self.task
+        }
+        with open(os.path.join(output_dir, "shap_local_data.json"), "w") as f:
+            json.dump(shap_local_data, f)
+
+        if self.task == "remaining_time":
             plot_waterfall_local(
                 df,
                 current_seq_names,
@@ -1806,8 +1815,8 @@ class LIMEExplainer:
         with open(os.path.join(output_dir, "lime_values.json"), "w") as f:
             json.dump(seq_lime_values, f)
 
-        if self.task == "remaining_time":
-            base_val = 0.0
+        base_val = 0.0
+        if self.task in ["remaining_time", "time", "event_time"]:
             if hasattr(exp, 'intercept'):
                 if isinstance(exp.intercept, dict):
                     if 1 in exp.intercept:
@@ -1823,6 +1832,15 @@ class LIMEExplainer:
                 except Exception:
                     pass
 
+        lime_local_data = {
+            "features": df[["activity", "importance"]].to_dict(orient="records"),
+            "base_value": base_val,
+            "task": self.task
+        }
+        with open(os.path.join(output_dir, "lime_local_data.json"), "w") as f:
+            json.dump(lime_local_data, f)
+
+        if self.task == "remaining_time":
             plot_waterfall_local(
                 df,
                 current_seq_names,

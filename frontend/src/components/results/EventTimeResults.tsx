@@ -4,6 +4,7 @@ import { explainOnDemand } from "../../lib/api_explain";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import EventTimeGlobalResults from "./EventTimeGlobalResults";
 import Papa from "papaparse";
+import DynamicHorizontalBarChart from "./DynamicHorizontalBarChart";
 
 type PredictionRecord = {
   case_id: string;
@@ -146,7 +147,7 @@ export default function EventTimeResults({ runId, summary, uploadedFileName, con
         <TabsContent value="local">
           <div className="rounded-2xl border border-brand-100 bg-white p-6 shadow-sm mt-4">
             <div className="flex items-center justify-between gap-3 mb-6">
-              <h2 className="text-lg font-semibold text-brand-900">Local Prediction Data</h2>
+              <h2 className="text-lg font-semibold text-brand-900">Local Prediction Data (for test set)</h2>
               <input 
                 type="text" 
                 placeholder="Search by Case ID or Variant ID..." 
@@ -302,22 +303,39 @@ function EventTimeCasePredictionBlock({ caseId, records, runId, modelType, expla
       try {
         await explainOnDemand(runId, caseId, selectedIndex, selectedExplain);
         let shapValues = null;
-        if (selectedExplain.toLowerCase() === "shap") {
+        let localData = null;
+        const methodLower = selectedExplain.toLowerCase();
+        
+        try {
+          const localDataRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/${methodLower}_local_data.json`));
+          if (localDataRes.ok) {
+            localData = await localDataRes.json();
+          }
+        } catch(e) {}
+
+        if (methodLower === "shap") {
           try {
             const shapRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/shap_values.json`));
             if (shapRes.ok) {
               shapValues = await shapRes.json();
             }
           } catch(e) {}
-        } else if (selectedExplain.toLowerCase() === "gradient") {
+        } else if (methodLower === "gradient") {
           try {
             const gradRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/gradient_values.json`));
             if (gradRes.ok) {
               shapValues = await gradRes.json();
             }
           } catch(e) {}
+        } else if (methodLower === "lime") {
+          try {
+            const limeRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/lime_values.json`));
+            if (limeRes.ok) {
+              shapValues = await limeRes.json();
+            }
+          } catch(e) {}
         }
-        setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now(), shapValues });
+        setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now(), shapValues, localData });
       } catch(e) {
         console.error(e);
         alert("Explanation failed");
@@ -548,12 +566,21 @@ function EventTimeCasePredictionBlock({ caseId, records, runId, modelType, expla
                   </div>
                 ) : (
                   <div>
-                    <div className="flex items-center gap-2 mb-3">
-                      <h4 className="font-medium">{explainResult.method} Explanation</h4>
-                    </div>
-                    <div className="flex flex-col gap-4">
-                      <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
-                    </div>
+                    {explainResult.localData ? (
+                      <DynamicHorizontalBarChart 
+                        data={explainResult.localData.features} 
+                        baseValue={explainResult.localData.base_value} 
+                        task={explainResult.localData.task || "event_time"} 
+                        method={explainResult.method} 
+                      />
+                    ) : (
+                      <>
+                        <h4 className="font-medium mb-3">{explainResult.method} Explanation</h4>
+                        <div className="flex flex-col gap-4">
+                          <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
