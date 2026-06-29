@@ -172,7 +172,8 @@ class BESTRunner:
                 if self.task == "nap":
                     pred_output = self.model._predict_activity(prefix=prefix_sequence,
                                                            eval_pattern_size=eval_pattern_size)
-                else: # rtp
+                    self.predictions.append(pred_output)
+                else: # rtp or outcome
                     max_prefix_len = max([len(p['prefix']) for p in self.test_seq.relevant_prefixes])
                     break_after_seq_len = max_prefix_len * break_buffer
                     pred_output = self.model._predict_sequence(prefix=prefix_sequence, 
@@ -185,8 +186,14 @@ class BESTRunner:
                             pred_output = _filter_start_end(pred_output, self.model.start_activity, self.model.end_activity)
                         except Exception:
                             pass
-
-                self.predictions.append(pred_output)
+                            
+                    if self.task == "outcome":
+                        if pred_output and len(pred_output) > 0:
+                            self.predictions.append(pred_output[-1])
+                        else:
+                            self.predictions.append(None)
+                    else:
+                        self.predictions.append(pred_output)
                 
                 real_seq_enc = prefix_sequence[padding_size:]
                 decoded_sequence = [self._decode_activity(a) for a in real_seq_enc]
@@ -230,6 +237,20 @@ class BESTRunner:
                 "nap_balanced_accuracy": float(ev.calc_balanced_accuracy_score()),
                 "none_share": float(ev.get_nan_share()),
             }
+        elif self.task == "outcome":
+            actuals = self.test_seq.outcomes
+            preds = self.predictions
+            correct = sum(1 for a, p in zip(actuals, preds) if a == p and a is not None)
+            total = sum(1 for a in actuals if a is not None)
+            acc = correct / total if total > 0 else 0.0
+            
+            none_count = sum(1 for p in preds if p is None)
+            none_share = none_count / len(preds) if len(preds) > 0 else 0.0
+            
+            return {
+                "outcome_accuracy": float(acc),
+                "none_share": float(none_share),
+            }
         else:  # rtp
             ev = RTPEvaluator(pred=self.predictions, actual=self.test_seq.full_future_sequences)
             return {
@@ -271,6 +292,9 @@ class BESTRunner:
         if self.task == "nap":
             actuals_enc = getattr(self.test_seq, "next_activities", [None] * n)
             tracker = getattr(self.model, "choice_tracker_nap", {})
+        elif self.task == "outcome":
+            actuals_enc = getattr(self.test_seq, "outcomes", [None] * n)
+            tracker = getattr(self.model, "choice_tracker_rtp", {})
         else:
             actuals_enc = getattr(self.test_seq, "full_future_sequences", [None] * n)
             tracker = getattr(self.model, "choice_tracker_rtp", {})
@@ -297,6 +321,9 @@ class BESTRunner:
                 continue # Skip the initial "empty" state for the UI
 
             if self.task == "nap":
+                true_next = self._decode_activity(actuals_enc[i])
+                pred_next = self._decode_activity(preds[i])
+            elif self.task == "outcome":
                 true_next = self._decode_activity(actuals_enc[i])
                 pred_next = self._decode_activity(preds[i])
             else:
@@ -352,7 +379,7 @@ class BESTRunner:
         preds_enc = self.predictions[:n]
         actuals_enc = (self.test_seq.next_activities or [])[:n]
 
-        if self.task == "nap":
+        if self.task in ["nap", "outcome"]:
             decoded_preds = self._decode_nap(preds_enc)
             decoded_actuals = [self._decode_activity(a) for a in actuals_enc]
 
@@ -375,7 +402,8 @@ class BESTRunner:
                     cm[cls_idx[a], cls_idx[p]] += 1
 
             fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-            fig.suptitle("BEST – Next Activity Prediction Performance", fontsize=13)
+            task_str = "Next Activity" if self.task == "nap" else "Outcome"
+            fig.suptitle(f"BEST – {task_str} Prediction Performance", fontsize=13)
 
             # Left: confusion matrix
             ax = axes[0]
@@ -490,6 +518,16 @@ class BESTRunner:
         self.test_seq.generate_full_sequences(filter_sequences=filter_sequences)
         self.test_seq.generate_full_future_sequences(filter_sequences=filter_sequences)
         self.test_seq.generate_next_activities()
+        
+        # Extract outcomes from actuals
+        case_outcomes = {}
+        for case_id, group in self.test_seq.data.groupby(self.test_seq.case_identifier):
+            last_act = group[self.test_seq.activity_identifier].iloc[-1]
+            case_outcomes[case_id] = last_act
+        
+        self.test_seq.outcomes = []
+        for prefix in self.test_seq.relevant_prefixes:
+            self.test_seq.outcomes.append(case_outcomes.get(prefix['case_id']))
 
     def _decode_activity(self, idx):
         """Decode a single integer activity index to its label, or None."""

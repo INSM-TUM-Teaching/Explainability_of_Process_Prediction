@@ -81,13 +81,21 @@ class GNNPredictor:
         else:
             return torch.device("cpu")
 
-    def prepare_data(self, df, test_size=0.3, val_split=0.5):
+    def prepare_data(self, df, test_size=0.3, val_split=0.5, task='unified'):
         from torch_geometric.data import HeteroData
 
         print("\nPreparing data for GNN...")
+        self._gnn_task = task
         split_col = "__split" if "__split" in df.columns else None
         if split_col:
             df = df.copy()
+
+        # Compute case outcomes (last activity per case)
+        case_outcomes = df.sort_values(["CaseID", "Timestamp"]).groupby("CaseID")["Activity"].last()
+        outcome_labels = sorted(case_outcomes.unique().tolist())
+        self._outcome_vocab = {v: i for i, v in enumerate(outcome_labels)}
+        self._num_outcome_classes = len(outcome_labels)
+        print(f"Outcome classes: {len(outcome_labels)}")
 
         trace_cols = []
         grouped = df.groupby("CaseID")
@@ -350,6 +358,14 @@ class GNNPredictor:
                 data.case_id = cid
                 data.case_index = case_indexes[cid]
 
+                outcome_name = case_outcomes.get(cid)
+                if outcome_name is not None and outcome_name in self._outcome_vocab:
+                    data.y_outcome = torch.tensor(
+                        [self._outcome_vocab[outcome_name]], dtype=torch.long
+                    )
+                else:
+                    data.y_outcome = torch.tensor([0], dtype=torch.long)
+
                 graphs.append(data)
 
                 # Move the index window forward for the next graph
@@ -398,6 +414,7 @@ class GNNPredictor:
             "test": test_graphs,
             "sample_graph": graphs[0],
             "num_activity_classes": len(vocabs["Activity"]),
+            "num_outcome_classes": self._num_outcome_classes,
             "vocabs": vocabs,
         }
 
@@ -428,7 +445,7 @@ class GNNPredictor:
             "sample_graph": dataset[0],
         }
 
-    def build_model(self, sample_graph, num_activity_classes=None, **kwargs):
+    def build_model(self, sample_graph, num_activity_classes=None, num_outcome_classes=None, **kwargs):
         print("\nBuilding GNN model...")
 
         metadata = sample_graph.metadata()
@@ -439,6 +456,8 @@ class GNNPredictor:
         else:
             num_classes = num_activity_classes
 
+        n_outcome = num_outcome_classes or getattr(self, "_num_outcome_classes", 0)
+
         self.model = HeteroGNN(
             metadata=metadata,
             hidden_channels=self.hidden_channels,
@@ -446,11 +465,12 @@ class GNNPredictor:
             num_activity_classes=num_classes,
             dropout=self.dropout,
             loss_weights=self.loss_weights,
+            num_outcome_classes=n_outcome,
         ).to(self.device)
 
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
 
-        print(f"Model built with {num_classes} activity classes")
+        print(f"Model built with {num_classes} activity classes, {n_outcome} outcome classes")
         print(f"Using device: {self.device}")
 
     def create_loaders(
@@ -487,8 +507,8 @@ class GNNPredictor:
 
         for batch_idx, batch in enumerate(loader, 1):
             batch = batch.to(self.device)
-            act_logits, time_pred, rem_pred = self.model(batch)
-            loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch)
+            act_logits, time_pred, rem_pred, outcome_logits = self.model(batch)
+            loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch, outcome_logits)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -508,13 +528,15 @@ class GNNPredictor:
         mae_time = 0.0
         mae_rem = 0.0
         total_loss = 0.0
+        outcome_correct = 0
+        outcome_total = 0
         batches = 0
 
         with torch.no_grad():
             for batch in loader:
                 batch = batch.to(self.device)
-                act_logits, time_pred, rem_pred = self.model(batch)
-                loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch)
+                act_logits, time_pred, rem_pred, outcome_logits = self.model(batch)
+                loss = self.model.compute_loss(act_logits, time_pred, rem_pred, batch, outcome_logits)
                 total_loss += loss.item()
                 batches += 1
 
@@ -527,15 +549,25 @@ class GNNPredictor:
                 y_rem = batch.y_remaining_time.view(-1)
                 mae_time += torch.abs(time_pred - y_time).mean().item()
                 mae_rem += torch.abs(rem_pred - y_rem).mean().item()
+
+                if outcome_logits is not None and hasattr(batch, "y_outcome"):
+                    y_out = batch.y_outcome.view(-1)
+                    pred_out = outcome_logits.argmax(dim=1)
+                    outcome_correct += (pred_out == y_out).sum().item()
+                    outcome_total += y_out.numel()
+
                 if max_batches is not None and batches >= max_batches:
                     break
 
-        return {
+        result = {
             "accuracy": correct / total if total else 0.0,
             "mae_time": mae_time / max(batches, 1),
             "mae_rem": mae_rem / max(batches, 1),
             "loss": total_loss / max(batches, 1),
         }
+        if outcome_total > 0:
+            result["outcome_accuracy"] = outcome_correct / outcome_total
+        return result
 
     def train(
         self,
@@ -613,11 +645,16 @@ class GNNPredictor:
             if hasattr(self, "vocabs") and "Activity" in self.vocabs
             else {}
         )
+        inv_outcome_vocab = (
+            {i: v for v, i in self._outcome_vocab.items()}
+            if hasattr(self, "_outcome_vocab")
+            else {}
+        )
 
         with torch.no_grad():
             for batch in test_loader:
                 batch = batch.to(self.device)
-                act_logits, time_pred, rem_pred = self.model(batch)
+                act_logits, time_pred, rem_pred, outcome_logits = self.model(batch)
 
                 probs = torch.softmax(act_logits, dim=1)
                 confidences = probs.max(dim=1)[0].cpu().numpy() * 100
@@ -628,6 +665,13 @@ class GNNPredictor:
                 pred_time = time_pred.cpu().numpy()
                 y_rem = batch.y_remaining_time.view(-1).cpu().numpy()
                 pred_rem = rem_pred.cpu().numpy()
+
+                has_outcome = outcome_logits is not None and hasattr(batch, "y_outcome")
+                if has_outcome:
+                    outcome_probs = torch.softmax(outcome_logits, dim=1)
+                    outcome_confs = outcome_probs.max(dim=1)[0].cpu().numpy() * 100
+                    y_outcome = batch.y_outcome.view(-1).cpu().numpy()
+                    pred_outcome = outcome_logits.argmax(dim=1).cpu().numpy()
 
                 case_ids = (
                     batch.case_id if hasattr(batch, "case_id") else [None] * len(y_act)
@@ -651,7 +695,6 @@ class GNNPredictor:
                     sequences.append(", ".join(decoded_seq))
 
                 for i in range(len(y_act)):
-                    # Decode from tensors if PyG collated them into 1D arrays
                     cid = (
                         case_ids[i].item()
                         if hasattr(case_ids[i], "item")
@@ -662,38 +705,41 @@ class GNNPredictor:
                         if hasattr(case_indices[i], "item")
                         else case_indices[i]
                     )
-                    
-                    # Dynamically calculate elapsed time from PyG batch tensors
-                    # __ts_log is log1p(Timestamp_seconds / 1_000_000_000)
+
                     ptr_start = int(batch["time"].ptr[i])
                     ptr_end = int(batch["time"].ptr[i+1]) - 1
-                    
+
                     first_ts_log = float(batch["time"].x[ptr_start][0])
                     last_ts_log = float(batch["time"].x[ptr_end][0])
-                    
+
                     first_ts_sec = np.expm1(first_ts_log)
                     last_ts_sec = np.expm1(last_ts_log)
                     elapsed_days = (last_ts_sec - first_ts_sec) / 86400.0
 
-                    results.append(
-                        {
-                            "case_id": cid,
-                            "case_index": cidx,
-                            "sequence": sequences[i],
-                            "true_next_activity": inv_act_vocab.get(
-                                int(y_act[i]), y_act[i]
-                            ),
-                            "predicted_next_activity": inv_act_vocab.get(
-                                int(pred_act[i]), pred_act[i]
-                            ),
-                            "confidence_percent": round(float(confidences[i]), 2),
-                            "actual_event_time_days": float(np.expm1(y_time[i]) / 86400.0),
-                            "predicted_event_time_days": float(np.expm1(pred_time[i]) / 86400.0),
-                            "actual_remaining_time_days": float(np.expm1(y_rem[i]) / 86400.0),
-                            "predicted_remaining_time_days": float(np.expm1(pred_rem[i]) / 86400.0),
-                            "current_elapsed_time_days": float(elapsed_days),
-                        }
-                    )
+                    row = {
+                        "case_id": cid,
+                        "case_index": cidx,
+                        "sequence": sequences[i],
+                        "true_next_activity": inv_act_vocab.get(
+                            int(y_act[i]), y_act[i]
+                        ),
+                        "predicted_next_activity": inv_act_vocab.get(
+                            int(pred_act[i]), pred_act[i]
+                        ),
+                        "confidence_percent": round(float(confidences[i]), 2),
+                        "actual_event_time_days": float(np.expm1(y_time[i]) / 86400.0),
+                        "predicted_event_time_days": float(np.expm1(pred_time[i]) / 86400.0),
+                        "actual_remaining_time_days": float(np.expm1(y_rem[i]) / 86400.0),
+                        "predicted_remaining_time_days": float(np.expm1(pred_rem[i]) / 86400.0),
+                        "current_elapsed_time_days": float(elapsed_days),
+                    }
+
+                    if has_outcome:
+                        row["true_outcome"] = inv_outcome_vocab.get(int(y_outcome[i]), str(y_outcome[i]))
+                        row["predicted_outcome"] = inv_outcome_vocab.get(int(pred_outcome[i]), str(pred_outcome[i]))
+                        row["outcome_confidence_percent"] = round(float(outcome_confs[i]), 2)
+
+                    results.append(row)
 
         import pandas as pd
 
@@ -758,6 +804,8 @@ class GNNPredictor:
             f.write(f"Test Accuracy (Activity):  {metrics['accuracy']*100:.2f}%\n")
             f.write(f"Test MAE (Event Time):     {metrics['mae_time']:.4f}\n")
             f.write(f"Test MAE (Remaining Time): {metrics['mae_rem']:.4f}\n")
+            if "outcome_accuracy" in metrics:
+                f.write(f"Test Accuracy (Outcome):   {metrics['outcome_accuracy']*100:.2f}%\n")
             f.write(f"Test Loss:                 {metrics['loss']:.4f}\n")
             f.write("\n" + "=" * 50 + "\n")
 
@@ -797,6 +845,16 @@ class GNNPredictor:
                         columns=[
                             "actual_remaining_time_days",
                             "predicted_remaining_time_days",
+                        ],
+                        errors="ignore",
+                    )
+                w_outcome = self.loss_weights[3] if len(self.loss_weights) > 3 else 0.0
+                if w_outcome == 0.0:
+                    df = df.drop(
+                        columns=[
+                            "true_outcome",
+                            "predicted_outcome",
+                            "outcome_confidence_percent",
                         ],
                         errors="ignore",
                     )

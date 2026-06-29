@@ -73,7 +73,7 @@ export type RunLogsRes = {
 export type CreateRunReq = {
   dataset_id: string;
   model_type: "gnn" | "transformer" | "best";
-  task: "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace";
+  task: "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace" | "outcome";
   config?: Record<string, JsonValue>;
   split?: { test_size: number; val_split: number };
   explainability?: JsonValue; // e.g. "none" | null | {...}

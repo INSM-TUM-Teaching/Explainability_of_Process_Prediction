@@ -40,6 +40,7 @@ if TENSORFLOW_AVAILABLE:
     from transformers.prediction.next_activity import NextActivityPredictor
     from transformers.prediction.event_time import EventTimePredictor
     from transformers.prediction.remaining_time import RemainingTimePredictor
+    from transformers.prediction.outcome import OutcomePredictor
 
 if PYTORCH_AVAILABLE:
     from gnns.prediction.gnn_predictor import GNNPredictor
@@ -805,6 +806,74 @@ def run_remaining_time_prediction(dataset_path, output_dir, test_size, val_split
     print("="*70)
 
 
+def run_outcome_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method):
+    print("\n" + "="*70)
+    print("OUTCOME PREDICTION")
+    print("="*70)
+    print("\nLoading dataset...")
+    df = pd.read_csv(dataset_path)
+
+    required_cols = {'CaseID', 'Activity', 'Timestamp'}
+    if not required_cols.issubset(df.columns):
+        missing = required_cols - set(df.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+
+    df = df.rename(columns={
+        'CaseID': 'case:id',
+        'Activity': 'concept:name',
+        'Timestamp': 'time:timestamp'
+    })
+
+    print(f"Dataset loaded: {len(df):,} events")
+
+    predictor = OutcomePredictor(
+        max_len=config['max_len'],
+        d_model=config['d_model'],
+        num_heads=config['num_heads'],
+        num_blocks=config['num_blocks'],
+        dropout_rate=config['dropout_rate']
+    )
+    data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
+    predictor.build_model()
+    predictor.train(
+        data,
+        epochs=config['epochs'],
+        batch_size=config['batch_size'],
+        patience=config['patience']
+    )
+    metrics = predictor.evaluate(data)
+    y_pred, y_pred_probs = predictor.predict(data)
+    predictor.save_results(data, y_pred, y_pred_probs, output_dir)
+    predictor.plot_training_history(output_dir)
+    predictor.save_model(output_dir)
+
+    if explainability_method and EXPLAINABILITY_AVAILABLE:
+        print("\nRunning explainability analysis...")
+        explainability_dir = os.path.join(output_dir, 'explainability')
+        run_transformer_explainability(
+            predictor.model,
+            data,
+            explainability_dir,
+            task='outcome',
+            num_samples=20,
+            methods=explainability_method,
+            label_encoder=predictor.label_encoder,
+            scaler=None
+        )
+
+    print("\n" + "="*70)
+    print("OUTCOME PREDICTION - FINAL RESULTS")
+    print("="*70)
+    print(f"\n{'Metric':<30} {'Value':>20}")
+    print("-"*70)
+    print(f"{'Test Accuracy':<30} {metrics['test_accuracy']*100:>19.2f}%")
+    print(f"{'Test Loss':<30} {metrics['test_loss']:>20.4f}")
+    print(f"{'Number of Test Samples':<30} {len(data['X_test']):>20,}")
+    print("-"*70)
+    print(f"\n[OK] All results saved to: {output_dir}")
+    print("="*70)
+
+
 def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, config, explainability_method, task='unified'):
     print("\n" + "="*70)
     if task == 'unified':
@@ -844,6 +913,8 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         loss_weights = (0.0, 1.0, 0.0)
     elif task == 'remaining_time':
         loss_weights = (0.0, 0.0, 1.0)
+    elif task == 'outcome':
+        loss_weights = (0.0, 0.0, 0.0, 1.0)
     else:
         loss_weights = (1.0, 0.1, 0.1)
 
@@ -892,6 +963,8 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         explain_tasks = ['event_time']
     elif task == 'remaining_time':
         explain_tasks = ['remaining_time']
+    elif task == 'outcome':
+        explain_tasks = ['outcome']
     else:  # unified
         explain_tasks = ['activity', 'event_time', 'remaining_time']
     
@@ -936,6 +1009,13 @@ def run_gnn_unified_prediction(dataset_path, output_dir, test_size, val_split, c
         print(f"\n{'Metric':<35} {'Value':>20}")
         print("-"*70)
         print(f"{'Remaining Time MAE':<35} {metrics['mae_rem']:>20.4f}")
+        print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
+    elif task == 'outcome':
+        print("GNN OUTCOME PREDICTION - FINAL RESULTS")
+        print("="*70)
+        print(f"\n{'Metric':<35} {'Value':>20}")
+        print("-"*70)
+        print(f"{'Outcome Accuracy':<35} {metrics.get('outcome_accuracy', 0)*100:>19.2f}%")
         print(f"{'Total Loss':<35} {metrics['loss']:>20.4f}")
     print("-"*70)
     print(f"\n[OK] All results saved to: {output_dir}")
@@ -1035,12 +1115,16 @@ def main():
             1: "Next Activity Prediction",
             2: "Event Time Prediction",
             3: "Remaining Time Prediction",
-            4: "All Tasks (Unified Prediction)"
+            4: "All Tasks (Unified Prediction)",
+            5: "Outcome Prediction"
         }
         task = get_user_choice("Select prediction task:", task_options)
         if task == 4:
             task_name = "GNN Unified Prediction"
             gnn_task = "unified"
+        elif task == 5:
+            task_name = "Outcome Prediction"
+            gnn_task = "outcome"
         else:
             task_name = task_options[task]
             task_mapping = {
@@ -1054,7 +1138,8 @@ def main():
         task_options = {
             1: "Next Activity Prediction",
             2: "Event Time Prediction",
-            3: "Remaining Time Prediction"
+            3: "Remaining Time Prediction",
+            4: "Outcome Prediction"
         }
         task = get_user_choice("Select prediction task:", task_options)
         task_name = task_options[task]
@@ -1122,6 +1207,8 @@ def main():
                 run_event_time_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method)
             elif task == 3:
                 run_remaining_time_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method)
+            elif task == 4:
+                run_outcome_prediction(final_dataset_path, output_dir, test_size, val_split, config, explainability_method)
     except Exception as e:
         print(f"\n[X] Error occurred: {str(e)}")
         import traceback

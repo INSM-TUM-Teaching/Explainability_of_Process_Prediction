@@ -255,7 +255,7 @@ def predict_time(model, X_seq, X_temp):
 
 
 
-def build_time_prediction_model_original(vocab_size, max_len, d_model=64, 
+def build_time_prediction_model_original(vocab_size, max_len, d_model=64,
                                         num_heads=4, num_blocks=2, dropout_rate=0.1):
     """
     Original time prediction model (for backward compatibility).
@@ -270,3 +270,29 @@ def build_time_prediction_model_original(vocab_size, max_len, d_model=64,
         dropout_rate=dropout_rate,
         use_timestep_explainability=False
     )
+
+
+# ============================================================================
+# OUTCOME PREDICTION MODEL
+# ============================================================================
+def build_outcome_model(vocab_size, num_outcome_classes, max_len, d_model=64,
+                        num_heads=4, num_blocks=2, dropout_rate=0.1):
+    """
+    Build model for case outcome prediction.
+    Single activity-sequence input, softmax over outcome classes.
+    """
+    inputs = layers.Input(shape=(max_len,))
+    x = layers.Embedding(vocab_size, d_model, mask_zero=True)(inputs)
+    x = PositionalEncoding(max_len, d_model)(x)
+
+    for _ in range(num_blocks):
+        x = TransformerBlock(d_model, num_heads, dff=128, dropout_rate=dropout_rate)(x)
+
+    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.Dropout(dropout_rate)(x)
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dropout(dropout_rate)(x)
+    outputs = layers.Dense(num_outcome_classes, activation='softmax')(x)
+
+    model = keras.Model(inputs=inputs, outputs=outputs)
+    return model

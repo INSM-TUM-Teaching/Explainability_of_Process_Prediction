@@ -111,6 +111,11 @@ class GradientExplainer:
             elif task == "remaining_time":
                 score = out[2]
                 true_val = graph.y_remaining_time.item()
+            elif task in ["activity", "next_activity", "outcome"]:
+                logits = out[3] if task == "outcome" else out[0]
+                predicted_class = logits.argmax()
+                score = logits.view(-1)[predicted_class]
+                true_val = graph.y_outcome.item() if task == "outcome" and hasattr(graph, 'y_outcome') else graph.y_activity.item()
             else:
                 continue
 
@@ -242,10 +247,11 @@ class GradientExplainer:
         elif task == "remaining_time":
             score = out[2]
             true_val = graph.y_remaining_time.item()
-        elif task in ["activity", "next_activity"]:
-            predicted_class = out[0].argmax()
-            score = out[0].view(-1)[predicted_class]
-            true_val = graph.y_activity.item()
+        elif task in ["activity", "next_activity", "outcome"]:
+            logits = out[3] if task == "outcome" else out[0]
+            predicted_class = logits.argmax()
+            score = logits.view(-1)[predicted_class]
+            true_val = graph.y_outcome.item() if task == "outcome" and hasattr(graph, 'y_outcome') else graph.y_activity.item()
         else:
             return None, None, None, None
 
@@ -277,7 +283,7 @@ class GradientExplainer:
                         res_idx = res_inp.argmax().item()
                         info["resource"] = self._get_resource_name(res_idx)
 
-                elif task in ["activity", "next_activity"]:
+                elif task in ["activity", "next_activity", "outcome"]:
                     if (
                         "activity" in graph.x_dict
                         and graph.x_dict["activity"].grad is not None
@@ -288,13 +294,17 @@ class GradientExplainer:
                         act_idx = act_inp.argmax().item()
                         info["activity"] = self._get_activity_name(act_idx)
 
-                    if "resource" in graph.x_dict:
+                    if "resource" in graph.x_dict and graph.x_dict["resource"].grad is not None:
+                        res_grad = graph.x_dict["resource"].grad[step]
                         res_inp = graph.x_dict["resource"][step]
+                        contrib_sum += (res_grad * res_inp).abs().sum().item()
                         res_idx = res_inp.argmax().item()
                         info["resource"] = self._get_resource_name(res_idx)
 
-                    if "time" in graph.x_dict:
+                    if "time" in graph.x_dict and graph.x_dict["time"].grad is not None:
+                        time_grad = graph.x_dict["time"].grad[step]
                         time_inp = graph.x_dict["time"][step]
+                        contrib_sum += (time_grad * time_inp).abs().sum().item()
                         info["timestamp"] = time_inp.item()
 
                 else:
@@ -734,6 +744,10 @@ class GradientExplainer:
                 score = out[1]
             elif task == "remaining_time":
                 score = out[2]
+            elif task == "outcome" and len(out) > 3 and out[3] is not None:
+                logits = out[3]
+                pred_idx = logits.argmax(dim=1)
+                score = logits[0, pred_idx]
             else:
                 score = out[0].sum()  # Fallback
 
@@ -877,15 +891,15 @@ class TemporalGradientExplainer:
             if score.numel() > 1:
                 score = score.sum()
             true_val = graph.y_remaining_time.item()
-        elif task == "activity":
-            logits = out[0]
+        elif task in ["activity", "next_activity", "outcome"]:
+            logits = out[3] if task == "outcome" else out[0]
             if logits.dim() > 1:
                 logits = logits[0]
             predicted_class = logits.argmax()
             score = logits[predicted_class]
             if score.numel() > 1:
                 score = score.sum()
-            true_val = graph.y_activity.item()
+            true_val = graph.y_outcome.item() if task == "outcome" and hasattr(graph, 'y_outcome') else graph.y_activity.item()
         else:
             return None, None, None, None
 
@@ -917,7 +931,7 @@ class TemporalGradientExplainer:
                         res_idx = res_inp.argmax().item()
                         info["resource"] = self._get_resource_name(res_idx)
 
-                elif task == "activity":
+                elif task in ["activity", "next_activity", "outcome"]:
                     if (
                         "activity" in graph.x_dict
                         and graph.x_dict["activity"].grad is not None
@@ -1377,12 +1391,11 @@ class GraphLIMEExplainer:
             elif task == "remaining_time":
                 base_score = out[2].item()
                 true_val = graph.y_remaining_time.item()
-            else:
-                logits = out[0].view(-1)
-                probs = torch.softmax(logits, dim=0)
-                predicted_class = int(torch.argmax(probs).item())
-                base_score = float(probs[predicted_class].item())
-                true_val = float(graph.y_activity.view(-1)[0].item())
+            elif task in ["activity", "next_activity", "outcome"]:
+                logits = out[3].view(-1) if task == "outcome" else out[0].view(-1)
+                pred_class = logits.argmax().item()
+                base_score = logits[pred_class].item()
+                true_val = graph.y_outcome.item() if task == "outcome" and hasattr(graph, 'y_outcome') else graph.y_activity.view(-1)[0].item()
 
         activity_features = (
             graph["activity"].x.shape[1] if "activity" in graph.x_dict else 0
@@ -1737,11 +1750,13 @@ class ExplainabilityBenchmark:
             return out[0]
         if self.task == "event_time":
             return out[1]
+        if self.task == "outcome":
+            return out[3] if len(out) > 3 else out[0]
         return out[2]
 
     def _prediction_value(self, out):
         pred = self._select_output(out)
-        if self.task in ["activity", "next_activity"]:
+        if self.task in ["activity", "next_activity", "outcome"]:
             return pred.max()
         return pred.mean()
 
@@ -1796,8 +1811,8 @@ class ExplainabilityBenchmark:
                 g.x_dict[key].requires_grad = True
 
             out = self.model(g)
-            if self.task in ["activity", "next_activity"]:
-                logits = out[0]
+            if self.task in ["activity", "next_activity", "outcome"]:
+                logits = out[3] if self.task == "outcome" else out[0]
                 pred_idx = logits.argmax(dim=1)
                 score = logits[0, pred_idx]
             elif self.task == "event_time":
@@ -1918,7 +1933,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task in ["activity", "next_activity"]:
+                if self.task in ["activity", "next_activity", "outcome"]:
                     pred_change = (orig_pred - masked_pred).abs().max().item()
                 else:
                     pred_change = (orig_pred - masked_pred).abs().mean().item()
@@ -1979,7 +1994,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task in ["activity", "next_activity"]:
+                if self.task in ["activity", "next_activity", "outcome"]:
                     comp = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     comp = (orig_pred - masked_pred).abs().mean().item()
@@ -2026,7 +2041,7 @@ class ExplainabilityBenchmark:
                 masked_out = self._predict(masked_graph)
                 masked_pred = self._select_output(masked_out)
 
-                if self.task in ["activity", "next_activity"]:
+                if self.task in ["activity", "next_activity", "outcome"]:
                     suff = (orig_pred.max() - masked_pred.max()).item()
                 else:
                     suff = (orig_pred - masked_pred).abs().mean().item()
