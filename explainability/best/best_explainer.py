@@ -183,6 +183,12 @@ class BESTExplainer:
                     if not pred_seq_filtered:
                         continue
                     predicted_next = ", ".join(str(act) for act in pred_seq_filtered)
+                elif getattr(self.runner, "task", None) == "outcome":
+                    pred_seq = decoded_seq[center_idx + 1:]
+                    pred_seq_filtered = [act for act in pred_seq if act not in ["START", "END"]]
+                    if not pred_seq_filtered:
+                        continue
+                    predicted_next = pred_seq_filtered[-1]
                 else:
                     predicted_next = decoded_seq[center_idx + 1] if (center_idx + 1) < len(decoded_seq) else None
                     if not predicted_next or not str(predicted_next).strip() or predicted_next in ["START", "END"]:
@@ -372,6 +378,9 @@ class BESTExplainer:
             if self.task == "nap":
                 actuals_enc = getattr(runner.test_seq, "next_activities", [None] * n)
                 tracker = getattr(self.model, "choice_tracker_nap", {})
+            elif self.task == "outcome":
+                actuals_enc = getattr(runner.test_seq, "outcomes", [None] * n)
+                tracker = getattr(self.model, "choice_tracker_rtp", {})
             else:
                 actuals_enc = getattr(runner.test_seq, "full_future_sequences", [None] * n)
                 tracker = getattr(self.model, "choice_tracker_rtp", {})
@@ -395,7 +404,7 @@ class BESTExplainer:
                 if case_index == 0:
                     continue
 
-                if self.task == "nap":
+                if self.task in ["nap", "outcome"]:
                     true_next = runner._decode_activity(actuals_enc[i])
                     pred_next = runner._decode_activity(preds[i])
                 else:

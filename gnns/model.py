@@ -52,11 +52,13 @@ class HeteroGNN(nn.Module):
         dropout: float = 0.1,
         loss_weights=(1.0, 1.0, 1.0),
         num_layers: int = 2,
+        num_outcome_classes: int = 0,
     ):
         super().__init__()
         node_types, edge_types = metadata
         self.loss_weights = loss_weights
         self.num_layers = num_layers
+        self.num_outcome_classes = num_outcome_classes
 
         # Input projection for each node type
         self.proj = nn.ModuleDict(
@@ -82,13 +84,14 @@ class HeteroGNN(nn.Module):
             nn.ModuleDict({ntype: Linear(hidden_channels, hidden_channels) for ntype in node_types})
             for _ in range(num_layers)
         ])
-        
+
         self.drop = nn.Dropout(dropout)
 
         # Output heads
         self.out_act = Linear(hidden_channels, num_activity_classes)
         self.out_time = Linear(hidden_channels, 1)
         self.out_rem = Linear(hidden_channels, 1)
+        self.out_outcome = Linear(hidden_channels, num_outcome_classes) if num_outcome_classes > 0 else None
 
     def forward(self, data):
         """
@@ -154,8 +157,9 @@ class HeteroGNN(nn.Module):
         act = self.out_act(pooled)
         time = self.out_time(pooled).squeeze(-1)
         rem = self.out_rem(pooled).squeeze(-1)
-        
-        return act, time, rem
+        outcome = self.out_outcome(pooled) if self.out_outcome is not None else None
+
+        return act, time, rem, outcome
 
     def _get_last_node_per_graph(self, node_features, batch):
         """
@@ -182,22 +186,29 @@ class HeteroGNN(nn.Module):
         
         return torch.stack(pooled)
 
-    def compute_loss(self, act_logits, time_pred, rem_pred, batch):
+    def compute_loss(self, act_logits, time_pred, rem_pred, batch, outcome_logits=None):
         """
         Compute weighted multi-task loss.
-        
-        Now with balanced default weights (1.0, 1.0, 1.0) instead of (1.0, 0.1, 0.1)
+
+        loss_weights is a 3- or 4-tuple: (act, time, rem[, outcome]).
         """
         y_act = batch.y_activity.view(-1)
         y_time = batch.y_timestamp.view(-1)
         y_rem = batch.y_remaining_time.view(-1)
 
-        w_act, w_time, w_rem = self.loss_weights
+        w_act = self.loss_weights[0]
+        w_time = self.loss_weights[1]
+        w_rem = self.loss_weights[2]
+        w_outcome = self.loss_weights[3] if len(self.loss_weights) > 3 else 0.0
 
         loss = (
             w_act * F.cross_entropy(act_logits, y_act)
             + w_time * F.l1_loss(time_pred, y_time)
             + w_rem * F.l1_loss(rem_pred, y_rem)
         )
-        
+
+        if w_outcome > 0.0 and outcome_logits is not None and hasattr(batch, "y_outcome"):
+            y_outcome = batch.y_outcome.view(-1)
+            loss = loss + w_outcome * F.cross_entropy(outcome_logits, y_outcome)
+
         return loss
