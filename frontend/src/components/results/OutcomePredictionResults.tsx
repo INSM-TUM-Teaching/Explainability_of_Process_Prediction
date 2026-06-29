@@ -4,13 +4,14 @@ import { explainOnDemand } from "../../lib/api_explain";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import GlobalResults from "./GlobalResults";
 import Papa from "papaparse";
+import DynamicHorizontalBarChart from "./DynamicHorizontalBarChart";
 
 type PredictionRecord = {
   case_id: string;
   case_index: number;
   sequence: string;
-  true_next_activity: string;
-  predicted_next_activity: string;
+  true_outcome: string;
+  predicted_outcome: string;
   confidence_percent?: number;
   confidence?: number;
   correct?: number;
@@ -46,15 +47,21 @@ export default function OutcomePredictionResults({ runId, summary, uploadedFileN
                 ...row,
                 case_id: String(row.case_id).replace(/^Case\s+/i, ""),
                 case_index: parseInt(String(row.case_index), 10),
-                confidence: parseFloat(String(row.confidence)) || 0,
-                true_next_activity: row.true_outcome || row.actual_outcome || row.true_next_activity,
-                predicted_next_activity: row.predicted_outcome || row.predicted_next_activity
+                confidence: parseFloat(String(row.outcome_confidence_percent || row.confidence_percent || row.confidence)) || 0,
+                true_outcome: row.true_outcome || row.actual_outcome || row.true_next_activity,
+                predicted_outcome: row.predicted_outcome || row.predicted_next_activity
               }));
             setPredictions(validData);
           } else {
             // Parse JSON for transformer/gnn
             const data = await res.json();
-            setPredictions(data);
+            const validData = (data as any[]).map(row => ({
+              ...row,
+              true_outcome: row.true_outcome || row.true_next_activity || row.actual_outcome,
+              predicted_outcome: row.predicted_outcome || row.predicted_next_activity,
+              confidence: parseFloat(String(row.outcome_confidence_percent || row.confidence_percent || row.confidence)) || 0
+            }));
+            setPredictions(validData);
           }
         }
       } catch (err) {
@@ -306,8 +313,25 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "ou
       // Original explanation logic for GNN/Transformer
       setExplaining(true);
       try {
-        await explainOnDemand(runId, caseId, selectedIndex, selectedExplain);
-        setExplainResult({ method: selectedExplain, path: `explainability/${caseId}_${selectedIndex}`, timestamp: Date.now() });
+        await explainOnDemand(runId, caseId, selectedIndex, selectedExplain.toLowerCase());
+        
+        // Fetch the JSON result to power the dynamic chart
+        let localData = null;
+        try {
+          const jsonRes = await fetch(artifactUrl(runId, `explainability/${caseId}_${selectedIndex}/${selectedExplain.toLowerCase()}_local_data.json`));
+          if (jsonRes.ok) {
+             localData = await jsonRes.json();
+          }
+        } catch (e) {
+          console.error("Failed to load local json", e);
+        }
+
+        setExplainResult({ 
+          method: selectedExplain, 
+          path: `explainability/${caseId}_${selectedIndex}`, 
+          timestamp: Date.now(),
+          localData
+        });
       } catch(e) {
         console.error(e);
         alert("Explanation failed");
@@ -319,7 +343,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "ou
 
   if (!selectedRecord) return null;
 
-  const isCorrect = selectedRecord.true_next_activity === selectedRecord.predicted_next_activity;
+  const isCorrect = selectedRecord.true_outcome === selectedRecord.predicted_outcome;
 
   return (
     <div className="border rounded-lg overflow-hidden">
@@ -403,7 +427,7 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "ou
               {/* True Outcome (Target) */}
               <div className="flex items-center gap-2">
                 <div className="bg-slate-50 border border-slate-400 border-dashed text-slate-600 px-3 py-1.5 rounded-md text-xs font-bold whitespace-nowrap">
-                  {selectedRecord.true_next_activity}
+                  {selectedRecord.predicted_outcome}
                 </div>
               </div>
             </div>
@@ -414,19 +438,19 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "ou
               <div className="text-slate-500 mb-1">
                 True Outcome
               </div>
-              <div className="font-semibold">{selectedRecord.true_next_activity}</div>
+              <div className="font-semibold">{selectedRecord.true_outcome}</div>
             </div>
             <div className={`p-3 border rounded ${isCorrect ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
               <div className={`mb-1 ${isCorrect ? 'text-green-700' : 'text-red-700'}`}>
                 Predicted Outcome
               </div>
-              <div className={`font-semibold ${isCorrect ? 'text-green-800' : 'text-red-800'}`}>{selectedRecord.predicted_next_activity}</div>
+              <div className={`font-semibold ${isCorrect ? 'text-green-800' : 'text-red-800'}`}>{selectedRecord.predicted_outcome}</div>
             </div>
             <div className="p-3 border rounded">
               <div className="text-slate-500 mb-1">Confidence</div>
               <div className="font-semibold">
                 {(() => {
-                  const conf = selectedRecord.confidence_percent ?? selectedRecord.confidence;
+                  const conf = selectedRecord.outcome_confidence_percent ?? selectedRecord.confidence_percent ?? selectedRecord.confidence;
                   if (typeof conf === 'string') {
                     // Handle "NaN" strings
                     const parsed = parseFloat(conf);
@@ -567,10 +591,21 @@ function CasePredictionBlock({ caseId, records, runId, modelType, taskType = "ou
                   </div>
                 ) : (
                   <div>
-                    <h4 className="font-medium mb-3">{explainResult.method} Explanation</h4>
-                    <div className="flex flex-col gap-4">
-                      <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
-                    </div>
+                    {explainResult.localData ? (
+                      <DynamicHorizontalBarChart 
+                        data={explainResult.localData.features} 
+                        baseValue={explainResult.localData.base_value} 
+                        task={explainResult.localData.task || "outcome"} 
+                        method={explainResult.method} 
+                      />
+                    ) : (
+                      <>
+                        <h4 className="font-medium mb-3">{explainResult.method} Explanation</h4>
+                        <div className="flex flex-col gap-4">
+                          <img src={`${artifactUrl(runId, `${explainResult.path}/${explainResult.method.toLowerCase()}_summary.png`)}?t=${explainResult.timestamp}`} alt="Summary" className="border max-w-full" />
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

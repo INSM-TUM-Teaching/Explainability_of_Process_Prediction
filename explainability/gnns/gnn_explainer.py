@@ -1504,7 +1504,7 @@ class GraphLIMEExplainer:
             elif task == "remaining_time":
                 y_perturb = out_p[2].cpu().numpy().flatten()
             else:
-                logits = out_p[0]  # (B, num_classes)
+                logits = out_p[3] if task == "outcome" else out_p[0]  # (B, num_classes)
                 probs = torch.softmax(logits, dim=1)
                 cls = (
                     predicted_class

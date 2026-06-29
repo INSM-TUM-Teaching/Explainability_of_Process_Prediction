@@ -108,14 +108,19 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
     
     case_df = case_df.sort_values(by='time:timestamp')
     activities = case_df['concept:name'].values
-    encoded_activities = label_encoder.transform(activities) + 1
+    act_enc = artifacts.get("activity_encoder", label_encoder)
+    encoded_activities = act_enc.transform(activities) + 1
     
     target_idx = case_index
     if target_idx is None:
         target_idx = len(encoded_activities) - 1
     
-    if target_idx < 1 or target_idx >= len(encoded_activities):
-        raise ValueError(f"Invalid case index {case_index} for case length {len(encoded_activities)}")
+    if task in ["outcome", "remaining_trace"]:
+        if target_idx < 1 or target_idx > len(encoded_activities):
+            raise ValueError(f"Invalid case index {case_index} for case length {len(encoded_activities)}")
+    else:
+        if target_idx < 1 or target_idx >= len(encoded_activities):
+            raise ValueError(f"Invalid case index {case_index} for case length {len(encoded_activities)}")
 
     prefix = encoded_activities[:target_idx]
     padded_prefix = np.zeros(max_len, dtype=int)
@@ -186,7 +191,7 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
         grouped = df.groupby('case:id')
         for cid, group in grouped:
             group = group.sort_values(by='time:timestamp')
-            act = label_encoder.transform(group['concept:name'].values) + 1
+            act = act_enc.transform(group['concept:name'].values) + 1
             for i in range(1, len(act)):
                 p = act[:i]
                 ps = np.zeros(max_len, dtype=int)
@@ -199,9 +204,15 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
                 break
         bg_data = np.array(bg_data[:100])
         
-        from transformers.model import build_next_activity_model
-        model = build_next_activity_model(vocab_size=vocab_size, max_len=max_len, num_heads=4, d_model=64, num_blocks=2)
-        model_path = os.path.join(artifacts_dir, "next_activity_transformer.keras")
+        if task == "outcome":
+            from transformers.model import build_outcome_model
+            num_outcome_classes = artifacts.get("num_outcome_classes", 2)
+            model = build_outcome_model(vocab_size=vocab_size, num_outcome_classes=num_outcome_classes, max_len=max_len, num_heads=4, d_model=64, num_blocks=2)
+            model_path = os.path.join(artifacts_dir, "outcome_transformer.keras")
+        else:
+            from transformers.model import build_next_activity_model
+            model = build_next_activity_model(vocab_size=vocab_size, max_len=max_len, num_heads=4, d_model=64, num_blocks=2)
+            model_path = os.path.join(artifacts_dir, "next_activity_transformer.keras")
 
     if not os.path.exists(model_path):
         raise RuntimeError(f"Missing model at {model_path}")
@@ -212,7 +223,7 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
 
     result = {}
     if method.lower() == "shap":
-        explainer = SHAPExplainer(model, task=task, label_encoder=label_encoder)
+        explainer = SHAPExplainer(model, task=task, label_encoder=act_enc)
         explainer.initialize_explainer(bg_data)
         explainer.explain_samples(X_sample, num_samples=1, sample_ids=[case_id], sample_indexes=[case_index])
         explainer.plot_explanation(output_dir, sample_idx=0, case_id=case_id, case_index=case_index)
@@ -232,7 +243,7 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
         result["method"] = "shap"
         result["files"] = ["shap_summary.png"]
     elif method.lower() == "lime":
-        explainer = LIMEExplainer(model, task=task, label_encoder=label_encoder)
+        explainer = LIMEExplainer(model, task=task, label_encoder=act_enc)
         explainer.initialize_explainer(bg_data)
         explainer.explain_samples(X_sample, num_samples=1, sample_case_ids=[case_id], sample_indexes=[case_index])
         explainer.plot_explanation(output_dir, sample_idx=0, case_id=case_id, case_index=case_index)
@@ -374,13 +385,28 @@ def run_gnn_explainability_on_demand(run_dir, dataset_path, case_id, case_index,
     num_classes = len(act_map)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # Attempt to load num_outcome_classes from summary if task is outcome
+    num_outcome_classes = 0
+    if task == "outcome":
+        summary_path = os.path.join(artifacts_dir, "summary.json")
+        if os.path.exists(summary_path):
+            try:
+                import json
+                with open(summary_path, "r") as f:
+                    summ = json.load(f)
+                    num_outcome_classes = summ.get("dataset", {}).get("num_outcome_classes", 2)
+            except Exception as e:
+                print(f"Failed to read summary.json for num_outcome_classes: {e}")
+                num_outcome_classes = 2 # default fallback
+
     # Assume default config or try to load, but default is 64 hidden
     model = HeteroGNN(
         metadata=metadata,
         hidden_channels=64, # Default from unified prediction
         proj_dims=proj_dims,
         num_activity_classes=num_classes,
-        dropout=0.1
+        dropout=0.1,
+        num_outcome_classes=num_outcome_classes
     )
     
     try:

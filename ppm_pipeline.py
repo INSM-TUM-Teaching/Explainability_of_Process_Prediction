@@ -505,7 +505,7 @@ def run_outcome_prediction(
             task='outcome',
             num_samples=explainability_samples,
             methods=explainability_method,
-            label_encoder=predictor.label_encoder,
+            label_encoder=getattr(predictor, "activity_encoder", predictor.label_encoder),
             scaler=None,
             feature_config=feature_config,
             run_benchmark=False
