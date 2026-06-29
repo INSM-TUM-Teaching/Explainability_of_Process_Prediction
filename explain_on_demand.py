@@ -17,6 +17,20 @@ from explainability.gnns.gnn_explainer import GradientExplainer, GraphLIMEExplai
 
 def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, case_index, method, task="activity"):
     artifacts_dir = os.path.join(run_dir, "artifacts")
+    
+    target_column = None
+    summary_path = os.path.join(artifacts_dir, "summary.json")
+    if os.path.exists(summary_path):
+        import json
+        with open(summary_path, "r") as f:
+            summary = json.load(f)
+            req_data = summary.get("request", {})
+            if req_data.get("task") == "custom_activity":
+                target_column = req_data.get("target_column")
+                
+    if task == "custom_activity":
+        task = "next_activity"
+    artifacts_dir = os.path.join(run_dir, "artifacts")
     storage_dir = os.path.dirname(os.path.dirname(run_dir))
     dataset_artifacts_path = os.path.join(storage_dir, "transformer_artifacts.pkl")
     
@@ -98,6 +112,8 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
         'Activity': 'concept:name',
         'Timestamp': 'time:timestamp'
     })
+    if target_column and target_column in df.columns:
+        df['concept:name'] = df[target_column].astype(str)
 
     case_col_str = df['case:id'].astype(str).str.replace(r'^[Cc]ase\s+', '', regex=True).str.strip()
     clean_case_id = str(case_id).replace("Case ", "").replace("case ", "").strip()
@@ -272,6 +288,20 @@ def run_transformer_explainability_on_demand(run_dir, dataset_path, case_id, cas
 
 def run_gnn_explainability_on_demand(run_dir, dataset_path, case_id, case_index, method, task="activity"):
     artifacts_dir = os.path.join(run_dir, "artifacts")
+    
+    target_column = None
+    summary_path = os.path.join(artifacts_dir, "summary.json")
+    if os.path.exists(summary_path):
+        import json
+        with open(summary_path, "r") as f:
+            summary = json.load(f)
+            req_data = summary.get("request", {})
+            if req_data.get("task") == "custom_activity":
+                target_column = req_data.get("target_column")
+                
+    if task == "custom_activity":
+        task = "next_activity"
+    artifacts_dir = os.path.join(run_dir, "artifacts")
     output_dir = os.path.join(artifacts_dir, "explainability", f"{case_id}_{case_index}")
     os.makedirs(output_dir, exist_ok=True)
     
@@ -295,6 +325,8 @@ def run_gnn_explainability_on_demand(run_dir, dataset_path, case_id, case_index,
         'Timestamp': 'time:timestamp',
         'Resource': 'Resource'
     })
+    if target_column and target_column in df.columns:
+        df['concept:name'] = df[target_column].astype(str)
     
     case_col = 'case:id'
     act_col = 'concept:name'
@@ -315,7 +347,8 @@ def run_gnn_explainability_on_demand(run_dir, dataset_path, case_id, case_index,
     
     # Get case
     case_col_str = df[case_col].astype(str).str.replace(r'^[Cc]ase\s+', '', regex=True).str.strip()
-    case_df = df[case_col_str == str(case_id)].copy()
+    clean_case_id = str(case_id).replace("Case ", "").replace("case ", "").strip()
+    case_df = df[case_col_str == clean_case_id].copy()
     if case_df.empty:
         raise ValueError(f"Case {case_id} not found in dataset.")
     
