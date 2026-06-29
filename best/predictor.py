@@ -155,7 +155,7 @@ class BESTRunner:
         # Note: Match tracking for explainability currently only supports single-core execution (ncores=1).
         # We process predictions sequentially to capture local matches for pattern analysis.
         
-        if ncores == 1 and self.task in ["nap", "rtp"]:
+        if ncores == 1 and self.task in ["nap", "rtp", "outcome"]:
             from tqdm import tqdm
             self.predictions = []
             padding_size = getattr(self.model, "_padding_size", 0)
@@ -206,13 +206,24 @@ class BESTRunner:
                 })
         else:
             # Fallback to multi-core (match tracking not supported in this mode)
-            self.predictions = self.model.predict(
+            library_task = "rtp" if self.task == "outcome" else self.task
+            raw_predictions = self.model.predict(
                 eval_pattern_size=eval_pattern_size,
-                task=self.task,
+                task=library_task,
                 break_buffer=break_buffer,
                 filter_tokens=filter_seqs,
                 ncores=ncores
             )
+            
+            if self.task == "outcome":
+                self.predictions = []
+                for pred_seq in raw_predictions:
+                    if pred_seq and len(pred_seq) > 0:
+                        self.predictions.append(pred_seq[-1])
+                    else:
+                        self.predictions.append(None)
+            else:
+                self.predictions = raw_predictions
 
     # ------------------------------------------------------------------
     # Evaluation
