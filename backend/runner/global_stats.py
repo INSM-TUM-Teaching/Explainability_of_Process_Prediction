@@ -1,12 +1,32 @@
 # backend/runner/global_stats.py
 import os
 import json
+import numpy as np
 import pandas as pd
 from typing import Any, Dict, List
 try:
     import pm4py
 except ImportError:
     pm4py = None
+
+
+def _to_jsonable(obj):
+    """Recursively convert numpy scalars/arrays to native Python types.
+
+    pm4py DFG counts and pandas ``value_counts`` yield ``numpy.int64`` values,
+    which FastAPI's ``jsonable_encoder`` cannot serialize. Sanitize before
+    returning so responses encode cleanly.
+    """
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
 
 def _generate_variant_id(signature: str) -> int:
     """Generates a stable numeric ID for a variant signature."""
@@ -192,12 +212,12 @@ def get_process_map(dataset_path: str):
                 "variants": sorted(edge_to_variants.get((act, "__END__"), []), key=lambda x: x['count'], reverse=True)
             })
                 
-        return {
+        return _to_jsonable({
             "nodes": list(nodes_dict.values()),
             "edges": edges,
             "start_activities": list(start_activities.keys()),
             "end_activities": list(end_activities.keys())
-        }
+        })
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 

@@ -1,24 +1,15 @@
 // frontend/src/components/steps/Step4Explainability.tsx
 import Card from "../ui/card";
+import { useCapabilities } from "../../models/capabilities";
 
-// NOTE: Values must match backend expectations.
-// - transformer: "lime" | "shap"
-// - gnn: "gradient" | "lime" (GraphLIME)
-// - best: "pattern_analysis"
-// - both: "all"
-// - none: "none" (runner normalizes to null)
-export type ExplainValue = "lime" | "shap" | "gradient" | "all" | "none" | "pattern_analysis";
+// Explainability method values are model-defined by the backend manifest
+// (models/capabilities.py). The runner normalizes "none" to null.
+export type ExplainValue = string;
 
 type Step4ExplainabilityProps = {
-  modelType: "gnn" | "transformer" | "best" | null;
+  modelType: string | null;
   method: ExplainValue | null;
   onSelect: (method: ExplainValue) => void;
-};
-
-type Option = {
-  value: ExplainValue;
-  title: string;
-  description: string;
 };
 
 export default function Step4Explainability({
@@ -26,76 +17,9 @@ export default function Step4Explainability({
   method,
   onSelect,
 }: Step4ExplainabilityProps) {
-  const transformerOptions: Option[] = [
-    {
-      value: "none",
-      title: "None",
-      description: "Skip explainability to run faster.",
-    },
-    {
-      value: "lime",
-      title: "LIME",
-      description:
-        "Local surrogate explanations. Explains individual predictions by approximating the model locally with an interpretable model.",
-    },
-    {
-      value: "shap",
-      title: "SHAP",
-      description:
-        "Shapley-value based feature attributions. Provides consistent local explanations across features.",
-    },
-    {
-      value: "all",
-      title: "Both (LIME + SHAP)",
-      description: "Run both methods (takes longer).",
-    },
-  ];
-  const gnnOptions: Option[] = [
-    {
-      value: "none",
-      title: "None",
-      description: "Skip explainability to run faster.",
-    },
-    {
-      value: "gradient",
-      title: "Gradient-Based",
-      description:
-        "Uses gradients to estimate which input features influence predictions most strongly.",
-    },
-    {
-      value: "lime",
-      title: "GraphLIME",
-      description:
-        "Graph-specific local explanations. Identifies important substructures/features for a prediction.",
-    },
-    {
-      value: "all",
-      title: "Both (Gradient + GraphLIME)",
-      description: "Run both methods (takes longer).",
-    },
-  ];
-  const bestOptions: Option[] = [
-    {
-      value: "none",
-      title: "None",
-      description: "Skip explainability to run faster.",
-    },
-    {
-      value: "pattern_analysis",
-      title: "Pattern Analysis",
-      description:
-        "Summarises which historical subtrace patterns BEST matched during prediction: top patterns " +
-        "by frequency (with accuracy), activity importance, high-error patterns, RPIF distance and " +
-        "confidence distributions, plus CSV/JSON tables for the results view.",
-    },
-  ];
-  const options: Option[] = !modelType
-    ? []
-    : modelType === "transformer"
-    ? transformerOptions
-    : modelType === "best"
-    ? bestOptions
-    : gnnOptions;
+  const { models, getModel } = useCapabilities();
+  const model = getModel(modelType);
+  const options = model?.explain_methods ?? [];
 
   return (
     <div className="space-y-8 w-full">
@@ -107,10 +31,10 @@ export default function Step4Explainability({
         </p>
       </div>
 
-      {!modelType ? (
+      {!model ? (
         <Card>
           <div className="p-6 text-sm text-gray-700">
-            Please select a model type in Step 3 first.
+            Please select a model type in Step 2 first.
           </div>
         </Card>
       ) : (
@@ -134,7 +58,7 @@ export default function Step4Explainability({
               >
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <div className="text-lg font-semibold">{opt.title}</div>
+                    <div className="text-lg font-semibold">{opt.label}</div>
                     <div className="text-sm text-gray-600 mt-1">{opt.description}</div>
                   </div>
 
@@ -154,13 +78,15 @@ export default function Step4Explainability({
         </div>
       )}
 
-      {/* Info */}
+      {/* Info: available methods per model, generated from the manifest. */}
       <Card title="Note">
         <div className="bg-brand-50 border border-brand-200 rounded-lg p-4 text-sm text-gray-700">
           <ul className="list-disc ml-5 space-y-1">
-            <li>Transformer models: LIME, SHAP, both, or none</li>
-            <li>GNN models: Gradient-Based, GraphLIME, both, or none</li>
-            <li>BEST models: Pattern Analysis or none</li>
+            {models.map((m) => (
+              <li key={m.id}>
+                {m.label}: {m.explain_methods.map((e) => e.label).join(", ")}
+              </li>
+            ))}
           </ul>
         </div>
       </Card>

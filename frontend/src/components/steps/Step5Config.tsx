@@ -1,75 +1,38 @@
 import React from "react";
 import { Settings } from "lucide-react";
-import { BEST_CONFIG_FIELDS, BEST_CONFIG_INTRO } from "./bestConfigFields";
+import type { ConfigFieldMeta } from "../../lib/api";
+import {
+  firstConstraintError,
+  useCapabilities,
+  type ModelConfig,
+  type ConfigValue,
+} from "../../models/capabilities";
 
 export type ConfigMode = "default" | "custom";
 
-// Must match backend `default_transformer_config()` keys/types in `ppm_pipeline.py`.
-export type TransformerConfig = {
-  max_len: number;
-  d_model: number;
-  num_heads: number;
-  num_blocks: number;
-  dropout_rate: number;
-  epochs: number;
-  batch_size: number;
-  patience: number;
-};
-
-// Must match backend `default_gnn_config()` keys/types in `ppm_pipeline.py`.
-export type GnnConfig = {
-  hidden: number;
-  dropout_rate: number;
-  lr: number;
-  epochs: number;
-  batch_size: number;
-  patience: number;
-};
-
-// Must match backend `default_best_config()` keys/types in `ppm_pipeline.py`.
-export type BestConfig = {
-  max_pattern_size_train: number;
-  max_pattern_size_eval: number;
-  process_stage_width_percentage: number;
-  min_freq: number;
-  break_buffer: number;
-  filter_sequences: boolean;
-  ncores: number;
-};
-
 type Step5ConfigProps = {
-  modelType: "gnn" | "transformer" | "best" | null;
+  modelType: string | null;
   mode: ConfigMode | null;
   onSelect: (mode: ConfigMode) => void;
-
-  transformerConfig: TransformerConfig;
-  onTransformerChange: (cfg: TransformerConfig) => void;
-  defaultTransformerConfig: TransformerConfig;
-
-  gnnConfig: GnnConfig;
-  onGnnChange: (cfg: GnnConfig) => void;
-  defaultGnnConfig: GnnConfig;
-
-  bestConfig: BestConfig;
-  onBestChange: (cfg: BestConfig) => void;
-  defaultBestConfig: BestConfig;
+  /** Editable custom-config values (already merged with defaults by the caller). */
+  config: ModelConfig;
+  onConfigChange: (cfg: ModelConfig) => void;
+  /** Backend defaults for the selected model. */
+  defaultConfig: ModelConfig;
 };
 
 export default function Step5Config({
   modelType,
   mode,
   onSelect,
-  transformerConfig,
-  onTransformerChange,
-  defaultTransformerConfig,
-  gnnConfig,
-  onGnnChange,
-  defaultGnnConfig,
-  bestConfig,
-  onBestChange,
-  defaultBestConfig,
+  config,
+  onConfigChange,
+  defaultConfig,
 }: Step5ConfigProps) {
-  if (!modelType) {
+  const { getModel } = useCapabilities();
+  const model = getModel(modelType);
+
+  if (!model) {
     return (
       <div className="space-y-3">
         <h2 className="text-2xl font-semibold">Model Configuration</h2>
@@ -78,16 +41,15 @@ export default function Step5Config({
     );
   }
 
-return (
+  const constraintError =
+    mode === "custom" ? firstConstraintError(model, config) : null;
+
+  return (
     <div className="space-y-6 max-w-5xl">
       <div>
         <h2 className="text-2xl font-semibold">Model Configuration</h2>
         <p className="text-sm text-brand-600">
-          {modelType === "transformer"
-            ? "These options map 1:1 to the backend Transformer config."
-            : modelType === "best"
-            ? BEST_CONFIG_INTRO
-            : "These options map 1:1 to the backend GNN config."}
+          {model.config_intro ?? `These options map 1:1 to the backend ${model.label} config.`}
         </p>
       </div>
 
@@ -98,17 +60,10 @@ return (
         onClick={() => onSelect("default")}
       >
         <ParameterGrid
-          modelType={modelType}
+          fields={model.config_fields}
+          values={defaultConfig}
           editable={false}
-          transformerConfig={transformerConfig}
-          onTransformerChange={onTransformerChange}
-          defaultTransformerConfig={defaultTransformerConfig}
-          gnnConfig={gnnConfig}
-          onGnnChange={onGnnChange}
-          defaultGnnConfig={defaultGnnConfig}
-          bestConfig={bestConfig}
-          onBestChange={onBestChange}
-          defaultBestConfig={defaultBestConfig}
+          onChange={() => {}}
         />
       </ConfigCard>
 
@@ -119,18 +74,16 @@ return (
         onClick={() => onSelect("custom")}
       >
         <ParameterGrid
-          modelType={modelType}
+          fields={model.config_fields}
+          values={config}
           editable={mode === "custom"}
-          transformerConfig={transformerConfig}
-          onTransformerChange={onTransformerChange}
-          defaultTransformerConfig={defaultTransformerConfig}
-          gnnConfig={gnnConfig}
-          onGnnChange={onGnnChange}
-          defaultGnnConfig={defaultGnnConfig}
-          bestConfig={bestConfig}
-          onBestChange={onBestChange}
-          defaultBestConfig={defaultBestConfig}
+          onChange={onConfigChange}
         />
+        {constraintError && (
+          <div className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+            {constraintError}
+          </div>
+        )}
       </ConfigCard>
     </div>
   );
@@ -172,194 +125,41 @@ function ConfigCard({
 }
 
 function ParameterGrid({
-  modelType,
+  fields,
+  values,
   editable,
-  transformerConfig,
-  onTransformerChange,
-  defaultTransformerConfig,
-  gnnConfig,
-  onGnnChange,
-  defaultGnnConfig,
-  bestConfig,
-  onBestChange,
-  defaultBestConfig,
+  onChange,
 }: {
-  modelType: "gnn" | "transformer" | "best";
+  fields: ConfigFieldMeta[];
+  values: ModelConfig;
   editable: boolean;
-  transformerConfig: TransformerConfig;
-  onTransformerChange: (cfg: TransformerConfig) => void;
-  defaultTransformerConfig: TransformerConfig;
-  gnnConfig: GnnConfig;
-  onGnnChange: (cfg: GnnConfig) => void;
-  defaultGnnConfig: GnnConfig;
-  bestConfig: BestConfig;
-  onBestChange: (cfg: BestConfig) => void;
-  defaultBestConfig: BestConfig;
+  onChange: (cfg: ModelConfig) => void;
 }) {
-  if (modelType === "transformer") {
-    const cfg = editable ? transformerConfig : defaultTransformerConfig;
-    const update = <K extends keyof TransformerConfig>(key: K, value: number) => {
-      onTransformerChange({ ...transformerConfig, [key]: value });
-    };
-
-    return (
-      <div className="grid grid-cols-2 gap-4">
-        <ParameterField
-          label="Max sequence length"
-          value={cfg.max_len}
-          placeholder="16"
-          editable={editable}
-          onChange={(e) => update("max_len", n(e.target.value))}
-        />
-        <ParameterField
-          label="Model dimension"
-          value={cfg.d_model}
-          placeholder="64"
-          editable={editable}
-          onChange={(e) => update("d_model", n(e.target.value))}
-        />
-        <ParameterField
-          label="Number of attention heads"
-          value={cfg.num_heads}
-          placeholder="4"
-          editable={editable}
-          onChange={(e) => update("num_heads", n(e.target.value))}
-        />
-        <ParameterField
-          label="Number of transformer blocks"
-          value={cfg.num_blocks}
-          placeholder="2"
-          editable={editable}
-          onChange={(e) => update("num_blocks", n(e.target.value))}
-        />
-        <ParameterField
-          label="Dropout rate"
-          value={cfg.dropout_rate}
-          placeholder="0.1"
-          editable={editable}
-          min="0"
-          max="1"
-          step="0.05"
-          onChange={(e) => update("dropout_rate", n(e.target.value))}
-        />
-        <ParameterField
-          label="Number of epochs"
-          value={cfg.epochs}
-          placeholder="5"
-          editable={editable}
-          onChange={(e) => update("epochs", n(e.target.value))}
-        />
-        <ParameterField
-          label="Batch size"
-          value={cfg.batch_size}
-          placeholder="128"
-          editable={editable}
-          onChange={(e) => update("batch_size", n(e.target.value))}
-        />
-        <ParameterField
-          label="Early stopping patience"
-          value={cfg.patience}
-          placeholder="10"
-          editable={editable}
-          onChange={(e) => update("patience", n(e.target.value))}
-        />
-      </div>
-    );
-  }
-
-  if (modelType === "best") {
-    const cfg = editable ? bestConfig : defaultBestConfig;
-    const updateNum = <K extends keyof BestConfig>(key: K, value: number) => {
-      onBestChange({ ...bestConfig, [key]: value as BestConfig[K] });
-    };
-    const updateBool = (key: keyof BestConfig, value: boolean) => {
-      onBestChange({ ...bestConfig, [key]: value });
-    };
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {BEST_CONFIG_FIELDS.map((field) =>
-          field.kind === "boolean" ? (
-            <BestBooleanField
-              key={field.key}
-              title={field.title}
-              description={field.description}
-              value={cfg[field.key] as boolean}
-              editable={editable}
-              onChange={(v) => updateBool(field.key, v)}
-            />
-          ) : (
-            <BestParameterField
-              key={field.key}
-              title={field.title}
-              description={field.description}
-              value={cfg[field.key] as number}
-              placeholder={field.placeholder}
-              editable={editable}
-              min={field.min}
-              max={field.max}
-              step={field.step}
-              onChange={(e) => updateNum(field.key, n(e.target.value))}
-            />
-          )
-        )}
-      </div>
-    );
-  }
-
-  const cfg = editable ? gnnConfig : defaultGnnConfig;
-  const update = <K extends keyof GnnConfig>(key: K, value: number) => {
-    onGnnChange({ ...gnnConfig, [key]: value });
+  const update = (key: string, value: ConfigValue) => {
+    onChange({ ...values, [key]: value });
   };
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <ParameterField
-        label="Hidden channels"
-        value={cfg.hidden}
-        placeholder="64"
-        editable={editable}
-        onChange={(e) => update("hidden", n(e.target.value))}
-      />
-      <ParameterField
-        label="Dropout rate"
-        value={cfg.dropout_rate}
-        placeholder="0.1"
-        editable={editable}
-        min="0"
-        max="1"
-        step="0.05"
-        onChange={(e) => update("dropout_rate", n(e.target.value))}
-      />
-      <ParameterField
-        label="Learning rate"
-        value={cfg.lr}
-        placeholder="0.0004"
-        editable={editable}
-        min="0"
-        step="0.0001"
-        onChange={(e) => update("lr", n(e.target.value))}
-      />
-      <ParameterField
-        label="Number of epochs"
-        value={cfg.epochs}
-        placeholder="5"
-        editable={editable}
-        onChange={(e) => update("epochs", n(e.target.value))}
-      />
-      <ParameterField
-        label="Batch size"
-        value={cfg.batch_size}
-        placeholder="64"
-        editable={editable}
-        onChange={(e) => update("batch_size", n(e.target.value))}
-      />
-      <ParameterField
-        label="Early stopping patience"
-        value={cfg.patience}
-        placeholder="10"
-        editable={editable}
-        onChange={(e) => update("patience", n(e.target.value))}
-      />
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {fields.map((field) =>
+        field.kind === "boolean" ? (
+          <BooleanField
+            key={field.key}
+            field={field}
+            value={Boolean(values[field.key])}
+            editable={editable}
+            onChange={(v) => update(field.key, v)}
+          />
+        ) : (
+          <ParameterField
+            key={field.key}
+            field={field}
+            value={values[field.key] as number}
+            editable={editable}
+            onChange={(e) => update(field.key, n(e.target.value))}
+          />
+        )
+      )}
     </div>
   );
 }
@@ -368,40 +168,32 @@ function n(v: string): number {
   return v === "" ? NaN : Number(v);
 }
 
-function BestParameterField({
-  title,
-  description,
+function ParameterField({
+  field,
   value,
-  placeholder,
   editable,
-  min,
-  max,
-  step,
   onChange,
 }: {
-  title: string;
-  description: string;
+  field: ConfigFieldMeta;
   value: number;
-  placeholder: string;
   editable: boolean;
-  min?: string;
-  max?: string;
-  step?: string;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
     <div className="border rounded-lg p-4 bg-white">
-      <div className="text-sm font-medium text-brand-900">{title}</div>
-      <p className="text-xs text-brand-600 mt-1 leading-relaxed">{description}</p>
+      <div className="text-sm font-medium text-brand-900">{field.label}</div>
+      {field.description && (
+        <p className="text-xs text-brand-600 mt-1 leading-relaxed">{field.description}</p>
+      )}
       <div className="mt-3">
         {editable ? (
           <input
             type="number"
             value={Number.isFinite(value) ? value : ""}
-            placeholder={placeholder}
-            min={min}
-            max={max}
-            step={step}
+            placeholder={field.placeholder}
+            min={field.min ?? field.gt}
+            max={field.max ?? field.lt}
+            step={field.step}
             onChange={onChange}
             className="w-full bg-white text-black border rounded px-3 py-2 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-500"
           />
@@ -413,23 +205,23 @@ function BestParameterField({
   );
 }
 
-function BestBooleanField({
-  title,
-  description,
+function BooleanField({
+  field,
   value,
   editable,
   onChange,
 }: {
-  title: string;
-  description: string;
+  field: ConfigFieldMeta;
   value: boolean;
   editable: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
     <div className="border rounded-lg p-4 bg-white">
-      <div className="text-sm font-medium text-brand-900">{title}</div>
-      <p className="text-xs text-brand-600 mt-1 leading-relaxed">{description}</p>
+      <div className="text-sm font-medium text-brand-900">{field.label}</div>
+      {field.description && (
+        <p className="text-xs text-brand-600 mt-1 leading-relaxed">{field.description}</p>
+      )}
       <div className="mt-3">
         {editable ? (
           <input
@@ -442,74 +234,6 @@ function BestBooleanField({
           <div className="px-3 py-2 font-medium text-black">{value ? "true" : "false"}</div>
         )}
       </div>
-    </div>
-  );
-}
-
-function BooleanField({
-  label,
-  value,
-  editable,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  editable: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="border rounded-lg p-4 bg-white">
-      <div className="text-sm text-gray-600 mb-1">{label}</div>
-      {editable ? (
-        <input
-          type="checkbox"
-          checked={value}
-          onChange={(e) => onChange(e.target.checked)}
-          className="h-4 w-4 rounded border-gray-300 accent-brand-600 cursor-pointer"
-        />
-      ) : (
-        <div className="px-3 py-2 font-medium text-black">{value ? "true" : "false"}</div>
-      )}
-    </div>
-  );
-}
-
-function ParameterField({
-  label,
-  value,
-  placeholder,
-  editable,
-  min,
-  max,
-  step,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  placeholder: string;
-  editable: boolean;
-  min?: string;
-  max?: string;
-  step?: string;
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}) {
-  return (
-    <div className="border rounded-lg p-4 bg-white">
-      <div className="text-sm text-gray-600 mb-1">{label}</div>
-      {editable ? (
-        <input
-          type="number"
-          value={Number.isFinite(value) ? value : ""}
-          placeholder={placeholder}
-          min={min}
-          max={max}
-          step={step}
-          onChange={onChange}
-          className="w-full bg-white text-black border rounded px-3 py-2 appearance-none focus:outline-none focus:ring-2 focus:ring-brand-500"
-        />
-      ) : (
-        <div className="px-3 py-2 font-medium text-black">{value}</div>
-      )}
     </div>
   );
 }
@@ -533,5 +257,3 @@ function Radio({ selected }: { selected: boolean }) {
     </div>
   );
 }
-
-

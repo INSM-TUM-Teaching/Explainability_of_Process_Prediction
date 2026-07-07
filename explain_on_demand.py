@@ -443,10 +443,22 @@ def run_gnn_explainability_on_demand(run_dir, dataset_path, case_id, case_index,
     )
     
     try:
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model.to(device)
+        state = torch.load(model_path, map_location=device)
+        # The saved model may include an outcome head (out_outcome.*) that this
+        # reconstruction omits for non-outcome tasks. strict=False ignores those
+        # extra keys while still loading the activity/time/remaining heads,
+        # instead of failing the whole load and leaving weights uninitialized.
+        _missing, unexpected = model.load_state_dict(state, strict=False)
+        if unexpected:
+            print(f"[explain] Ignoring unexpected state_dict keys: {list(unexpected)}")
     except Exception as e:
         print(f"Warning: partial load or error: {e}")
+
+    # Model and input graph must live on the same device; otherwise the forward
+    # pass fails with "Expected all tensors to be on the same device" on CUDA.
+    model.to(device)
+    model.eval()
+    graph = graph.to(device)
         
     result = {"method": method, "files": [f"{method}_summary.png"]}
     

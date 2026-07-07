@@ -1,9 +1,12 @@
+import { useCapabilities } from "../../models/capabilities";
+
 type Step2ModelProps = {
   modelType: string | null;
   onSelect: (type: string) => void;
 };
 
 export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
+  const { models, loading, error } = useCapabilities();
   const isSelected = (type: string) => modelType === type;
 
   const baseCard =
@@ -22,77 +25,41 @@ export default function Step2Model({ modelType, onSelect }: Step2ModelProps) {
         </p>
       </div>
 
-      {/* Transformer */}
-      <div
-        onClick={() => onSelect("transformer")}
-        className={`${baseCard} ${
-          isSelected("transformer") ? selectedCard : unselectedCard
-        }`}
-      >
-        {/* min-w-0 + break-words prevents long tokens from forcing width */}
-        <div className="pr-6 min-w-0">
-          <div className="font-medium text-gray-900">Transformer</div>
-          <div className="text-sm text-gray-600 mt-1 break-words">
-            State-of-the-art attention-based architecture, ideal for sequential data and
-            complex patterns. Best for large datasets with temporal dependencies.
-          </div>
-        </div>
+      {loading && (
+        <p className="text-sm text-brand-600">Loading available models…</p>
+      )}
+      {error && (
+        <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+          Could not load models from the backend: {error}
+        </p>
+      )}
 
-        {/* Radio */}
+      {models.map((model) => (
         <div
-          className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-            isSelected("transformer")
-              ? "border-brand-600 bg-brand-600"
-              : "border-gray-300"
+          key={model.id}
+          onClick={() => onSelect(model.id)}
+          className={`${baseCard} ${
+            isSelected(model.id) ? selectedCard : unselectedCard
           }`}
-        />
-      </div>
-
-      {/* GNN */}
-      <div
-        onClick={() => onSelect("gnn")}
-        className={`${baseCard} ${isSelected("gnn") ? selectedCard : unselectedCard}`}
-      >
-        <div className="pr-6 min-w-0">
-          <div className="font-medium text-gray-900">GNN (Graph Neural Network)</div>
-          <div className="text-sm text-gray-600 mt-1 break-words">
-            Graph-based architecture, perfect for modeling relationships and dependencies
-            between activities. Excels at capturing process structure.
+        >
+          {/* min-w-0 + break-words prevents long tokens from forcing width */}
+          <div className="pr-6 min-w-0">
+            <div className="font-medium text-gray-900">{model.label}</div>
+            <div className="text-sm text-gray-600 mt-1 break-words">
+              {model.description}
+            </div>
           </div>
+
+          {/* Radio */}
+          <div
+            className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
+              isSelected(model.id)
+                ? "border-brand-600 bg-brand-600"
+                : "border-gray-300"
+            }`}
+          />
         </div>
-
-        {/* Radio */}
-        <div
-          className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-            isSelected("gnn") ? "border-brand-600 bg-brand-600" : "border-gray-300"
-          }`}
-        />
-      </div>
-
-      {/* BEST */}
-      <div
-        onClick={() => onSelect("best")}
-        className={`${baseCard} ${isSelected("best") ? selectedCard : unselectedCard}`}
-      >
-        <div className="pr-6 min-w-0">
-          <div className="font-medium text-gray-900">
-            BEST (Bilaterally Expanding Subtrace Tree)
-          </div>
-          <div className="text-sm text-gray-600 mt-1 break-words">
-            Probabilistic tree-based model for activity sequence prediction. Builds a
-            pattern tree directly from the event log without neural network training.
-            Supports next activity and remaining trace prediction.
-          </div>
-        </div>
-
-        {/* Radio */}
-        <div
-          className={`h-4 w-4 rounded-full border-2 mt-1 shrink-0 ${
-            isSelected("best") ? "border-brand-600 bg-brand-600" : "border-gray-300"
-          }`}
-        />
-      </div>
+      ))}
     </div>
   );
 }
-
