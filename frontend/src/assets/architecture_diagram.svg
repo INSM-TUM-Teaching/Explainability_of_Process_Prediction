@@ -1,0 +1,230 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 740" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#808080"/>
+    </marker>
+    <style>
+      .arrow { stroke:#808080; stroke-width:5; fill:none; marker-end:url(#arrow); }
+      .card { fill:#ffffff; stroke:#d4d4d4; stroke-width:1.5; }
+      .pill { fill:#dde9f3; stroke:#c4d6e8; stroke-width:1; }
+      .pilltxt { font-size:14px; fill:#333; text-anchor:middle; }
+      .cardtitle { font-size:19px; font-weight:700; fill:#1a1a1a; }
+      .cardsub { font-size:15px; fill:#8a8a8a; }
+      .flowlbl { font-size:20px; font-weight:700; fill:#5a5a5a; text-anchor:middle; }
+      .header { font-size:24px; font-weight:700; fill:#5a5a5a; text-anchor:middle; }
+      .xlbl { font-size:15px; font-weight:700; fill:#333; text-anchor:middle; }
+      .newtxt { font-size:10px; font-weight:700; fill:#fff; text-anchor:middle; }
+    </style>
+    <g id="new">
+      <rect width="32" height="16" rx="3" fill="#1e9bf0"/>
+      <text x="16" y="12" class="newtxt">NEW</text>
+    </g>
+  </defs>
+
+  <!-- ================= SECTION HEADERS ================= -->
+  <text x="510" y="115" class="header">Process Prediction</text>
+  <text x="910" y="115" class="header">Explainability</text>
+
+  <!-- ================= LEFT FLOW COLUMN ================= -->
+  <!-- Dataset -->
+  <g transform="translate(130,150)">
+    <rect x="0" y="0" width="46" height="56" rx="4" fill="#eceafc" stroke="#8f86d6" stroke-width="2"/>
+    <line x1="10" y1="14" x2="36" y2="14" stroke="#8f86d6" stroke-width="2"/>
+    <line x1="10" y1="24" x2="36" y2="24" stroke="#8f86d6" stroke-width="2"/>
+    <line x1="10" y1="34" x2="28" y2="34" stroke="#8f86d6" stroke-width="2"/>
+  </g>
+  <text x="245" y="185" class="flowlbl">Dataset</text>
+  <line class="arrow" x1="153" y1="215" x2="153" y2="258"/>
+
+  <!-- Preprocessing (gears) -->
+  <g transform="translate(130,265)" fill="none" stroke="#f2a63b" stroke-width="4">
+    <circle cx="20" cy="24" r="14"/>
+    <circle cx="42" cy="38" r="10"/>
+  </g>
+  <text x="255" y="300" class="flowlbl">Preprocessing</text>
+  <line class="arrow" x1="153" y1="325" x2="153" y2="368"/>
+
+  <!-- Model Registry diamond -->
+  <polygon points="153,375 273,505 153,635 33,505" fill="#fdeeee" stroke="#e79b9b" stroke-width="4"/>
+  <use href="#new" x="137" y="405"/>
+  <text x="153" y="490" class="flowlbl" font-size="18" fill="#3a3a3a">Model Registry</text>
+  <text x="153" y="515" class="flowlbl" font-size="18" fill="#3a3a3a">"Plug-and-Play"</text>
+  <text x="153" y="540" class="flowlbl" font-size="18" fill="#3a3a3a">Hub</text>
+
+  <!-- Registry -> model cards -->
+  <path class="arrow" d="M255,455 C310,410 300,300 340,280"/>
+  <path class="arrow" d="M273,505 L338,455"/>
+  <path class="arrow" d="M255,555 C310,600 300,610 340,630"/>
+
+  <!-- ================= PROCESS PREDICTION CONTAINER ================= -->
+  <rect x="330" y="135" width="360" height="575" rx="26" fill="none" stroke="#7bb0e0" stroke-width="4"/>
+  <g transform="translate(632,120)"><circle cx="10" cy="12" r="12" fill="#fff" stroke="#7bb0e0" stroke-width="2.5"/><line x1="10" y1="12" x2="10" y2="5" stroke="#7bb0e0" stroke-width="2"/><line x1="10" y1="12" x2="15" y2="14" stroke="#7bb0e0" stroke-width="2"/></g>
+  <use href="#new" x="650" y="112"/>
+
+  <!-- Transformers card -->
+  <rect class="card" x="348" y="158" width="324" height="160" rx="6"/>
+  <text x="366" y="188" class="cardtitle">Transformers</text>
+  <text x="366" y="210" class="cardsub">Classification | Regression</text>
+  <g>
+    <rect class="pill" x="366" y="222" width="112" height="26" rx="6"/><text x="422" y="240" class="pilltxt">Next Activity</text>
+    <rect class="pill" x="486" y="222" width="112" height="26" rx="6"/><text x="542" y="240" class="pilltxt">Event Time</text>
+    <rect class="pill" x="366" y="254" width="112" height="26" rx="6"/><text x="422" y="272" class="pilltxt">Custom</text>
+    <rect class="pill" x="486" y="254" width="112" height="26" rx="6"/><text x="542" y="272" class="pilltxt">Remaining Time</text>
+    <rect class="pill" x="366" y="286" width="112" height="26" rx="6"/><text x="422" y="304" class="pilltxt">Outcome</text>
+    <use href="#new" x="482" y="288"/>
+  </g>
+  <!-- transformer mini icon -->
+  <g transform="translate(612,224)" fill="#f6d7bf" stroke="#d99a6c" stroke-width="1.5">
+    <rect x="0" y="44" width="34" height="14" rx="2"/>
+    <rect x="0" y="24" width="34" height="14" rx="2" fill="#cfe0f2" stroke="#7bb0e0"/>
+    <rect x="0" y="4" width="34" height="14" rx="2"/>
+  </g>
+
+  <!-- GNN card -->
+  <rect class="card" x="348" y="332" width="324" height="160" rx="6"/>
+  <text x="366" y="362" class="cardtitle" font-size="17">Graph Neural Networks (GNN)</text>
+  <text x="366" y="386" class="cardsub">Classification | Regression</text>
+  <g>
+    <rect class="pill" x="366" y="398" width="112" height="26" rx="6"/><text x="422" y="416" class="pilltxt">Next Activity</text>
+    <rect class="pill" x="486" y="398" width="112" height="26" rx="6"/><text x="542" y="416" class="pilltxt">Event Time</text>
+    <rect class="pill" x="366" y="430" width="112" height="26" rx="6"/><text x="422" y="448" class="pilltxt">Custom</text>
+    <rect class="pill" x="486" y="430" width="112" height="26" rx="6"/><text x="542" y="448" class="pilltxt">Remaining Time</text>
+    <rect class="pill" x="366" y="462" width="112" height="26" rx="6"/><text x="422" y="480" class="pilltxt">Outcome</text>
+    <use href="#new" x="482" y="464"/>
+  </g>
+  <!-- gnn mini icon -->
+  <g transform="translate(606,400)">
+    <line x1="12" y1="10" x2="34" y2="20" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="34" y1="20" x2="20" y2="46" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="12" y1="10" x2="20" y2="46" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="34" y1="20" x2="46" y2="42" stroke="#b0b0b0" stroke-width="2"/>
+    <circle cx="12" cy="10" r="6" fill="#e2b23a"/>
+    <circle cx="34" cy="20" r="6" fill="#5aa469"/>
+    <circle cx="20" cy="46" r="6" fill="#7bb0e0"/>
+    <circle cx="46" cy="42" r="6" fill="#9c8fd6"/>
+  </g>
+
+  <!-- BEST card -->
+  <rect class="card" x="348" y="506" width="324" height="186" rx="6"/>
+  <text x="366" y="536" class="cardtitle" font-size="16">Bilaterally Expanding</text>
+  <text x="366" y="556" class="cardtitle" font-size="16">Subtrace Tree (BEST)</text>
+  <use href="#new" x="600" y="522"/>
+  <text x="366" y="584" class="cardsub">Classification</text>
+  <g>
+    <rect class="pill" x="366" y="596" width="128" height="26" rx="6"/><text x="430" y="614" class="pilltxt">Next Activity</text>
+    <rect class="pill" x="366" y="628" width="128" height="26" rx="6"/><text x="430" y="646" class="pilltxt">Remaining Trace</text>
+    <rect class="pill" x="366" y="660" width="128" height="26" rx="6"/><text x="430" y="678" class="pilltxt">Outcome</text>
+    <use href="#new" x="498" y="662"/>
+  </g>
+  <!-- tree mini icon -->
+  <g transform="translate(560,590)">
+    <line x1="45" y1="8" x2="20" y2="40" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="45" y1="8" x2="70" y2="40" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="20" y1="40" x2="10" y2="70" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="20" y1="40" x2="30" y2="70" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="70" y1="40" x2="62" y2="70" stroke="#b0b0b0" stroke-width="2"/>
+    <line x1="70" y1="40" x2="80" y2="70" stroke="#b0b0b0" stroke-width="2"/>
+    <circle cx="45" cy="8" r="5" fill="#5aa469"/>
+    <circle cx="20" cy="40" r="5" fill="#e2b23a"/>
+    <circle cx="70" cy="40" r="5" fill="#7bb0e0"/>
+    <circle cx="10" cy="70" r="5" fill="#5aa469"/>
+    <circle cx="30" cy="70" r="5" fill="#5aa469"/>
+    <circle cx="62" cy="70" r="5" fill="#7bb0e0"/>
+    <circle cx="80" cy="70" r="5" fill="#9c9c9c"/>
+  </g>
+
+  <!-- Prediction -> Explainability arrows -->
+  <line class="arrow" x1="690" y1="238" x2="726" y2="238"/>
+  <line class="arrow" x1="690" y1="412" x2="726" y2="412"/>
+  <line class="arrow" x1="690" y1="600" x2="726" y2="600"/>
+
+  <!-- ================= EXPLAINABILITY CONTAINER ================= -->
+  <rect x="730" y="135" width="360" height="575" rx="26" fill="none" stroke="#e8a05a" stroke-width="4"/>
+  <g transform="translate(1032,120)"><circle cx="10" cy="12" r="12" fill="#fff" stroke="#e8a05a" stroke-width="2.5"/><line x1="10" y1="12" x2="10" y2="5" stroke="#e8a05a" stroke-width="2"/><line x1="10" y1="12" x2="15" y2="14" stroke="#e8a05a" stroke-width="2"/></g>
+  <use href="#new" x="1050" y="112"/>
+
+  <!-- Row 1: SHAP & LIME -->
+  <g transform="translate(0,0)">
+    <!-- SHAP bars -->
+    <g transform="translate(812,175)">
+      <rect x="0" y="24" width="7" height="30" fill="#d94a8c"/>
+      <rect x="9" y="14" width="7" height="40" fill="#c94ba0"/>
+      <rect x="18" y="6" width="7" height="48" fill="#8e5bc9"/>
+      <rect x="27" y="18" width="7" height="36" fill="#5b78d9"/>
+      <rect x="36" y="30" width="7" height="24" fill="#4a9bd9"/>
+    </g>
+    <text x="835" y="248" class="xlbl">SHAP</text>
+    <text x="905" y="222" font-size="22" font-weight="700" fill="#555" text-anchor="middle">&amp;</text>
+    <!-- LIME -->
+    <circle cx="985" cy="200" r="26" fill="#8bc34a" stroke="#5a9e2e" stroke-width="2"/>
+    <line x1="985" y1="176" x2="985" y2="224" stroke="#fff" stroke-width="2"/>
+    <line x1="961" y1="200" x2="1009" y2="200" stroke="#fff" stroke-width="2"/>
+    <text x="985" y="248" class="xlbl">LIME</text>
+  </g>
+  <line x1="748" y1="315" x2="1072" y2="315" stroke="#e8a05a" stroke-width="2.5"/>
+
+  <!-- Row 2: Gradient Based Saliency & GraphLIME -->
+  <g transform="translate(0,0)">
+    <g transform="translate(820,345)">
+      <line x1="10" y1="12" x2="40" y2="24" stroke="#7a3b7a" stroke-width="2"/>
+      <line x1="40" y1="24" x2="24" y2="50" stroke="#7a3b7a" stroke-width="2"/>
+      <line x1="10" y1="12" x2="24" y2="50" stroke="#7a3b7a" stroke-width="2"/>
+      <circle cx="10" cy="12" r="7" fill="#9c3b3b"/>
+      <circle cx="40" cy="24" r="7" fill="#e08a3a"/>
+      <circle cx="24" cy="50" r="7" fill="#3b6fb0"/>
+    </g>
+    <text x="838" y="430" class="xlbl">Gradient Based</text>
+    <text x="838" y="448" class="xlbl">Saliency</text>
+    <text x="905" y="400" font-size="22" font-weight="700" fill="#555" text-anchor="middle">&amp;</text>
+    <g transform="translate(955,350)">
+      <circle cx="30" cy="30" r="26" fill="none" stroke="#5aa469" stroke-width="2" stroke-dasharray="4 4"/>
+      <line x1="30" y1="30" x2="8" y2="18" stroke="#5aa469" stroke-width="2"/>
+      <line x1="30" y1="30" x2="10" y2="46" stroke="#5aa469" stroke-width="2"/>
+      <line x1="30" y1="30" x2="52" y2="42" stroke="#5aa469" stroke-width="2"/>
+      <circle cx="30" cy="30" r="6" fill="#3b8fd9"/>
+      <circle cx="8" cy="18" r="4" fill="#e08a3a"/>
+      <circle cx="10" cy="46" r="4" fill="#e08a3a"/>
+      <circle cx="52" cy="42" r="4" fill="#e08a3a"/>
+      <rect x="66" y="30" width="4" height="14" fill="#5aa469"/>
+      <rect x="72" y="22" width="4" height="22" fill="#5aa469"/>
+    </g>
+    <text x="1000" y="440" class="xlbl">GraphLIME</text>
+  </g>
+  <line x1="748" y1="515" x2="1072" y2="515" stroke="#e8a05a" stroke-width="2.5"/>
+
+  <!-- Row 3: Pattern Analysis -->
+  <g transform="translate(0,0)">
+    <use href="#new" x="1010" y="530"/>
+    <g transform="translate(858,548)">
+      <rect x="0" y="26" width="6" height="24" fill="#2ea89a"/>
+      <rect x="9" y="14" width="6" height="36" fill="#2ea89a"/>
+      <rect x="18" y="20" width="6" height="30" fill="#2ea89a"/>
+      <rect x="27" y="6" width="6" height="44" fill="#2ea89a"/>
+      <rect x="36" y="22" width="6" height="28" fill="#2ea89a"/>
+      <rect x="45" y="12" width="6" height="38" fill="#2ea89a"/>
+      <polyline points="3,40 12,30 21,34 30,18 39,32 48,22" fill="none" stroke="#2a3b8f" stroke-width="2.5"/>
+      <circle cx="3" cy="40" r="3" fill="#2a3b8f"/><circle cx="30" cy="18" r="3" fill="#2a3b8f"/><circle cx="48" cy="22" r="3" fill="#2a3b8f"/>
+    </g>
+    <text x="910" y="640" class="xlbl">Pattern Analysis</text>
+  </g>
+
+  <!-- Explainability -> Result Visualization -->
+  <path class="arrow" d="M1090,238 C1130,238 1140,360 1150,392"/>
+  <path class="arrow" d="M1090,412 L1150,420"/>
+  <path class="arrow" d="M1090,600 C1130,600 1140,480 1150,450"/>
+
+  <!-- ================= RESULT VISUALIZATION ================= -->
+  <g transform="translate(1150,382)">
+    <rect x="0" y="0" width="76" height="60" rx="5" fill="#fff" stroke="#c4c4c4" stroke-width="1.5"/>
+    <circle cx="20" cy="22" r="12" fill="none" stroke="#e2b23a" stroke-width="6" stroke-dasharray="20 40"/>
+    <rect x="42" y="10" width="6" height="24" fill="#5aa469"/>
+    <rect x="50" y="18" width="6" height="16" fill="#3b8fd9"/>
+    <rect x="58" y="6" width="6" height="28" fill="#d94a8c"/>
+    <line x1="10" y1="46" x2="66" y2="46" stroke="#ddd" stroke-width="2"/>
+    <line x1="10" y1="52" x2="55" y2="52" stroke="#ddd" stroke-width="2"/>
+  </g>
+  <use href="#new" x="1210" y="378"/>
+  <text x="1200" y="470" class="xlbl" font-size="17">Result</text>
+  <text x="1200" y="490" class="xlbl" font-size="17">Visualization</text>
+</svg>
