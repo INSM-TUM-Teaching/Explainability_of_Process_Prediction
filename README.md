@@ -102,9 +102,11 @@ https://explainability-bedf8.web.app/
 5. Export artifacts: each run is packaged as a ZIP containing the trained model, prediction CSVs, explainability plots, and benchmarking summary for reproducibility.
 
 **Project Structure**
-- `frontend/` Frontend app (Vite + React); renders itself from the backend capability manifest.
-- `backend/` FastAPI service for training and inference (serves `GET /capabilities`).
-- `models/` Plug-and-play model registry: `base_predictor.py` (adapter contract), `registry.py` (`"<model>:<task>"` → wrapper), `capabilities.py` (declarative manifest), and one `*_predictor.py` adapter per model.
+- `frontend/` Frontend app (Vite + React).
+- `backend/` FastAPI service for training and inference.
+- `BPI_dataset/` Sample datasets used for experiments.
+- `explainability/` Explainability methods and reports.
+- `gnns/` GNN training and prediction pipeline. The predictor is split into single-responsibility modules under `gnns/prediction/` (data preparation, model building, training, and persistence), so new neural-network models can reuse the shared pieces and be added with minimal changes.
 - `transformers/` Transformer training and prediction pipeline.
 - `gnns/` GNN training and prediction pipeline.
 - `best/` BEST (Bilaterally Expanding Subtrace Tree) training and prediction pipeline.

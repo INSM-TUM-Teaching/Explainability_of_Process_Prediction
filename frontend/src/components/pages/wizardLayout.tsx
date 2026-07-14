@@ -53,19 +53,81 @@ function isNoiseLine(line: string): boolean {
   return false;
 }
 
+/**
+ * Parse the latest training epoch from the logs, supporting both model families:
+ *   - Keras/transformer: "Epoch 3/50"       (current and total on one line)
+ *   - GNN:               "Epoch 003 | ..."   (current only; total comes from
+ *                        an earlier "Training ... for 50 epochs" line)
+ * Scans forward so the most recent epoch line wins.
+ */
 function extractEpochProgress(lines: string[]): { current: number; total: number } | null {
+  let current: number | null = null;
+  let total: number | null = null;
+
+  for (const line of lines) {
+    const totalMatch = line.match(/for\s+(\d+)\s+epochs/i);
+    if (totalMatch) total = Number(totalMatch[1]);
+
+    // Keras style "Epoch 3/50" gives both numbers.
+    const kerasMatch = line.match(/Epoch\s+(\d+)\s*\/\s*(\d+)/i);
+    if (kerasMatch) {
+      current = Number(kerasMatch[1]);
+      total = Number(kerasMatch[2]);
+      continue;
+    }
+
+    // GNN style "Epoch 003 | ..." (no slash) gives the current epoch only.
+    const gnnMatch = line.match(/Epoch\s+0*(\d+)(?!\s*\/)/i);
+    if (gnnMatch) current = Number(gnnMatch[1]);
+  }
+
+  if (
+    current !== null &&
+    total !== null &&
+    Number.isFinite(current) &&
+    Number.isFinite(total) &&
+    total > 0
+  ) {
+    return { current: Math.min(current, total), total };
+  }
+  return null;
+}
+
+/** Total planned epochs from a "Training ... for N epochs" line (both models). */
+function extractTotalEpochs(lines: string[]): number | null {
+  let total: number | null = null;
+  for (const line of lines) {
+    const m = line.match(/for\s+(\d+)\s+epochs/i);
+    if (m) total = Number(m[1]);
+    const k = line.match(/Epoch\s+\d+\s*\/\s*(\d+)/i);
+    if (k) total = Number(k[1]);
+  }
+  return total && total > 0 ? total : null;
+}
+
+/** Latest within-epoch batch position, e.g. GNN's "[Train] batch 200/209". */
+function extractBatchProgress(lines: string[]): { current: number; total: number } | null {
   for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const m = lines[i].match(/Epoch\s+(\d+)\s*\/\s*(\d+)/i);
+    const m = lines[i].match(/batch\s+(\d+)\s*\/\s*(\d+)/i);
     if (m) {
       const current = Number(m[1]);
       const total = Number(m[2]);
-      if (Number.isFinite(current) && Number.isFinite(total) && total > 0) {
-        return { current, total };
-      }
+      if (total > 0) return { current, total };
     }
   }
   return null;
 }
+
+// Phrases that only appear once training has genuinely finished. Used to gate
+// the post-training progress band so the bare word "explainability" showing up
+// in early config/setup output can't jump the bar to 95% mid-training.
+const TRAINING_DONE_MARKERS = [
+  "training completed",
+  "training complete",
+  "evaluating on test",
+  "results saved",
+  "predictions saved",
+];
 
 function estimateProgressFromLogs(lines: string[], status: RunStatus | null): number {
   if (!status) return 0;
@@ -73,26 +135,65 @@ function estimateProgressFromLogs(lines: string[], status: RunStatus | null): nu
   if (status.status === "failed") return 100;
   if (status.status === "succeeded") return 100;
 
-  const epoch = extractEpochProgress(lines);
-  let progress = 25;
-
-  if (epoch) {
-    const frac = Math.min(1, epoch.current / epoch.total);
-    progress = 30 + frac * 50; // 30-80
-  }
-
   const joined = lines.join("\n").toLowerCase();
-  if (joined.includes("evaluating on test") || joined.includes("evaluating")) {
-    progress = Math.max(progress, 85);
+  const trainingDone = TRAINING_DONE_MARKERS.some((m) => joined.includes(m));
+
+  if (!trainingDone) {
+    const epoch = extractEpochProgress(lines);
+    const total = epoch?.total ?? extractTotalEpochs(lines);
+    const batch = epoch ? null : extractBatchProgress(lines);
+
+    // DATA-PREP PHASE -> ~8%: reading, mapping, prefix/graph building. No
+    // training signal in the logs yet, so we can only show "getting started".
+    if (!epoch && !total && !batch) return 8;
+
+    // TRAINING PHASE -> 15..80. Prefer completed epochs; before the first epoch
+    // finishes, fall back to batch position within that first epoch so the bar
+    // still moves (GNN prints batch lines during a long first epoch).
+    let frac = 0;
+    if (epoch) frac = epoch.current / epoch.total;
+    else if (total && batch) frac = batch.current / batch.total / total;
+    return Math.round(15 + Math.min(1, frac) * 65); // 15..80
   }
-  if (joined.includes("saving results") || joined.includes("results saved")) {
-    progress = Math.max(progress, 92);
+
+  // POST-TRAINING PHASE -> 82..99: test evaluation, saving results, then the
+  // (often lengthy) explainability pass.
+  let progress = 82;
+  if (joined.includes("results saved") || joined.includes("predictions saved")) {
+    progress = 90;
   }
-  if (joined.includes("explainability")) {
+  if (
+    joined.includes("running explainability") ||
+    joined.includes("explainer") ||
+    joined.includes("generating explanation") ||
+    joined.includes("computing attributions")
+  ) {
     progress = Math.max(progress, 95);
   }
+  return Math.min(99, progress);
+}
 
-  return Math.min(99, Math.round(progress));
+/**
+ * Build an initial column mapping from the backend's auto-detected roles,
+ * keeping only guesses that refer to columns actually present. Lets the user
+ * skip manual selection when detection is correct while still allowing edits.
+ */
+function seedMappingFromDetection(
+  detected: Record<string, string> | undefined,
+  columns: string[] | undefined
+): ManualMapping {
+  const cols = columns ?? [];
+  const pick = (role: string): string => {
+    const c = detected?.[role];
+    return c && cols.includes(c) ? c : "";
+  };
+  const resource = detected?.resource;
+  return {
+    case_id: pick("case_id"),
+    activity: pick("activity"),
+    timestamp: pick("timestamp"),
+    resource: resource && cols.includes(resource) ? resource : null,
+  };
 }
 
 function validateManualMapping(m: ManualMapping): boolean {
@@ -160,6 +261,9 @@ export default function WizardLayout() {
   const [artifacts, setArtifacts] = useLocalStorage<string[]>("wizard_artifacts", []);
   const [runError, setRunError] = useLocalStorage<string | null>("wizard_runError", null);
   const [runLogs, setRunLogs] = useLocalStorage<string[]>("wizard_runLogs", []);
+  // Ticks once per second while a run is active so the ETA re-derives from live
+  // wall-clock time without calling Date.now() during render.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
   const [viewMode, setViewMode] = useLocalStorage<ViewMode>("wizard_viewMode", "wizard");
 
@@ -179,6 +283,28 @@ export default function WizardLayout() {
     () => effectiveConfig(selectedModel, configOverrides),
     [selectedModel, configOverrides]
   );
+
+  /**
+   * Whole-pipeline "time remaining" (seconds). We extrapolate from how long the
+   * run has actually been going against how far along it is across ALL phases
+   * (prep + training + evaluation + explainability): if `progress`% took
+   * `elapsed`, the rest should take `elapsed * (100 - progress) / progress`.
+   * This accounts for every task, not just epochs, and self-corrects each tick.
+   * Returns null during data-prep (progress too low to extrapolate reliably) so
+   * the UI shows "Estimating…" instead of a wild number.
+   */
+  const etaSeconds = useMemo<number | null>(() => {
+    if (pipelineStatus !== "running") return null;
+    if (progress < 14 || progress >= 100) return null; // still preparing / done
+    const startedAt = runStatus?.started_at ?? runStatus?.created_at ?? null;
+    if (!startedAt) return null;
+    const started = Date.parse(startedAt);
+    if (!Number.isFinite(started)) return null;
+    const elapsedMs = nowMs - started;
+    if (elapsedMs <= 0) return null;
+    const remainingMs = (elapsedMs * (100 - progress)) / progress;
+    return Math.round(remainingMs / 1000);
+  }, [pipelineStatus, progress, runStatus, nowMs]);
 
   /* -------------------- NAVIGATION -------------------- */
   const nextStep = () => setStep((prev) => Math.min(prev + 1, TOTAL_STEPS - 1));
@@ -233,7 +359,8 @@ export default function WizardLayout() {
     setUploadedFile(file);
     setDataset(resp);
     setMappingMode("manual");
-    setManualMapping({ case_id: "", activity: "", timestamp: "", resource: null });
+    // Pre-fill from auto-detected columns; the user can still adjust in Step 2.
+    setManualMapping(seedMappingFromDetection(resp.detected_mapping, resp.columns));
 
     // clear run state
     setPipelineStatus("idle");
@@ -249,14 +376,18 @@ export default function WizardLayout() {
     setDataset(resp);
     setManualMapping((prev) => {
       const cols = resp.columns ?? [];
-      const next = { ...prev };
+      // Keep the user's valid picks; fill any empty/stale role from detection.
+      const seeded = seedMappingFromDetection(resp.detected_mapping, cols);
+      const keep = (val: string, fallback: string): string =>
+        val && cols.includes(val) ? val : fallback;
 
-      if (next.case_id && !cols.includes(next.case_id)) next.case_id = "";
-      if (next.activity && !cols.includes(next.activity)) next.activity = "";
-      if (next.timestamp && !cols.includes(next.timestamp)) next.timestamp = "";
-      if (next.resource && !cols.includes(next.resource)) next.resource = null;
-
-      return next;
+      return {
+        case_id: keep(prev.case_id, seeded.case_id),
+        activity: keep(prev.activity, seeded.activity),
+        timestamp: keep(prev.timestamp, seeded.timestamp),
+        resource:
+          prev.resource && cols.includes(prev.resource) ? prev.resource : seeded.resource,
+      };
     });
     if (customTargetColumn && !resp.columns.includes(customTargetColumn)) {
       setCustomTargetColumn(null);
@@ -387,6 +518,13 @@ export default function WizardLayout() {
       setProgress(0);
     }
   };
+
+  /* -------------------- ETA CLOCK -------------------- */
+  useEffect(() => {
+    if (pipelineStatus !== "running") return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [pipelineStatus]);
 
   /* -------------------- PIPELINE: poll status -------------------- */
   useEffect(() => {
@@ -584,6 +722,7 @@ export default function WizardLayout() {
                     configMode={configMode}
                     pipelineStatus={pipelineStatus}
                     progress={progress}
+                    etaSeconds={etaSeconds}
                     runId={runId}
                     runStatus={runStatus}
                     artifacts={artifacts}

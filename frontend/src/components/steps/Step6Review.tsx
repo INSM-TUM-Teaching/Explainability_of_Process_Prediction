@@ -45,6 +45,7 @@ type Step6ReviewProps = {
 
   pipelineStatus: "idle" | "running" | "completed";
   progress: number;
+  etaSeconds: number | null;
 
   runId: string | null;
   runStatus: RunStatus | null;
@@ -68,6 +69,7 @@ export default function Step6Review({
   configMode,
   pipelineStatus,
   progress,
+  etaSeconds,
   runId,
   runStatus,
   artifacts,
@@ -90,17 +92,16 @@ export default function Step6Review({
 
   const backendStatus = runStatus?.status ?? (pipelineStatus === "idle" ? "-" : "queued");
   const lastLogLine = [...logs].reverse().find((l) => l.trim().length > 0) ?? "-";
-  const etaMinutes = (() => {
-    if (pipelineStatus !== "running") return null;
-    if (progress <= 1 || progress >= 100) return null;
-    const startedAt = runStatus?.started_at ?? runStatus?.created_at ?? null;
-    if (!startedAt) return null;
-    const started = Date.parse(startedAt);
-    if (!Number.isFinite(started)) return null;
-    const elapsedMs = Date.now() - started;
-    if (elapsedMs <= 0) return null;
-    const remainingMs = (elapsedMs * (100 - progress)) / progress;
-    return Math.max(1, Math.ceil(remainingMs / 60000));
+  const etaLabel = (() => {
+    if (pipelineStatus !== "running") return "-";
+    // Null while we can't measure yet (before the first epoch completes).
+    if (etaSeconds === null) return "Estimating…";
+    if (etaSeconds <= 0) return "Almost done";
+    if (etaSeconds < 60) return "< 1 min";
+    if (etaSeconds < 3600) return `~${Math.ceil(etaSeconds / 60)} min`;
+    const hours = Math.floor(etaSeconds / 3600);
+    const mins = Math.ceil((etaSeconds % 3600) / 60);
+    return mins > 0 ? `~${hours} h ${mins} min` : `~${hours} h`;
   })();
   const mappingLabel =
     mappingMode === "manual"
@@ -183,7 +184,7 @@ export default function Step6Review({
             </div>
             <div>
               <div className="text-xs text-gray-500 mb-1">Estimated time remaining</div>
-              <div className="font-medium">{etaMinutes ? `${etaMinutes} min` : "-"}</div>
+              <div className="font-medium">{etaLabel}</div>
             </div>
           </div>
 

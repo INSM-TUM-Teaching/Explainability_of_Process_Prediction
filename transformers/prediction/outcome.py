@@ -83,8 +83,15 @@ class OutcomePredictor:
         print(f"Number of outcome classes: {len(self.label_encoder.classes_)}")
         print(f"Outcome classes: {list(self.label_encoder.classes_)}")
 
+        # Map activity -> code once; per-prefix encoder.transform calls (there can
+        # be hundreds of thousands) are dominated by per-call overhead.
+        act_to_idx = {c: i for i, c in enumerate(self.activity_encoder.classes_)}
+
         def encode_sequences(sequences, outcome_labels):
-            X_encoded = [self.activity_encoder.transform(seq) for seq in sequences]
+            X_encoded = [
+                np.fromiter((act_to_idx[a] for a in seq), dtype=np.int64, count=len(seq))
+                for seq in sequences
+            ]
             y_encoded = self.label_encoder.transform(outcome_labels)
             X = keras.preprocessing.sequence.pad_sequences(
                 X_encoded, maxlen=self.max_len, padding='pre', value=-1

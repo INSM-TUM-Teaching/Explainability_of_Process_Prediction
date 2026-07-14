@@ -164,27 +164,26 @@ class HeteroGNN(nn.Module):
     def _get_last_node_per_graph(self, node_features, batch):
         """
         Extract the last node from each graph in a batch.
-        
+
         Args:
             node_features: [total_nodes, hidden_dim] - all nodes across batch
             batch: [total_nodes] - batch assignment for each node
-        
+
         Returns:
             [num_graphs, hidden_dim] - last node embedding per graph
+
+        Vectorized: PyG concatenates each graph's nodes contiguously in ascending
+        graph order, so the last node of a graph is the position right before the
+        batch index changes (plus the final position). This runs on every forward
+        pass, so avoiding the per-graph Python loop and the GPU->CPU sync from
+        ``batch.max().item()`` is a meaningful speedup during training and eval.
         """
-        pooled = []
-        num_graphs = batch.max().item() + 1
-        
-        for graph_id in range(num_graphs):
-            # Get all nodes belonging to this graph
-            mask = (batch == graph_id)
-            graph_nodes = node_features[mask]
-            
-            # Take the LAST node (most recent in sequence)
-            last_node = graph_nodes[-1]
-            pooled.append(last_node)
-        
-        return torch.stack(pooled)
+        n = node_features.size(0)
+        is_last = torch.ones(n, dtype=torch.bool, device=batch.device)
+        if n > 1:
+            is_last[:-1] = batch[1:] != batch[:-1]
+        last_indices = is_last.nonzero(as_tuple=False).view(-1)
+        return node_features[last_indices]
 
     def compute_loss(self, act_logits, time_pred, rem_pred, batch, outcome_logits=None):
         """

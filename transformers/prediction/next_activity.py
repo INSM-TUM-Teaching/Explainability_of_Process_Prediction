@@ -67,9 +67,20 @@ class NextActivityPredictor:
         
         self.label_encoder.fit(process_data['activity'])
         
+        # Map label -> code once; calling LabelEncoder.transform per prefix (there
+        # can be hundreds of thousands) is dominated by its per-call overhead.
+        class_to_idx = {c: i for i, c in enumerate(self.label_encoder.classes_)}
+
         def encode_sequences(sequences, next_activities):
-            X_encoded = [self.label_encoder.transform(seq) for seq in sequences]
-            y_encoded = self.label_encoder.transform(next_activities)
+            X_encoded = [
+                np.fromiter((class_to_idx[a] for a in seq), dtype=np.int64, count=len(seq))
+                for seq in sequences
+            ]
+            y_encoded = np.fromiter(
+                (class_to_idx[a] for a in next_activities),
+                dtype=np.int64,
+                count=len(next_activities),
+            )
             X = keras.preprocessing.sequence.pad_sequences(
                 X_encoded, maxlen=self.max_len, padding='pre', value=-1
             )

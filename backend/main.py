@@ -316,6 +316,83 @@ def _infer_column_types(df: pd.DataFrame) -> Dict[str, str]:
     return out
 
 
+# Synonyms (lower-cased) for each mapping role. Ordered rough-frequency first.
+_ROLE_PATTERNS: Dict[str, List[str]] = {
+    "case_id": [
+        "case:concept:name", "case:id", "caseid", "case_id", "case id", "case",
+        "trace", "traceid", "trace_id", "case:name",
+    ],
+    "activity": [
+        "concept:name", "activity", "action", "event", "eventtype", "event_type",
+        "event type", "task", "operation", "activityname", "activity_name",
+    ],
+    "timestamp": [
+        "time:timestamp", "timestamp", "time stamp", "time", "datetime",
+        "date_time", "date", "start_time", "starttime", "start timestamp",
+        "start_timestamp", "complete_time", "completetime", "complete timestamp",
+        "end_time", "endtime", "eventtime", "event_time",
+    ],
+    "resource": [
+        "org:resource", "resource", "user", "org:role", "role", "actor", "agent",
+        "employee", "worker", "operator",
+    ],
+}
+
+# Roles that may fall back to a loose substring match. Timestamp is excluded on
+# purpose — substrings like "time"/"date" appear in unrelated columns (e.g.
+# "lead_time"), so it relies on exact names plus a datetime-parse probe instead.
+_SUBSTRING_ROLES = ("case_id", "activity", "resource")
+
+
+def _detect_column_roles(df: pd.DataFrame) -> Dict[str, str]:
+    """Best-effort guess of which columns hold the case id / activity /
+    timestamp / resource, WITHOUT renaming anything.
+
+    Returns a ``{role: column_name}`` dict (only roles that were confidently
+    detected are included). The frontend uses it to pre-fill the mapping step so
+    the user does not have to pick columns manually, while still being able to
+    override any guess. A role is never assigned the same column twice.
+    """
+    cols = list(df.columns)
+    lower = {c: str(c).strip().lower() for c in cols}
+    used: set = set()
+    detected: Dict[str, str] = {}
+
+    # 1) Exact synonym match (most reliable).
+    for role, patterns in _ROLE_PATTERNS.items():
+        pat_set = set(patterns)
+        for c in cols:
+            if c not in used and lower[c] in pat_set:
+                detected[role] = c
+                used.add(c)
+                break
+
+    # 2) Loose substring match for the safe roles.
+    for role in _SUBSTRING_ROLES:
+        if role in detected:
+            continue
+        for c in cols:
+            if c in used:
+                continue
+            if any(p in lower[c] for p in _ROLE_PATTERNS[role]):
+                detected[role] = c
+                used.add(c)
+                break
+
+    # 3) Timestamp fallback: first non-numeric column that parses as datetime.
+    if "timestamp" not in detected:
+        for c in cols:
+            if c in used or pd.api.types.is_numeric_dtype(df[c]):
+                continue
+            parsed = pd.to_datetime(df[c], errors="coerce")
+            if len(parsed) and parsed.notna().mean() >= 0.8:
+                detected["timestamp"] = c
+                used.add(c)
+                break
+
+    return detected
+
+
 def _write_split_files(
     df: pd.DataFrame,
     ds_dir: str,
@@ -511,6 +588,7 @@ async def upload_dataset(file: UploadFile = File(...), preprocessed: bool = Fals
 
     preview_rows = df.head(20).to_dict(orient="records")
     column_types = _infer_column_types(df)
+    detected_mapping = _detect_column_roles(df)
 
     preprocessed_at = _utc_now() if preprocessed else None
 
@@ -530,7 +608,7 @@ async def upload_dataset(file: UploadFile = File(...), preprocessed: bool = Fals
         num_cases=num_cases,
         columns=list(df.columns),
         column_types=column_types,
-        detected_mapping={},  # No auto-detection
+        detected_mapping=detected_mapping,
         created_at=_utc_now(),
     )
     if preprocessed:
@@ -553,7 +631,7 @@ async def upload_dataset(file: UploadFile = File(...), preprocessed: bool = Fals
         num_cases=num_cases,
         columns=list(df.columns),
         column_types=column_types,
-        detected_mapping={},  # No auto-detection - user will choose later
+        detected_mapping=detected_mapping,
         preview=preview_rows,
     )
 
@@ -597,6 +675,7 @@ def preprocess_dataset(dataset_id: str, options: PreprocessOptions):
 
     preview_rows = df.head(20).to_dict(orient="records")
     column_types = _infer_column_types(df)
+    detected_mapping = _detect_column_roles(df)
     processed_at = _utc_now()
 
     updated_meta = DatasetMeta(
@@ -615,7 +694,7 @@ def preprocess_dataset(dataset_id: str, options: PreprocessOptions):
         num_cases=num_cases,
         columns=list(df.columns),
         column_types=column_types,
-        detected_mapping=meta.detected_mapping,
+        detected_mapping=detected_mapping,
         created_at=meta.created_at,
     )
     _write_json(_dataset_meta_path(dataset_id), updated_meta.model_dump())
@@ -635,7 +714,7 @@ def preprocess_dataset(dataset_id: str, options: PreprocessOptions):
         num_cases=num_cases,
         columns=list(df.columns),
         column_types=column_types,
-        detected_mapping=meta.detected_mapping,
+        detected_mapping=detected_mapping,
         preview=preview_rows,
     )
 
@@ -736,6 +815,7 @@ def generate_splits(dataset_id: str, cfg: SplitConfig):
     split_df = pd.read_csv(split_dataset_path)
     preview_rows = split_df.head(20).to_dict(orient="records")
     column_types = _infer_column_types(split_df)
+    detected_mapping = _detect_column_roles(split_df)
 
     updated_meta = DatasetMeta(
         dataset_id=dataset_id,
@@ -753,7 +833,7 @@ def generate_splits(dataset_id: str, cfg: SplitConfig):
         num_cases=num_cases,
         columns=list(split_df.columns),
         column_types=column_types,
-        detected_mapping=meta.detected_mapping,
+        detected_mapping=detected_mapping,
         created_at=meta.created_at,
     )
     _write_json(_dataset_meta_path(dataset_id), updated_meta.model_dump())
@@ -773,7 +853,7 @@ def generate_splits(dataset_id: str, cfg: SplitConfig):
         num_cases=num_cases,
         columns=list(split_df.columns),
         column_types=column_types,
-        detected_mapping=meta.detected_mapping,
+        detected_mapping=detected_mapping,
         preview=preview_rows,
     )
 
@@ -805,6 +885,7 @@ async def upload_splits(dataset_id: str, train: UploadFile = File(...), val: Upl
 
     preview_rows = combined_df.head(20).to_dict(orient="records")
     column_types = _infer_column_types(combined_df)
+    detected_mapping = _detect_column_roles(combined_df)
 
     updated_meta = DatasetMeta(
         dataset_id=dataset_id,
@@ -822,7 +903,7 @@ async def upload_splits(dataset_id: str, train: UploadFile = File(...), val: Upl
         num_cases=num_cases,
         columns=list(combined_df.columns),
         column_types=column_types,
-        detected_mapping=meta.detected_mapping,
+        detected_mapping=detected_mapping,
         created_at=meta.created_at,
     )
     _write_json(_dataset_meta_path(dataset_id), updated_meta.model_dump())
@@ -842,7 +923,7 @@ async def upload_splits(dataset_id: str, train: UploadFile = File(...), val: Upl
         num_cases=num_cases,
         columns=list(combined_df.columns),
         column_types=column_types,
-        detected_mapping=meta.detected_mapping,
+        detected_mapping=detected_mapping,
         preview=preview_rows,
     )
 
@@ -876,6 +957,7 @@ async def upload_splits_new_dataset(train: UploadFile = File(...), val: UploadFi
 
     preview_rows = combined_df.head(20).to_dict(orient="records")
     column_types = _infer_column_types(combined_df)
+    detected_mapping = _detect_column_roles(combined_df)
     created_at = _utc_now()
 
     meta = DatasetMeta(
@@ -894,7 +976,7 @@ async def upload_splits_new_dataset(train: UploadFile = File(...), val: UploadFi
         num_cases=num_cases,
         columns=list(combined_df.columns),
         column_types=column_types,
-        detected_mapping={},
+        detected_mapping=detected_mapping,
         created_at=created_at,
     )
     _write_json(_dataset_meta_path(dataset_id), meta.model_dump())
@@ -914,7 +996,7 @@ async def upload_splits_new_dataset(train: UploadFile = File(...), val: UploadFi
         num_cases=num_cases,
         columns=list(combined_df.columns),
         column_types=column_types,
-        detected_mapping={},
+        detected_mapping=detected_mapping,
         preview=preview_rows,
     )
 
