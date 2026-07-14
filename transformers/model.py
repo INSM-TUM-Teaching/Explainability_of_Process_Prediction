@@ -11,6 +11,35 @@ from tensorflow import keras
 from keras import layers
 
 
+def _configure_tf_devices():
+    """Best-effort GPU setup so training uses the accelerator well on any machine.
+
+    Works for both NVIDIA CUDA and Apple's ``tensorflow-metal`` plugin (the GPU
+    shows up as a normal TF device on Apple Silicon). Enables memory growth so TF
+    grabs VRAM incrementally instead of reserving all of it up front — which
+    otherwise causes OOM/instability on shared or Metal GPUs. Must run before any
+    op initializes the GPU, so it's called once at import; failures are ignored
+    so a quirky environment never blocks training (it just falls back to CPU).
+    """
+    try:
+        gpus = tf.config.list_physical_devices("GPU")
+    except Exception:
+        return
+    if not gpus:
+        print("[TF] No GPU detected; training on CPU.")
+        return
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except Exception:
+            # Already initialized or unsupported — safe to ignore.
+            pass
+    print(f"[TF] Using {len(gpus)} GPU(s): {[g.name for g in gpus]}")
+
+
+_configure_tf_devices()
+
+
 class PositionalEncoding(layers.Layer):
     def __init__(self, max_len=100, d_model=64, **kwargs):
         super().__init__(**kwargs)

@@ -157,30 +157,26 @@ class EventTimePredictor:
             for case_id, group in df_data.groupby('case:concept:name'):
                 group = group.sort_values('time:timestamp').reset_index(drop=True)
                 timestamps = group['time:timestamp'].values
-                
+
                 # Calculate relative time from case start
                 start_time = timestamps[0]
-                
+
+                # Compute the per-position "Day X" label for the whole case ONCE.
+                # The previous code recomputed labels for every prefix, making this
+                # O(trace_length^2) per case; each prefix just needs a slice now.
+                days = (timestamps - start_time).astype('timedelta64[s]').astype(float) / 86400
+                labels = ["Day 0" if d == 0 else f"Day {d:.1f}" for d in days]
+
                 # Create prefix sequences (same as training data generation)
                 for i in range(1, len(timestamps)):
-                    # Get timestamps for prefix up to position i
-                    prefix_timestamps = timestamps[:i]
-                    
-                    # Calculate days from start for each timestamp
-                    timestamp_labels = []
-                    for j, ts in enumerate(prefix_timestamps):
-                        days_diff = (ts - start_time).astype('timedelta64[s]').astype(float) / 86400
-                        if days_diff == 0:
-                            timestamp_labels.append("Day 0")
-                        else:
-                            timestamp_labels.append(f"Day {days_diff:.1f}")
-                    
+                    timestamp_labels = labels[:i]
+
                     # Pad to max_length (prepend padding like sequences)
                     if len(timestamp_labels) < max_length:
                         padded = ['[PAD]'] * (max_length - len(timestamp_labels)) + timestamp_labels
                     else:
                         padded = timestamp_labels[-max_length:]
-                    
+
                     all_timestamps.append(padded)
             
             return all_timestamps

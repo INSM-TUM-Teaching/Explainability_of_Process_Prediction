@@ -5,6 +5,7 @@ step, metric evaluation, the early-stopping training loop, and the detailed
 test-set evaluation that produces the predictions DataFrame. This half is the
 model-agnostic "engine" and can largely be reused by other graph predictors.
 """
+import multiprocessing as mp
 import os
 
 import numpy as np
@@ -12,31 +13,54 @@ import torch
 from torch_geometric.data import Batch
 
 
+def _resolve_num_workers(requested):
+    """Decide how many DataLoader worker processes to use, portably.
+
+    Worker processes only pay off when the OS can *fork* the already-loaded
+    interpreter (Linux): the in-memory graphs stay shared and startup is
+    instant. On *spawn* platforms — Windows and macOS by default — each worker
+    re-imports the whole module tree (re-initializing TensorFlow), which is slow
+    and, together with CUDA + pin_memory, prone to deadlocks. The graphs are
+    already in memory, so 0 workers is both fast and robust there.
+    """
+    try:
+        start_method = mp.get_start_method(allow_none=True) or mp.get_start_method()
+    except Exception:
+        start_method = "spawn"
+
+    if start_method != "fork":
+        return 0, start_method
+
+    cores = os.cpu_count() or 1
+    if requested is None:
+        return min(8, max(1, cores)), start_method
+    return max(0, min(requested, cores)), start_method
+
+
 class TrainingMixin:
 
     def create_loaders(
         self, train_graphs, val_graphs, test_graphs, batch_size=64, num_workers=None
     ):
-        # Centralized worker calculation
-        if num_workers is None:
-            max_cores = os.cpu_count() or 1
-            num_workers = min(0, max_cores)
-
-        # PyTorch DataLoader worker subprocesses are unreliable on Windows:
-        # workers are spawned (not forked), so each one re-imports the whole
-        # module tree (re-initializing TensorFlow) and, together with CUDA +
-        # pin_memory, frequently deadlocks at loader start/teardown. The graphs
-        # are already in memory, so load synchronously there.
-        if os.name == "nt":
-            num_workers = 0
+        num_workers, start_method = _resolve_num_workers(num_workers)
+        use_cuda = torch.cuda.is_available()
+        print(
+            f"DataLoader: {num_workers} worker(s) "
+            f"(start method: {start_method}), pin_memory={use_cuda}"
+        )
 
         loader_args = dict(
             batch_size=batch_size,
             num_workers=num_workers,
             collate_fn=Batch.from_data_list,
-            # Pro-tip: Add this line below to speed up data transfer to the GPU!
-            pin_memory=True if torch.cuda.is_available() else False,
+            # pin_memory only helps CUDA host->device copies (no effect on MPS/CPU).
+            pin_memory=use_cuda,
         )
+        if num_workers > 0:
+            # Keep workers alive across epochs so the (one-time) fork cost isn't
+            # paid every epoch, and prefetch a few batches ahead.
+            loader_args["persistent_workers"] = True
+            loader_args["prefetch_factor"] = 4
 
         train_loader = torch.utils.data.DataLoader(
             train_graphs, shuffle=True, **loader_args
@@ -124,15 +148,15 @@ class TrainingMixin:
         epochs=50,
         batch_size=64,
         patience=10,
-        # `num_workers` make it either 4, 8 or 10 based on PC
-        # its basically the number of CPU subprocess
-        num_workers=4,
+        # None => auto (cores on fork platforms, 0 on spawn). See _resolve_num_workers.
+        num_workers=None,
         log_every=200,
         train_eval_batches=25,
     ):
         print(f"\nTraining GNN for {epochs} epochs...")
         print(f"Batch size: {batch_size}")
         print(f"Learning rate: {self.lr}")
+        print(f"Device: {self.device}")
 
         train_loader, val_loader, _ = self.create_loaders(
             data["train"],
@@ -141,11 +165,6 @@ class TrainingMixin:
             batch_size=batch_size,
             num_workers=num_workers,
         )
-
-        # create_loaders forces 0 workers on Windows (spawn deadlocks); report
-        # the value actually used so the log is not misleading.
-        effective_workers = 0 if os.name == "nt" else num_workers
-        print(f"Using {effective_workers} CPU workers for data loading")
 
         best_val_loss = float("inf")
         patience_counter = 0

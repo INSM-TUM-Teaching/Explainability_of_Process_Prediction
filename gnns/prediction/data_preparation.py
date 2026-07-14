@@ -102,8 +102,30 @@ class DataPreparationMixin:
             ).astype("float32")
             return prefix_df
 
-        base_df = df.drop(columns=[split_col]) if split_col else df
-        prefix_df = build_prefix_df(base_df)
+        # Build prefixes ONCE. When a split column is present we build each split
+        # and concatenate for the vocabulary pass, then reuse the very same frames
+        # to build graphs below. Previously prefixes for the whole dataset were
+        # built here purely for vocab and then built AGAIN per split — roughly
+        # doubling the (dominant) prefix-generation cost. Splits are case-disjoint,
+        # so concatenating per-split prefixes is identical to a single full build.
+        split_prefix_dfs = None
+        if split_col:
+            split_values = set(df[split_col].dropna().unique().tolist())
+            if not {"train", "val", "test"}.issubset(split_values):
+                raise ValueError(
+                    "Split column must include train, val, and test values."
+                )
+            train_df = df[df[split_col] == "train"].drop(columns=[split_col])
+            val_df = df[df[split_col] == "val"].drop(columns=[split_col])
+            test_df = df[df[split_col] == "test"].drop(columns=[split_col])
+            split_prefix_dfs = (
+                build_prefix_df(train_df),
+                build_prefix_df(val_df),
+                build_prefix_df(test_df),
+            )
+            prefix_df = pd.concat(split_prefix_dfs, ignore_index=True)
+        else:
+            prefix_df = build_prefix_df(df)
 
         vocabs = {}
         all_activities = set(prefix_df["Activity"].unique().tolist()) | set(
@@ -157,6 +179,11 @@ class DataPreparationMixin:
             # 2. EXTRACT RAW ARRAYS ONCE (Bypass Pandas completely for the loop)
             activities = prefix_df["Activity"].values
             resources = prefix_df["Resource"].values
+            # Map activity/resource labels -> ids ONCE over the whole array; the
+            # per-graph loop then just slices. Was a Python dict-comprehension per
+            # graph (O(total_nodes) dict lookups repeated across every graph).
+            activity_ids = pd.Series(activities).map(act_map).fillna(0).to_numpy(dtype=np.int64)
+            resource_ids = pd.Series(resources).map(res_map).fillna(0).to_numpy(dtype=np.int64)
             ts_logs = prefix_df["__ts_log"].values
             timestamps = prefix_df["Timestamp"].tolist()
             case_end_timestamps = prefix_df["case_end_timestamp"].tolist()
@@ -179,20 +206,18 @@ class DataPreparationMixin:
                 k = size
 
                 # Instantly grab the data for this graph using pure array slicing
-                p_activities = activities[start_idx:end_idx]
-                p_resources = resources[start_idx:end_idx]
                 p_ts_log = ts_logs[start_idx:end_idx]
                 p_timestamps = timestamps[start_idx:end_idx]
 
                 data = HeteroData()
 
-                act_ids = np.array([act_map.get(a, 0) for a in p_activities])
+                act_ids = activity_ids[start_idx:end_idx]
                 data["activity"].x = F.one_hot(
                     torch.tensor(act_ids, dtype=torch.long), num_classes=len(act_map)
                 ).float()
                 data["activity"].num_nodes = k
 
-                res_ids = np.array([res_map.get(r, 0) for r in p_resources])
+                res_ids = resource_ids[start_idx:end_idx]
                 data["resource"].x = F.one_hot(
                     torch.tensor(res_ids, dtype=torch.long), num_classes=len(res_map)
                 ).float()
@@ -309,19 +334,10 @@ class DataPreparationMixin:
             return graphs
 
         if split_col:
-            split_values = set(df[split_col].dropna().unique().tolist())
-            if not {"train", "val", "test"}.issubset(split_values):
-                raise ValueError(
-                    "Split column must include train, val, and test values."
-                )
-
-            train_df = df[df[split_col] == "train"].drop(columns=[split_col])
-            val_df = df[df[split_col] == "val"].drop(columns=[split_col])
-            test_df = df[df[split_col] == "test"].drop(columns=[split_col])
-
-            train_graphs = build_graphs(build_prefix_df(train_df))
-            val_graphs = build_graphs(build_prefix_df(val_df))
-            test_graphs = build_graphs(build_prefix_df(test_df))
+            train_prefix, val_prefix, test_prefix = split_prefix_dfs
+            train_graphs = build_graphs(train_prefix)
+            val_graphs = build_graphs(val_prefix)
+            test_graphs = build_graphs(test_prefix)
             graphs = train_graphs + val_graphs + test_graphs
         else:
             graphs = build_graphs(prefix_df)
