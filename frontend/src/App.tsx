@@ -1,10 +1,13 @@
 import WizardLayout from "./components/pages/wizardLayout";
+import { CapabilitiesProvider } from "./models/capabilities";
 
 function App() {
   return (
-    <div>
-      <WizardLayout />
-    </div>
+    <CapabilitiesProvider>
+      <div>
+        <WizardLayout />
+      </div>
+    </CapabilitiesProvider>
   );
 }
 

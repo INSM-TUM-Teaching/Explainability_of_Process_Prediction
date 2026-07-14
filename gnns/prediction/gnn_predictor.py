@@ -479,7 +479,15 @@ class GNNPredictor:
         # Centralized worker calculation
         if num_workers is None:
             max_cores = os.cpu_count() or 1
-            num_workers = min(4, max_cores)
+            num_workers = min(0, max_cores)
+
+        # PyTorch DataLoader worker subprocesses are unreliable on Windows:
+        # workers are spawned (not forked), so each one re-imports the whole
+        # module tree (re-initializing TensorFlow) and, together with CUDA +
+        # pin_memory, frequently deadlocks at loader start/teardown. The graphs
+        # are already in memory, so load synchronously there.
+        if os.name == "nt":
+            num_workers = 0
 
         loader_args = dict(
             batch_size=batch_size,
@@ -593,7 +601,10 @@ class GNNPredictor:
             num_workers=num_workers,
         )
 
-        print(f"Using {num_workers} CPU workers for data loading")
+        # create_loaders forces 0 workers on Windows (spawn deadlocks); report
+        # the value actually used so the log is not misleading.
+        effective_workers = 0 if os.name == "nt" else num_workers
+        print(f"Using {effective_workers} CPU workers for data loading")
 
         best_val_loss = float("inf")
         patience_counter = 0

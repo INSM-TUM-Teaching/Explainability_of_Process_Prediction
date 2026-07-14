@@ -6,14 +6,9 @@ import Sidebar from "../layout/Sidebar";
 import Step1Upload from "../steps/Step1Upload";
 import Step2Mapping, { type ManualMapping, type MappingMode } from "../steps/Step2Mapping";
 import Step2Model from "../steps/Step2Model";
-import Step3Prediction from "../steps/Step3Prediction";
+import Step3Prediction, { type PickableCategory } from "../steps/Step3Prediction";
 import Step4Explainability, { type ExplainValue } from "../steps/Step4Explainability";
-import Step5Config, {
-  type BestConfig,
-  type ConfigMode,
-  type GnnConfig,
-  type TransformerConfig,
-} from "../steps/Step5Config";
+import Step5Config, { type ConfigMode } from "../steps/Step5Config";
 import Step6Review from "../steps/Step6Review";
 import ResultsView from "../results/ResultsView";
 
@@ -23,14 +18,21 @@ import ppmxLogo from "../../assets/ppmx.png";
 import tumLogo from "../../assets/tum.png";
 
 import {
-  artifactsZipUrl,
   createRun,
   getRun,
   getRunLogs,
   listArtifacts,
   type DatasetUploadResponse,
+  type ModelCapability,
   type RunStatus,
 } from "../../lib/api";
+import {
+  defaultConfigFor,
+  isExplainAllowed,
+  useCapabilities,
+  validateConfig,
+  type ModelConfig,
+} from "../../models/capabilities";
 
 const TOTAL_STEPS = 8;
 
@@ -93,48 +95,6 @@ function estimateProgressFromLogs(lines: string[], status: RunStatus | null): nu
   return Math.min(99, Math.round(progress));
 }
 
-function normalizeModelType(v: string | null): "gnn" | "transformer" | "best" | null {
-  if (!v) return null;
-  const s = v.toLowerCase().trim();
-  if (s === "gnn" || s.includes("gnn")) return "gnn";
-  if (s === "transformer" || s.includes("transformer")) return "transformer";
-  if (s === "best") return "best";
-  return null;
-}
-
-function normalizeTask(
-  v: string | null
-): "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace" | "outcome" | null {
-  if (!v) return null;
-  const s = v.toLowerCase().trim();
-
-  if (s === "next_activity" || s.includes("next activity")) return "next_activity";
-  if (s === "custom_activity" || s.includes("custom")) return "custom_activity";
-  if (s === "event_time" || s.includes("event time") || s === "timestamp") return "event_time";
-  if (s === "remaining_time" || s.includes("remaining time")) return "remaining_time";
-  if (s === "unified") return "unified";
-  if (s === "remaining_trace" || s.includes("remaining trace")) return "remaining_trace";
-  if (s === "outcome" || s.includes("outcome")) return "outcome";
-
-  return null;
-}
-
-function isExplainAllowed(
-  explain: ExplainValue | null,
-  model: "gnn" | "transformer" | "best" | null
-): boolean {
-  if (!explain) return true;
-  if (!model) return true;
-
-  if (model === "transformer") {
-    return explain === "none" || explain === "lime" || explain === "shap" || explain === "all";
-  }
-  if (model === "best") {
-    return explain === "none" || explain === "pattern_analysis";
-  }
-  return explain === "none" || explain === "gradient" || explain === "lime" || explain === "all";
-}
-
 function validateManualMapping(m: ManualMapping): boolean {
   const requiredOk =
     m.case_id.trim().length > 0 && m.activity.trim().length > 0 && m.timestamp.trim().length > 0;
@@ -146,56 +106,24 @@ function validateManualMapping(m: ManualMapping): boolean {
   return new Set(selected).size === selected.length;
 }
 
-function validateTransformerConfig(cfg: TransformerConfig): boolean {
-  const positiveInts = [
-    cfg.max_len,
-    cfg.d_model,
-    cfg.num_heads,
-    cfg.num_blocks,
-    cfg.epochs,
-    cfg.batch_size,
-    cfg.patience,
-  ].every((v) => Number.isInteger(v) && v > 0);
-
-  const dropoutOk =
-    typeof cfg.dropout_rate === "number" && cfg.dropout_rate > 0 && cfg.dropout_rate < 1;
-
-  return positiveInts && dropoutOk;
-}
-
-function validateGnnConfig(cfg: GnnConfig): boolean {
-  const positiveInts = [cfg.hidden, cfg.epochs, cfg.batch_size, cfg.patience].every(
-    (v) => Number.isInteger(v) && v > 0
-  );
-
-  const dropoutOk =
-    typeof cfg.dropout_rate === "number" && cfg.dropout_rate > 0 && cfg.dropout_rate < 1;
-
-  const lrOk = typeof cfg.lr === "number" && cfg.lr > 0;
-
-  return positiveInts && dropoutOk && lrOk;
-}
-
-function validateBestConfig(cfg: BestConfig): boolean {
-  const isOddInt = (v: number) => Number.isInteger(v) && v > 1 && v % 2 === 1;
-  return (
-    isOddInt(cfg.max_pattern_size_train) &&
-    isOddInt(cfg.max_pattern_size_eval) &&
-    cfg.max_pattern_size_eval <= cfg.max_pattern_size_train &&
-    typeof cfg.process_stage_width_percentage === "number" &&
-    cfg.process_stage_width_percentage >= 0 &&
-    cfg.process_stage_width_percentage <= 1 &&
-    typeof cfg.min_freq === "number" &&
-    cfg.min_freq > 0 &&
-    typeof cfg.break_buffer === "number" &&
-    cfg.break_buffer > 1 &&
-    typeof cfg.ncores === "number" &&
-    Number.isInteger(cfg.ncores) &&
-    cfg.ncores >= 1
-  );
+/**
+ * Merge stored custom overrides onto the model's field defaults, keeping only
+ * keys the model actually declares. This keeps the config valid-shaped across
+ * model switches and manifest changes without any per-model branching.
+ */
+function effectiveConfig(model: ModelCapability | undefined, overrides: ModelConfig): ModelConfig {
+  if (!model) return {};
+  const base = defaultConfigFor(model);
+  const out: ModelConfig = { ...base };
+  for (const f of model.config_fields) {
+    if (f.key in overrides) out[f.key] = overrides[f.key];
+  }
+  return out;
 }
 
 export default function WizardLayout() {
+  const { getModel, loading: capsLoading, error: capsError } = useCapabilities();
+
   const [step, setStep] = useLocalStorage("wizard_step", 0);
 
   /* -------------------- STEP DATA -------------------- */
@@ -214,54 +142,14 @@ export default function WizardLayout() {
 
   const [modelType, setModelType] = useLocalStorage<string | null>("wizard_modelType", null);
   const [predictionTask, setPredictionTask] = useLocalStorage<string | null>("wizard_predictionTask", null);
-  const [predictionCategory, setPredictionCategory] = useLocalStorage<"classification" | "regression" | null>("wizard_predictionCategory", null);
+  const [predictionCategory, setPredictionCategory] = useLocalStorage<PickableCategory | null>("wizard_predictionCategory", null);
   const [customTargetColumn, setCustomTargetColumn] = useLocalStorage<string | null>("wizard_customTargetColumn", null);
   const [explainMethod, setExplainMethod] = useLocalStorage<ExplainValue | null>("wizard_explainMethod", null);
   const [configMode, setConfigMode] = useLocalStorage<ConfigMode | null>("wizard_configMode", null);
 
   /* -------------------- CONFIG STATE -------------------- */
-  const defaultTransformerConfig = useMemo<TransformerConfig>(
-    () => ({
-      max_len: 16,
-      d_model: 64,
-      num_heads: 4,
-      num_blocks: 2,
-      dropout_rate: 0.1,
-      epochs: 5,
-      batch_size: 128,
-      patience: 10,
-    }),
-    []
-  );
-
-  const defaultGnnConfig = useMemo<GnnConfig>(
-    () => ({
-      hidden: 64,
-      dropout_rate: 0.1,
-      lr: 4e-4,
-      epochs: 5,
-      batch_size: 64,
-      patience: 10,
-    }),
-    []
-  );
-
-  const defaultBestConfig = useMemo<BestConfig>(
-    () => ({
-      max_pattern_size_train: 21,
-      max_pattern_size_eval: 21,
-      process_stage_width_percentage: 0.2,
-      min_freq: 1e-14,
-      break_buffer: 1.2,
-      filter_sequences: true,
-      ncores: 1,
-    }),
-    []
-  );
-
-  const [transformerConfig, setTransformerConfig] = useLocalStorage<TransformerConfig>("wizard_transformerConfig", defaultTransformerConfig);
-  const [gnnConfig, setGnnConfig] = useLocalStorage<GnnConfig>("wizard_gnnConfig", defaultGnnConfig);
-  const [bestConfig, setBestConfig] = useLocalStorage<BestConfig>("wizard_bestConfig", defaultBestConfig);
+  // Single generic override map; defaults come from the selected model's manifest.
+  const [configOverrides, setConfigOverrides] = useLocalStorage<ModelConfig>("wizard_config", {});
 
   /* -------------------- RUN STATE -------------------- */
   const [pipelineStatus, setPipelineStatus] = useLocalStorage<PipelineStatus>("wizard_pipelineStatus", "idle");
@@ -273,18 +161,23 @@ export default function WizardLayout() {
   const [runError, setRunError] = useLocalStorage<string | null>("wizard_runError", null);
   const [runLogs, setRunLogs] = useLocalStorage<string[]>("wizard_runLogs", []);
 
-
   const [viewMode, setViewMode] = useLocalStorage<ViewMode>("wizard_viewMode", "wizard");
 
-  /* -------------------- DERIVED -------------------- */
-  const modelTypeNormalized = useMemo(
-    () => normalizeModelType(modelType),
-    [modelType]
+  /* -------------------- DERIVED (from manifest) -------------------- */
+  const selectedModel = getModel(modelType);
+  const selectedTask = useMemo(
+    () => selectedModel?.tasks.find((t) => t.id === predictionTask),
+    [selectedModel, predictionTask]
   );
+  const taskValid = !!selectedTask;
 
-  const taskNormalized = useMemo(
-    () => normalizeTask(predictionTask),
-    [predictionTask]
+  const defaultConfig = useMemo<ModelConfig>(
+    () => (selectedModel ? defaultConfigFor(selectedModel) : {}),
+    [selectedModel]
+  );
+  const customConfig = useMemo<ModelConfig>(
+    () => effectiveConfig(selectedModel, configOverrides),
+    [selectedModel, configOverrides]
   );
 
   /* -------------------- NAVIGATION -------------------- */
@@ -301,25 +194,15 @@ export default function WizardLayout() {
         if (mappingMode === null) return false;
         return validateManualMapping(manualMapping);
       case 2:
-        return modelTypeNormalized !== null;
+        return !!selectedModel;
       case 3: {
-        if (!modelTypeNormalized) return false;
+        if (!selectedModel) return false;
         if (configMode === null) return false;
-
-        if (modelTypeNormalized === "transformer") {
-          return configMode === "default" || validateTransformerConfig(transformerConfig);
-        }
-        if (modelTypeNormalized === "gnn") {
-          return configMode === "default" || validateGnnConfig(gnnConfig);
-        }
-        if (modelTypeNormalized === "best") {
-          return configMode === "default" || validateBestConfig(bestConfig);
-        }
-        return false;
+        return configMode === "default" || validateConfig(selectedModel, customConfig);
       }
       case 4:
-        if (!taskNormalized) return false;
-        if (taskNormalized === "custom_activity") {
+        if (!taskValid) return false;
+        if (selectedTask?.needs_target_column) {
           if (!customTargetColumn) return false;
           if (!dataset?.column_types) return false;
           if (dataset.column_types[customTargetColumn] !== "categorical") return false;
@@ -337,9 +220,9 @@ export default function WizardLayout() {
   const completedSteps = [
     dataset !== null && !!dataset.split_paths,
     !!dataset && validateManualMapping(manualMapping),
-    modelTypeNormalized !== null,
+    !!selectedModel,
     configMode !== null,
-    taskNormalized !== null,
+    taskValid,
     explainMethod !== null,
     pipelineStatus === "completed",
     viewMode === "results",
@@ -377,7 +260,7 @@ export default function WizardLayout() {
     });
     if (customTargetColumn && !resp.columns.includes(customTargetColumn)) {
       setCustomTargetColumn(null);
-      if (predictionTask === "custom_activity") {
+      if (selectedTask?.needs_target_column) {
         setPredictionTask(null);
       }
     }
@@ -398,29 +281,24 @@ export default function WizardLayout() {
     setRunLogs([]);
   };
 
-  // Clear explainability immediately when user changes model type (no effects)
-  const handleSelectModelType = (v: string) => {
-    const nextModel = normalizeModelType(v);
-    setModelType(v);
+  // Selecting a model resets config to that model's defaults and drops any task /
+  // explainability method the new model doesn't support — all manifest-driven.
+  const handleSelectModelType = (id: string) => {
+    setModelType(id);
+    const nextModel = getModel(id);
 
-    // Reset Step 5 config when model changes
     setConfigMode(null);
-    setTransformerConfig(defaultTransformerConfig);
-    setGnnConfig(defaultGnnConfig);
-    setBestConfig(defaultBestConfig);
+    setConfigOverrides(nextModel ? defaultConfigFor(nextModel) : {});
 
-    // Reset task if incompatible with the new model
-    const bestOnlyTasks = new Set(["remaining_trace"]);
-    const nonBestTasks = new Set(["event_time", "remaining_time", "unified", "custom_activity"]);
-    if (nextModel === "best" && predictionTask && nonBestTasks.has(predictionTask)) {
+    if (predictionTask && !nextModel?.tasks.some((t) => t.id === predictionTask)) {
       setPredictionTask(null);
-      setPredictionCategory(null);
-    } else if (nextModel !== "best" && predictionTask && bestOnlyTasks.has(predictionTask)) {
-      setPredictionTask(null);
+      setCustomTargetColumn(null);
+    }
+    // Drop the category if the new model has no tasks in it (e.g. switching to BEST).
+    if (predictionCategory && !nextModel?.tasks.some((t) => t.category === predictionCategory)) {
       setPredictionCategory(null);
     }
-
-    if (!isExplainAllowed(explainMethod, nextModel)) {
+    if (!isExplainAllowed(nextModel, explainMethod)) {
       setExplainMethod(null);
     }
   };
@@ -441,9 +319,7 @@ export default function WizardLayout() {
     setCustomTargetColumn(null);
     setExplainMethod(null);
     setConfigMode(null);
-    setTransformerConfig(defaultTransformerConfig);
-    setGnnConfig(defaultGnnConfig);
-    setBestConfig(defaultBestConfig);
+    setConfigOverrides({});
 
     setPipelineStatus("idle");
     setProgress(0);
@@ -471,32 +347,17 @@ export default function WizardLayout() {
       setRunError("Please configure column mapping first.");
       return;
     }
-
-    const mt = modelTypeNormalized;
-    const task = taskNormalized;
-
-    if (!mt) {
-      setRunError("Invalid model type. Please re-select Step 3.");
+    if (!selectedModel) {
+      setRunError("Invalid model type. Please re-select Step 2.");
       return;
     }
-    if (!task) {
+    if (!taskValid || !predictionTask) {
       setRunError("Invalid prediction task. Please re-select Step 5.");
       return;
     }
 
-    const explainToSend = isExplainAllowed(explainMethod, mt) ? explainMethod : null;
-    const configToSend =
-      mt === "transformer"
-        ? configMode === "custom"
-          ? transformerConfig
-          : defaultTransformerConfig
-        : mt === "best"
-        ? configMode === "custom"
-          ? bestConfig
-          : defaultBestConfig
-        : configMode === "custom"
-        ? gnnConfig
-        : defaultGnnConfig;
+    const explainToSend = isExplainAllowed(selectedModel, explainMethod) ? explainMethod : null;
+    const configToSend = configMode === "custom" ? customConfig : defaultConfig;
 
     setPipelineStatus("running");
     setProgress(5);
@@ -504,12 +365,12 @@ export default function WizardLayout() {
     try {
       const res = await createRun({
         dataset_id: dataset.dataset_id,
-        model_type: mt,
-        task,
+        model_type: selectedModel.id,
+        task: predictionTask,
         config: configToSend,
         split: splitConfig,
         explainability: explainToSend,
-        target_column: task === "custom_activity" ? customTargetColumn : null,
+        target_column: selectedTask?.needs_target_column ? customTargetColumn : null,
         mapping_mode: "manual",
         column_mapping: manualMapping,
       });
@@ -628,6 +489,12 @@ export default function WizardLayout() {
           <div className="flex-1 flex flex-col min-w-0 bg-brand-50">
             <div className="px-8 pt-8 shrink-0">
               <StepProgressHeader step={step} totalSteps={TOTAL_STEPS} />
+              {capsError && (
+                <div className="mt-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                  Could not load model capabilities from the backend: {capsError}. Model,
+                  task, config and explainability steps will be empty until it is reachable.
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-auto min-w-0">
@@ -662,18 +529,12 @@ export default function WizardLayout() {
 
                 {step === 3 && (
                   <Step5Config
-                    modelType={modelTypeNormalized}
+                    modelType={modelType}
                     mode={configMode}
                     onSelect={setConfigMode}
-                    transformerConfig={transformerConfig}
-                    onTransformerChange={setTransformerConfig}
-                    defaultTransformerConfig={defaultTransformerConfig}
-                    gnnConfig={gnnConfig}
-                    onGnnChange={setGnnConfig}
-                    defaultGnnConfig={defaultGnnConfig}
-                    bestConfig={bestConfig}
-                    onBestChange={setBestConfig}
-                    defaultBestConfig={defaultBestConfig}
+                    config={customConfig}
+                    onConfigChange={setConfigOverrides}
+                    defaultConfig={defaultConfig}
                   />
                 )}
 
@@ -686,12 +547,11 @@ export default function WizardLayout() {
                     dataset={dataset}
                     onSelectTask={(nextTask) => {
                       setPredictionTask(nextTask);
-                      if (nextTask === "event_time" || nextTask === "remaining_time") {
-                        setPredictionCategory("regression");
-                      } else {
-                        setPredictionCategory("classification");
+                      const meta = selectedModel?.tasks.find((t) => t.id === nextTask);
+                      if (meta && (meta.category === "classification" || meta.category === "regression")) {
+                        setPredictionCategory(meta.category);
                       }
-                      if (nextTask !== "custom_activity") {
+                      if (!meta?.needs_target_column) {
                         setCustomTargetColumn(null);
                       }
                     }}
@@ -706,7 +566,7 @@ export default function WizardLayout() {
 
                 {step === 5 && (
                   <Step4Explainability
-                    modelType={modelTypeNormalized}
+                    modelType={modelType}
                     method={explainMethod}
                     onSelect={setExplainMethod}
                   />
@@ -718,7 +578,7 @@ export default function WizardLayout() {
                     dataset={dataset}
                     modelType={modelType}
                     predictionTask={predictionTask}
-                    explainMethod={explainMethod} // OK: ExplainValue is a string union
+                    explainMethod={explainMethod} // OK: ExplainValue is a string
                     mappingMode={mappingMode}
                     manualMapping={manualMapping}
                     configMode={configMode}
@@ -742,7 +602,7 @@ export default function WizardLayout() {
             <div className="shrink-0 px-8 pb-6 border-t border-brand-100 bg-white">
               <WizardFooter
                 step={step}
-                canContinue={pipelineStatus !== "running" && isStepValid()}
+                canContinue={pipelineStatus !== "running" && !capsLoading && isStepValid()}
                 onCancel={resetAll}
                 onPrevious={() => {
                   if (pipelineStatus === "running") return;

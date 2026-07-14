@@ -72,8 +72,10 @@ export type RunLogsRes = {
 
 export type CreateRunReq = {
   dataset_id: string;
-  model_type: "gnn" | "transformer" | "best";
-  task: "next_activity" | "custom_activity" | "event_time" | "remaining_time" | "unified" | "remaining_trace" | "outcome";
+  // Model/task ids come from the capability manifest (GET /capabilities), so new
+  // models require no changes here.
+  model_type: string;
+  task: string;
   config?: Record<string, JsonValue>;
   split?: { test_size: number; val_split: number };
   explainability?: JsonValue; // e.g. "none" | null | {...}
@@ -112,6 +114,62 @@ export type SplitConfig = {
   val_split: number;
 };
 
+export type TaskCategory = "classification" | "regression" | "sequence";
+
+export type TaskMeta = {
+  id: string;
+  label: string;
+  description: string;
+  category: TaskCategory;
+  needs_target_column?: boolean;
+};
+
+export type ConfigFieldMeta = {
+  key: string;
+  label: string;
+  description?: string;
+  kind: "number" | "boolean";
+  default: number | boolean;
+  placeholder?: string;
+  // Declarative validation rules (all optional).
+  min?: number;
+  max?: number;
+  gt?: number; // exclusive lower bound
+  lt?: number; // exclusive upper bound
+  integer?: boolean;
+  odd?: boolean;
+  // UI-only hint; backend may send "any".
+  step?: number | string;
+};
+
+export type ConfigConstraint = {
+  type: "lte";
+  left: string;
+  right: string;
+  message?: string;
+};
+
+export type ExplainMethodMeta = {
+  value: string;
+  label: string;
+  description: string;
+};
+
+export type ModelCapability = {
+  id: string;
+  label: string;
+  description: string;
+  config_intro?: string;
+  tasks: TaskMeta[];
+  config_fields: ConfigFieldMeta[];
+  config_constraints: ConfigConstraint[];
+  explain_methods: ExplainMethodMeta[];
+};
+
+export type CapabilitiesRes = {
+  models: ModelCapability[];
+};
+
 // -----------------------------
 // Low-level helpers
 // -----------------------------
@@ -142,6 +200,11 @@ function encodeArtifactPath(path: string): string {
 export async function health(): Promise<{ ok: boolean; service: string }> {
   const res = await apiFetch(`${API_BASE}/health`);
   return (await res.json()) as { ok: boolean; service: string };
+}
+
+export async function getCapabilities(): Promise<CapabilitiesRes> {
+  const res = await apiFetch(`${API_BASE}/capabilities`);
+  return (await res.json()) as CapabilitiesRes;
 }
 
 export async function uploadDataset(

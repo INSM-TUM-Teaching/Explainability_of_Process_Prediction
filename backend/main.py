@@ -63,6 +63,10 @@ except ImportError:
     PREPROCESSOR_AVAILABLE = False
     print("[WARNING] Preprocessor not available - skipping data cleaning")
 
+# Declarative model capability manifest (dependency-free: no TF/Torch import).
+# Serves GET /capabilities and validates run requests against registered models.
+from models.capabilities import list_capabilities, get_capability
+
 STORAGE_DIR = os.path.join(BACKEND_DIR, "storage")
 UPLOAD_DIR = os.path.join(STORAGE_DIR, "uploads")
 DATASETS_DIR = os.path.join(STORAGE_DIR, "datasets")
@@ -406,6 +410,18 @@ def version():
             "lime": _module_version("lime"),
         },
     }
+
+
+@app.get("/capabilities")
+def capabilities():
+    """Return the declarative model capability manifest.
+
+    The frontend wizard renders itself entirely from this response (model cards,
+    prediction tasks, config-field forms with validation rules, and explainability
+    options), so adding a new model requires no frontend changes. Source of truth:
+    ``models/capabilities.py``.
+    """
+    return {"models": list_capabilities()}
 
 
 @app.post("/datasets/upload", response_model=DatasetUploadResponse)
@@ -948,6 +964,26 @@ def create_run(req: RunCreateRequest):
     # Validate dataset exists
     _ = _load_dataset_meta(req.dataset_id)
 
+    # Validate model_type / task against the capability manifest so unsupported
+    # combinations fail fast with a clear message instead of deep in the runner.
+    try:
+        cap = get_capability(req.model_type)
+    except KeyError:
+        valid = ", ".join(m["id"] for m in list_capabilities())
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported model_type '{req.model_type}'. Valid: {valid}",
+        )
+    valid_tasks = {t["id"] for t in cap["tasks"]}
+    if req.task not in valid_tasks:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported task '{req.task}' for model '{req.model_type}'. "
+                f"Valid: {', '.join(sorted(valid_tasks))}"
+            ),
+        )
+
     run_id = str(uuid.uuid4())
     rdir = _run_dir(run_id)
     os.makedirs(rdir, exist_ok=True)
@@ -1096,8 +1132,14 @@ def explain_on_demand(run_id: str, req: ExplainReq):
         "--task", summary.get("request", {}).get("task", "next_activity")
     ]
     
+    # Force UTF-8 stdio in the child so explainer prints containing non-ASCII
+    # characters (e.g. "✓") don't crash with UnicodeEncodeError under the
+    # Windows cp1252 default, and decode its output as UTF-8 here to match.
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", check=True, env=env
+        )
         out = proc.stdout
         for line in out.splitlines():
             if line.startswith("{") and "success" in line:

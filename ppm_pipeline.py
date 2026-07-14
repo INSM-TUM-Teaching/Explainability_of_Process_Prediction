@@ -15,14 +15,17 @@ if REPO_ROOT not in sys.path:
 
 np.random.seed(42)
 
-EXPLAINABILITY_AVAILABLE = True
-EXPLAINABILITY_IMPORT_ERROR = None
-try:
-    from explainability.transformers import run_transformer_explainability
-    from explainability.gnns import run_gnn_explainability
-except ImportError as e:
-    EXPLAINABILITY_AVAILABLE = False
-    EXPLAINABILITY_IMPORT_ERROR = str(e)
+# Strategy Pattern entry point: model+task -> predictor wrapper.
+# Importing this does not pull in TF/Torch/best4ppm (wrappers import lazily).
+from models.registry import get_predictor
+
+# Declarative capability manifest (single source of truth shared with the API's
+# GET /capabilities and the frontend wizard). Default configs are derived from it
+# so hyperparameter defaults never drift between the pipeline and the UI.
+from models.capabilities import default_config as _default_config
+
+# Explainability modules are imported lazily inside each wrapper's explain();
+# the wrappers raise a clear RuntimeError if a requested method is unavailable.
 
 BEST_AVAILABLE = True
 BEST_IMPORT_ERROR = None
@@ -47,14 +50,8 @@ try:
 except ImportError:
     PYTORCH_AVAILABLE = False
 
-if TENSORFLOW_AVAILABLE:
-    from transformers.prediction.next_activity import NextActivityPredictor
-    from transformers.prediction.event_time import EventTimePredictor
-    from transformers.prediction.remaining_time import RemainingTimePredictor
-    from transformers.prediction.outcome import OutcomePredictor
-
-if PYTORCH_AVAILABLE:
-    from gnns.prediction.gnn_predictor import GNNPredictor
+# Concrete predictor classes are imported lazily by their wrappers in models/;
+# the TENSORFLOW_AVAILABLE / PYTORCH_AVAILABLE flags above still gate the shims.
 
 
 def detect_and_standardize_columns(df, verbose=False):
@@ -119,39 +116,15 @@ def _safe_rename_columns(df, rename_map):
 
 
 def default_transformer_config():
-    return {
-        'max_len': 16,
-        'd_model': 64,
-        'num_heads': 4,
-        'num_blocks': 2,
-        'dropout_rate': 0.1,
-        'epochs': 5,
-        'batch_size': 128,
-        'patience': 10
-    }
+    return _default_config("transformer")
 
 
 def default_gnn_config():
-    return {
-        'hidden': 64,
-        'dropout_rate': 0.1,
-        'lr': 4e-4,
-        'epochs': 5,
-        'batch_size': 64,
-        'patience': 10
-    }
+    return _default_config("gnn")
 
 
 def default_best_config():
-    return {
-        'max_pattern_size_train': 21,
-        'max_pattern_size_eval': 21,
-        'process_stage_width_percentage': 0.2,
-        'min_freq': 1e-14,
-        'break_buffer': 1.2,
-        'filter_sequences': True,
-        'ncores': 1,
-    }
+    return _default_config("best")
 
 
 def run_next_activity_prediction(
@@ -208,66 +181,19 @@ def run_next_activity_prediction(
     if target_series is not None:
         df['concept:name'] = target_series
 
-    predictor = NextActivityPredictor(
-        max_len=config['max_len'],
-        d_model=config['d_model'],
-        num_heads=config['num_heads'],
-        num_blocks=config['num_blocks'],
-        dropout_rate=config['dropout_rate']
-    )
-
-    data = predictor.prepare_data(
-        df,
-        test_size=test_size,
-        val_split=val_split,
-        max_cases=config.get("max_cases"),
-        max_prefixes_per_case=config.get("max_prefixes_per_case"),
-        max_graphs=config.get("max_graphs"),
-    )
-    
-    # DEBUG 3: After prepare_data
-    print("[DEBUG 3] LABEL ENCODER:", len(predictor.label_encoder.classes_), "classes")
-    print("Classes:", list(predictor.label_encoder.classes_))
-    
-    predictor.build_model()
-    predictor.train(
-        data,
-        epochs=config['epochs'],
-        batch_size=config['batch_size'],
-        patience=config['patience']
-    )
-
+    model_key = "transformer:custom_activity" if target_column else "transformer:next_activity"
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "val_split": val_split,
+        "output_dir": output_dir,
+        "explainability_method": explainability_method,
+    }
+    predictor = get_predictor(model_key, cfg)
+    data = predictor.prepare_data(df)
+    predictor.train(data)
     metrics = predictor.evaluate(data)
-    y_pred, y_pred_probs = predictor.predict(data)
-    predictor.save_results(data, y_pred, y_pred_probs, output_dir)
-    predictor.plot_training_history(output_dir)
-    predictor.save_model(output_dir)
-
-    if explainability_method and not EXPLAINABILITY_AVAILABLE:
-        raise RuntimeError(
-            "Explainability requested, but explainability modules are unavailable: "
-            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
-        )
-
-    if explainability_method and EXPLAINABILITY_AVAILABLE:
-        explainability_dir = os.path.join(output_dir, 'explainability')
-        explainability_samples = config.get("explainability_samples", 50)
-        feature_config = {}
-        if hasattr(predictor, "vocab_size") and predictor.vocab_size is not None:
-            feature_config["vocab_size"] = predictor.vocab_size
-
-        run_transformer_explainability(
-            predictor.model,
-            data,
-            explainability_dir,
-            task='activity',
-            num_samples=explainability_samples,
-            methods=explainability_method,
-            label_encoder=predictor.label_encoder,
-            scaler=getattr(predictor, 'scaler', None),
-            feature_config=feature_config,
-            run_benchmark=False
-        )
+    predictor.explain(data)
 
     return metrics
 
@@ -298,55 +224,18 @@ def run_event_time_prediction(
         'Timestamp': 'time:timestamp'
     })
 
-    predictor = EventTimePredictor(
-        max_len=config['max_len'],
-        d_model=config['d_model'],
-        num_heads=config['num_heads'],
-        num_blocks=config['num_blocks'],
-        dropout_rate=config['dropout_rate']
-    )
-
-    data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-    predictor.build_model()
-    predictor.train(
-        data,
-        epochs=config['epochs'],
-        batch_size=config['batch_size'],
-        patience=config['patience']
-    )
-
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "val_split": val_split,
+        "output_dir": output_dir,
+        "explainability_method": explainability_method,
+    }
+    predictor = get_predictor("transformer:event_time", cfg)
+    data = predictor.prepare_data(df)
+    predictor.train(data)
     metrics = predictor.evaluate(data)
-    y_pred = predictor.predict(data)
-    predictor.save_results(data, y_pred, output_dir)
-    predictor.plot_predictions(data, y_pred, output_dir)
-    predictor.plot_training_history(output_dir)
-    predictor.save_model(output_dir)
-
-    if explainability_method and not EXPLAINABILITY_AVAILABLE:
-        raise RuntimeError(
-            "Explainability requested, but explainability modules are unavailable: "
-            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
-        )
-
-    if explainability_method and EXPLAINABILITY_AVAILABLE:
-        explainability_dir = os.path.join(output_dir, 'explainability')
-        explainability_samples = config.get("explainability_samples", 50)
-        feature_config = {}
-        if hasattr(predictor, "vocab_size") and predictor.vocab_size is not None:
-            feature_config["vocab_size"] = predictor.vocab_size
-
-        run_transformer_explainability(
-            predictor.model,
-            data,
-            explainability_dir,
-            task='time',
-            num_samples=explainability_samples,
-            methods=explainability_method,
-            label_encoder=predictor.label_encoder,
-            scaler=predictor.scaler,
-            feature_config=feature_config,
-            run_benchmark=False
-        )
+    predictor.explain(data)
 
     return metrics
 
@@ -377,55 +266,18 @@ def run_remaining_time_prediction(
         'Timestamp': 'time:timestamp'
     })
 
-    predictor = RemainingTimePredictor(
-        max_len=config['max_len'],
-        d_model=config['d_model'],
-        num_heads=config['num_heads'],
-        num_blocks=config['num_blocks'],
-        dropout_rate=config['dropout_rate']
-    )
-
-    data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-    predictor.build_model()
-    predictor.train(
-        data,
-        epochs=config['epochs'],
-        batch_size=config['batch_size'],
-        patience=config['patience']
-    )
-
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "val_split": val_split,
+        "output_dir": output_dir,
+        "explainability_method": explainability_method,
+    }
+    predictor = get_predictor("transformer:remaining_time", cfg)
+    data = predictor.prepare_data(df)
+    predictor.train(data)
     metrics = predictor.evaluate(data)
-    y_pred = predictor.predict(data)
-    predictor.save_results(data, y_pred, output_dir)
-    predictor.plot_predictions(data, y_pred, output_dir)
-    predictor.plot_training_history(output_dir)
-    predictor.save_model(output_dir)
-
-    if explainability_method and not EXPLAINABILITY_AVAILABLE:
-        raise RuntimeError(
-            "Explainability requested, but explainability modules are unavailable: "
-            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
-        )
-
-    if explainability_method and EXPLAINABILITY_AVAILABLE:
-        explainability_dir = os.path.join(output_dir, 'explainability')
-        explainability_samples = config.get("explainability_samples", 50)
-        feature_config = {}
-        if hasattr(predictor, "vocab_size") and predictor.vocab_size is not None:
-            feature_config["vocab_size"] = predictor.vocab_size
-
-        run_transformer_explainability(
-            predictor.model,
-            data,
-            explainability_dir,
-            task='time',
-            num_samples=explainability_samples,
-            methods=explainability_method,
-            label_encoder=predictor.label_encoder,
-            scaler=predictor.scaler,
-            feature_config=feature_config,
-            run_benchmark=False
-        )
+    predictor.explain(data)
 
     return metrics
 
@@ -456,60 +308,18 @@ def run_outcome_prediction(
         'Timestamp': 'time:timestamp'
     })
 
-    predictor = OutcomePredictor(
-        max_len=config['max_len'],
-        d_model=config['d_model'],
-        num_heads=config['num_heads'],
-        num_blocks=config['num_blocks'],
-        dropout_rate=config['dropout_rate']
-    )
-
-    data = predictor.prepare_data(
-        df,
-        test_size=test_size,
-        val_split=val_split,
-        max_cases=config.get("max_cases"),
-        max_prefixes_per_case=config.get("max_prefixes_per_case"),
-    )
-    predictor.build_model()
-    predictor.train(
-        data,
-        epochs=config['epochs'],
-        batch_size=config['batch_size'],
-        patience=config['patience']
-    )
-
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "val_split": val_split,
+        "output_dir": output_dir,
+        "explainability_method": explainability_method,
+    }
+    predictor = get_predictor("transformer:outcome", cfg)
+    data = predictor.prepare_data(df)
+    predictor.train(data)
     metrics = predictor.evaluate(data)
-    y_pred, y_pred_probs = predictor.predict(data)
-    predictor.save_results(data, y_pred, y_pred_probs, output_dir)
-    predictor.plot_training_history(output_dir)
-    predictor.save_model(output_dir)
-
-    if explainability_method and not EXPLAINABILITY_AVAILABLE:
-        raise RuntimeError(
-            "Explainability requested, but explainability modules are unavailable: "
-            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
-        )
-
-    if explainability_method and EXPLAINABILITY_AVAILABLE:
-        explainability_dir = os.path.join(output_dir, 'explainability')
-        explainability_samples = config.get("explainability_samples", 50)
-        feature_config = {}
-        if hasattr(predictor, "vocab_size") and predictor.vocab_size is not None:
-            feature_config["vocab_size"] = predictor.vocab_size
-
-        run_transformer_explainability(
-            predictor.model,
-            data,
-            explainability_dir,
-            task='outcome',
-            num_samples=explainability_samples,
-            methods=explainability_method,
-            label_encoder=getattr(predictor, "activity_encoder", predictor.label_encoder),
-            scaler=None,
-            feature_config=feature_config,
-            run_benchmark=False
-        )
+    predictor.explain(data)
 
     return metrics
 
@@ -545,80 +355,18 @@ def run_gnn_unified_prediction(
     df['Timestamp'] = pd.to_datetime(df['Timestamp'])
     df = df.sort_values(['CaseID', 'Timestamp']).reset_index(drop=True)
 
-    if task == 'unified':
-        loss_weights = (1.0, 0.1, 0.1)
-    elif task == 'next_activity':
-        loss_weights = (1.0, 0.0, 0.0)
-    elif task == 'event_time':
-        loss_weights = (0.0, 1.0, 0.0)
-    elif task == 'remaining_time':
-        loss_weights = (0.0, 0.0, 1.0)
-    elif task == 'outcome':
-        loss_weights = (0.0, 0.0, 0.0, 1.0)
-    else:
-        loss_weights = (1.0, 0.1, 0.1)
-
-    predictor = GNNPredictor(
-        hidden_channels=config.get('hidden', 64),
-        dropout=config.get('dropout_rate', 0.1),
-        lr=config.get('lr', 4e-4),
-        loss_weights=loss_weights
-    )
-
-    data = predictor.prepare_data(df, test_size=test_size, val_split=val_split)
-
-    predictor.build_model(
-        data['sample_graph'],
-        batch_size=config.get('batch_size', 64),
-        num_activity_classes=data.get('num_activity_classes')
-    )
-
-    predictor.train(
-        data,
-        epochs=config.get('epochs', 50),
-        batch_size=config.get('batch_size', 64),
-        patience=config.get('patience', 10)
-    )
-
-    metrics = predictor.evaluate_test(data, batch_size=config.get('batch_size', 64))
-    predictor.save_model(output_dir)
-    predictor.plot_training_history(output_dir)
-    predictor.save_results(metrics, output_dir)
-
-    if explainability_method and not EXPLAINABILITY_AVAILABLE:
-        raise RuntimeError(
-            "Explainability requested, but explainability modules are unavailable: "
-            f"{EXPLAINABILITY_IMPORT_ERROR or 'unknown import error'}"
-        )
-
-    if explainability_method and EXPLAINABILITY_AVAILABLE:
-        explainability_dir = os.path.join(output_dir, 'explainability')
-        explainability_samples = config.get("explainability_samples", 50)
-        
-        if task == 'unified':
-            tasks_to_explain = ['activity', 'event_time', 'remaining_time']
-        elif task == 'next_activity':
-            tasks_to_explain = ['activity']
-        elif task == 'event_time':
-            tasks_to_explain = ['event_time']
-        elif task == 'remaining_time':
-            tasks_to_explain = ['remaining_time']
-        elif task == 'outcome':
-            tasks_to_explain = ['outcome']
-        else:
-            tasks_to_explain = ['activity']
-
-        run_gnn_explainability(
-            predictor.model,
-            data,
-            explainability_dir,
-            predictor.device,
-            vocabularies=data.get('vocabs'),
-            num_samples=explainability_samples,
-            methods=explainability_method,
-            tasks=tasks_to_explain,
-            run_benchmark=False
-        )
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "val_split": val_split,
+        "output_dir": output_dir,
+        "explainability_method": explainability_method,
+    }
+    predictor = get_predictor(f"gnn:{task}", cfg)
+    data = predictor.prepare_data(df)
+    predictor.train(data)
+    metrics = predictor.evaluate(data)
+    predictor.explain(data)
 
     return metrics
 
@@ -646,24 +394,23 @@ def run_best_nap_prediction(
 
     test_size = float(split.get("test_size", 0.2))
 
-    runner = BESTRunner(config=config, task="nap")
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "output_dir": output_dir,
+        "explainability_method": explainability,
+    }
+    predictor = get_predictor("best:next_activity", cfg)
     print("[BEST NAP] Preparing data...")
-    runner.prepare_data(df, test_size=test_size)
+    data = predictor.prepare_data(df)
     print("[BEST NAP] Fitting model...")
-    runner.fit()
-    print("[BEST NAP] Running predictions...")
-    runner.predict()
-
+    predictor.train(data)
     print("[BEST NAP] Evaluating...")
-    metrics = runner.evaluate()
+    metrics = predictor.evaluate(data)
     print(f"[BEST NAP] Metrics: {metrics}")
-    runner.save_results(output_dir)
-    runner.plot_performance(output_dir)
-    runner.save_model(output_dir)
-
     if explainability:
         print("[BEST NAP] Running explainability...")
-        run_best_explainability(runner, output_dir, task="nap")
+    predictor.explain(data)
 
     return metrics
 
@@ -691,24 +438,23 @@ def run_best_rtp_prediction(
 
     test_size = float(split.get("test_size", 0.2))
 
-    runner = BESTRunner(config=config, task="rtp")
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "output_dir": output_dir,
+        "explainability_method": explainability,
+    }
+    predictor = get_predictor("best:remaining_trace", cfg)
     print("[BEST RTP] Preparing data...")
-    runner.prepare_data(df, test_size=test_size)
+    data = predictor.prepare_data(df)
     print("[BEST RTP] Fitting model...")
-    runner.fit()
-    print("[BEST RTP] Running predictions...")
-    runner.predict()
-
+    predictor.train(data)
     print("[BEST RTP] Evaluating...")
-    metrics = runner.evaluate()
+    metrics = predictor.evaluate(data)
     print(f"[BEST RTP] Metrics: {metrics}")
-    runner.save_results(output_dir)
-    runner.plot_performance(output_dir)
-    runner.save_model(output_dir)
-
     if explainability:
         print("[BEST RTP] Running explainability...")
-        run_best_explainability(runner, output_dir, task="rtp")
+    predictor.explain(data)
 
     return metrics
 
@@ -736,33 +482,22 @@ def run_best_outcome_prediction(
 
     test_size = float(split.get("test_size", 0.2))
 
-    runner = BESTRunner(config=config, task="outcome")
+    cfg = {
+        **config,
+        "test_size": test_size,
+        "output_dir": output_dir,
+        "explainability_method": explainability,
+    }
+    predictor = get_predictor("best:outcome", cfg)
     print("[BEST OUTCOME] Preparing data...")
-    runner.prepare_data(df, test_size=test_size)
+    data = predictor.prepare_data(df)
     print("[BEST OUTCOME] Fitting model...")
-    runner.fit()
-    print("[BEST OUTCOME] Running predictions...")
-    runner.predict()
-
+    predictor.train(data)
     print("[BEST OUTCOME] Evaluating...")
-    metrics = runner.evaluate()
+    metrics = predictor.evaluate(data)
     print(f"[BEST OUTCOME] Metrics: {metrics}")
-    runner.save_results(output_dir)
-    runner.plot_performance(output_dir)
-    runner.save_model(output_dir)
-
     if explainability:
         print("[BEST OUTCOME] Running explainability...")
-        run_best_explainability(runner, output_dir, task="outcome")
+    predictor.explain(data)
 
     return metrics
-
-def run_best_explainability(runner, output_dir, task):
-    from explainability.best.best_explainer import BESTExplainer
-    explainer = BESTExplainer(
-        model=runner.model,
-        output_dir=output_dir,
-        task=task,
-        runner=runner,
-    )
-    explainer.explain()
