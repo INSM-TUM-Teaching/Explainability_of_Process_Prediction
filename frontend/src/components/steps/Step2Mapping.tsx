@@ -28,6 +28,8 @@ export default function Step2Mapping({
 }: Step2MappingProps) {
   const columns = (dataset?.columns ?? []).filter((c) => c !== "__split");
   const canShowManual = !!dataset;
+  const detected = dataset?.detected_mapping ?? {};
+  const anyDetected = Object.keys(detected).length > 0;
 
   const manualOk =
     manualMapping.case_id.trim().length > 0 &&
@@ -55,6 +57,12 @@ export default function Step2Mapping({
         </Card>
       ) : (
         <div className="space-y-4">
+          {anyDetected && (
+            <div className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+              We auto-detected these columns from your file. Review them and change any that
+              are wrong — otherwise you can continue as-is.
+            </div>
+          )}
           {canShowManual && (
             <Card title="Manual Mapping">
               <div className="space-y-4">
@@ -64,6 +72,7 @@ export default function Step2Mapping({
                   columns={["", ...columns]}
                   onChange={(v) => onManualMappingChange({ case_id: v })}
                   placeholder="Select..."
+                  detectedValue={detected.case_id}
                 />
                 <MappingSelect
                   label="Activity column"
@@ -71,6 +80,7 @@ export default function Step2Mapping({
                   columns={["", ...columns]}
                   onChange={(v) => onManualMappingChange({ activity: v })}
                   placeholder="Select..."
+                  detectedValue={detected.activity}
                 />
                 <MappingSelect
                   label="Timestamp column"
@@ -78,6 +88,7 @@ export default function Step2Mapping({
                   columns={["", ...columns]}
                   onChange={(v) => onManualMappingChange({ timestamp: v })}
                   placeholder="Select..."
+                  detectedValue={detected.timestamp}
                 />
                 <MappingSelect
                   label="Resource column (optional)"
@@ -85,6 +96,7 @@ export default function Step2Mapping({
                   columns={["", ...columns]}
                   onChange={(v) => onManualMappingChange({ resource: v.trim() ? v : null })}
                   placeholder="None"
+                  detectedValue={detected.resource}
                 />
 
                 {!manualOk && (
@@ -108,16 +120,26 @@ function MappingSelect({
   columns,
   onChange,
   placeholder,
+  detectedValue,
 }: {
   label: string;
   value: string;
   columns: string[];
   onChange: (v: string) => void;
   placeholder?: string;
+  detectedValue?: string;
 }) {
+  const isAutoDetected = !!value && value === detectedValue;
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
-      <div className="text-sm font-medium text-gray-800">{label}</div>
+      <div className="flex items-center gap-2 text-sm font-medium text-gray-800">
+        <span>{label}</span>
+        {isAutoDetected && (
+          <span className="text-xs font-normal text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+            Auto-detected
+          </span>
+        )}
+      </div>
       <div className="sm:col-span-2">
         <select
           className="w-full border rounded-md px-3 py-2 bg-white text-sm"
